@@ -61,4 +61,4 @@ A beautiful, real-time UI powered by Sheets API:
 
 ## 🏗️ Architecture (Cloud-native, KISS)
 
-.
+..
