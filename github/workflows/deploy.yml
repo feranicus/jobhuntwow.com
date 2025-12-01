@@ -1,0 +1,37 @@
+name: Deploy JobHuntWOW to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main  # Запускать при пуше в ветку main
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --- 1. Сборка React/Vite Фронтенда ---
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: ./frontend # Запускаем в директории frontend
+
+      - name: Build project
+        run: npm run build
+        working-directory: ./frontend
+        # outDir настроен в vite.config.js на '../dist'
+
+      # --- 2. Деплой на GitHub Pages ---
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist # Публикуем содержимое папки 'dist'
+          cname: jobhuntwow.com # Используем ваш кастомный домен
