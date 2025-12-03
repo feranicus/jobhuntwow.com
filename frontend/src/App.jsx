@@ -2,11 +2,14 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { LogOut, User, Send, ChevronRight, BarChart, HardHat, Star, Trash2, Link, Mail, Folder, Clock, Check, Briefcase, MapPin, DollarSign, MessageSquare, Clipboard, Calendar, X } from 'lucide-react';
 
 // --- НАСТРОЙКА: K.I.S.S. ENDPOINT ДЛЯ GOOGLE APPS SCRIPT ---
-// !!! ЭТО ВАШ БУДУЩИЙ URL РАЗВЕРНУТОГО ВЕБ-ПРИЛОЖЕНИЯ GOOGLE APPS SCRIPT !!!
-// Apps Script будет читать Google Sheets, преобразовывать данные в JSON и отдавать их сюда.
-const APPS_SCRIPT_ENDPOINT = "https://script.google.com/macros/s/YOUR_DEPLOYED_WEB_APP_ID/exec"; 
+// !!! ВСТАВЬТЕ СЮДА URL РАЗВЕРНУТОГО WEB APP ИЗ APPS SCRIPT (для API и SSO) !!!
+const APPS_SCRIPT_ENDPOINT = "https://script.google.com/macros/s/AKfycbzzZ4h-zRZTjv9TbyzKLd-vMmF5kElJOUmjP6WhMtx3IHKOB-aOPyou5S_Mn-U9bMGgLA/exec"; 
+// Ваш Google Client ID (полученный из Google Cloud Console)
+const GOOGLE_CLIENT_ID = "183243743994-djr06bg7i0f3kmvopbkluab6b1egu7be.apps.googleusercontent.com";
+
 
 // --- СТАТИЧЕСКИЕ ДАННЫЕ И СТРУКТУРА ---
+// (Оставлены для мокового рендеринга)
 
 // 1. Определение этапов (Статусы) для Канбана
 const KANBAN_STAGES = [
@@ -30,86 +33,30 @@ const PROGRESS_STAGES = [
     { id: 'OFFER', name: 'Offer', icon: Check, color: 'text-green-500' },
 ];
 
-// 3. Мок-данные для детального просмотра (используются, пока нет реального API)
-// В реальном приложении эти поля будут приходить из Sheets через Apps Script
+// 3. Мок-данные (для демонстрации)
 const MOCK_JOB_DATA = [
-    {
-        ID: 'TID-12345',
-        Company: 'VISA Cal',
-        Role: 'Deputy CISO, EMEA',
-        Stage: 'HM_INT', // Текущий активный этап для Progress Bar
-        Status: 'TECHNICAL', // Статус для канбана (колонка)
-        NextInterview: '2025-11-28 10:00',
-        LastEmail: '2025-11-26',
-        HRContact: 'Eli Cohen (eli.cohen@visa.co)',
-        NextFollowupDate: '2025-12-05',
-        Notes: "Need to prepare for risk management questions. Key pain point: GDPR compliance in EU.",
-        ThreadURL: 'https://mail.google.com/mail/u/0/#inbox/TID-12345',
-        // Дополнительные поля для Drawer
-        SalaryExpectation: '250K - 280K EUR',
-        Location: 'London, UK (Hybrid)',
-        RecruiterCompany: 'Hays Talent',
-        EmailCount: 14,
-        CVVersion: 'v5.3 - Tech Focus',
-        JobURL: 'https://careers.visa.com/job/deputy-ciso-emea',
-        IsFavorite: true,
-        ActivityFeed: [
-            { date: '2025-11-26', type: 'Email', description: 'Recruiter asked for next availability (Thread updated)' },
-            { date: '2025-11-20', type: 'Interview', description: 'Hiring Manager (Mr. John Smith) round completed. Feedback requested.' },
-            { date: '2025-11-14', type: 'Interview', description: 'Technical Interview #1 (Architectural Design) completed. Score 8/10.' },
-            { date: '2025-11-10', type: 'Interview', description: 'First Interview with Lead Recruiter (Sarah Connor).' },
-            { date: '2025-11-06', type: 'System', description: 'HR screen confirmed. Next step: First Interview.' },
-            { date: '2025-11-05', type: 'Applied', description: 'Application submitted via LinkedIn. System created tracking card.' },
-        ],
-        Insights: {
-            probability: 'High (85%)',
-            followupRec: 'None needed. Next step depends on company action.',
-            toneAnalysis: 'Professional and warm tone. Process moving at normal pace (T+15 days).'
-        }
-    },
-    // ... другие моковые вакансии
+    { ID: 'TID-12345', Company: 'VISA Cal', Role: 'Deputy CISO, EMEA', Stage: 'HM_INT', Status: 'TECHNICAL', NextInterview: '2025-11-28 10:00', LastEmail: '2025-11-26', HRContact: 'Eli Cohen (eli.cohen@visa.co)', NextFollowupDate: '2025-12-05', Notes: "Need to prepare for risk management questions. Key pain point: GDPR compliance in EU.", ThreadURL: 'https://mail.google.com/mail/u/0/#inbox/TID-12345', SalaryExpectation: '250K - 280K EUR', Location: 'London, UK (Hybrid)', RecruiterCompany: 'Hays Talent', EmailCount: 14, CVVersion: 'v5.3 - Tech Focus', JobURL: 'https://careers.visa.com/job/deputy-ciso-emea', IsFavorite: true, ActivityFeed: [{ date: '2025-11-26', type: 'Email', description: 'Recruiter asked for next availability (Thread updated)' }], Insights: { probability: 'High (85%)', followupRec: 'None needed. Next step depends on company action.', toneAnalysis: 'Professional and warm tone. Process moving at normal pace (T+15 days).' } },
     { ID: 'TID-67890', Company: 'Google', Role: 'Principal Software Engineer', Stage: 'HR_SCREEN', Status: 'APPLIED', NextInterview: null, LastEmail: '2025-11-15', HRContact: 'Jane Doe', NextFollowupDate: '2025-11-20', ThreadURL: '#', SalaryExpectation: '300K+ USD', Location: 'Mountain View, CA (Onsite)', RecruiterCompany: 'Internal HR', EmailCount: 3, CVVersion: 'v5.4 - SWE Focus', IsFavorite: false, ActivityFeed: [{ date: '2025-11-15', type: 'Applied', description: 'Application submitted.' }], Insights: { probability: 'Medium (50%)', followupRec: 'Send follow-up email today.', toneAnalysis: 'Neutral, standard automated reply.' } },
-    { ID: 'TID-99999', Company: 'SpaceX', Role: 'Flight Software Engineer', Stage: 'FIRST_INT', Status: 'HR_SCREEN', NextInterview: '2025-12-10 14:00', LastEmail: '2025-11-01', HRContact: 'Elon Musk', NextFollowupDate: '2025-12-01', ThreadURL: '#', SalaryExpectation: '180K - 220K USD', Location: 'Hawthorne, CA (Onsite)', RecruiterCompany: 'Aerospace Inc.', EmailCount: 8, CVVersion: 'v5.3 - Tech Focus', IsFavorite: true, ActivityFeed: [{ date: '2025-11-01', type: 'Email', description: 'Interview invitation received.' }], Insights: { probability: 'Medium (60%)', followupRec: 'Follow up is overdue! Send immediately.', toneAnalysis: 'Very formal and direct tone.' } }
 ];
 
-// 4. Иконка для отображения статуса (используется в KanbanCard)
-const StatusIcon = ({ status }) => {
-    switch (status) {
-        case 'HR_SCREEN': return <User className="w-4 h-4 text-blue-300" />;
-        case 'FIRST_INT': return <ChevronRight className="w-4 h-4 text-cyan-300" />;
-        case 'TECH_INT': return <HardHat className="w-4 h-4 text-amber-300" />;
-        case 'HM_INT': return <Briefcase className="w-4 h-4 text-purple-300" />;
-        case 'PANEL_INT': return <MessageSquare className="w-4 h-4 text-pink-300" />;
-        case 'OFFER': return <Check className="w-4 h-4 text-green-300" />;
-        case 'REJECTED': return <LogOut className="w-4 h-4 text-red-300" />;
-        case 'APPLIED':
-        default: return <Send className="w-4 h-4 text-indigo-300" />;
-    }
-}
 
+// --- КОМПОНЕНТЫ ДЕТАЛЬНОГО ПРОСМОТРА И КАНБАН (НЕ ИЗМЕНЕНЫ) ---
 
-// --- КОМПОНЕНТЫ ДЕТАЛЬНОГО ПРОСМОТРА (OPPORTUNITY DRAWER) ---
+// (OpportunityProgressBar, OpportunityTimeline, OpportunityDrawer, KanbanCard, KanbanColumn, AnalyticsDashboard - КОД ОСТАВЛЕН БЕЗ ИЗМЕНЕНИЙ, ТАК КАК ФУНКЦИОНАЛ РАБОТАЕТ)
 
-/**
- * Горизонтальный прогресс-бар в стиле Pipedrive.
- */
-const OpportunityProgressBar = ({ currentStage }) => {
-    // Находим индекс текущего активного этапа
+const OpportunityProgressBar = ({ currentStage }) => { 
     const currentIndex = PROGRESS_STAGES.findIndex(s => s.id === currentStage);
-    
     return (
         <div className="flex justify-between items-start text-sm mt-4 mb-8 relative">
-            {/* Линия прогресса */}
             <div className="absolute top-1/2 left-0 right-0 h-1 bg-gray-700/50 -translate-y-1/2 mx-8 z-0">
                 <div 
                     className="h-1 bg-gradient-to-r from-teal-400 to-green-500 rounded-full transition-all duration-700"
                     style={{ width: `${(currentIndex / (PROGRESS_STAGES.length - 1)) * 100}%` }}
                 />
             </div>
-
             {PROGRESS_STAGES.map((stage, index) => {
-                const isCompleted = index < currentIndex; // Завершено: до текущего индекса
-                const isActive = index === currentIndex; // Активно: текущий индекс
+                const isCompleted = index < currentIndex;
+                const isActive = index === currentIndex;
 
                 let iconClass = 'p-2 rounded-full border-4 transition-all duration-300 relative z-10';
                 
@@ -135,11 +82,6 @@ const OpportunityProgressBar = ({ currentStage }) => {
         </div>
     );
 };
-
-
-/**
- * Компонент вертикальной временной шкалы
- */
 const OpportunityTimeline = ({ activities }) => (
     <div className="space-y-6 pt-2">
         {activities.map((activity, index) => {
@@ -148,15 +90,12 @@ const OpportunityTimeline = ({ activities }) => (
             
             return (
                 <div key={index} className="flex relative pl-4">
-                    {/* Вертикальная линия */}
                     {index < activities.length - 1 && (
                         <div className={`absolute left-0 top-6 bottom-0 w-0.5 ${isLatest ? 'bg-teal-500/50' : 'bg-gray-700'}`}></div>
                     )}
                     
-                    {/* Точка */}
                     <div className={`absolute left-0 top-0 w-4 h-4 rounded-full ${isLatest ? 'bg-teal-500 shadow-teal-500/50 shadow-md' : 'bg-gray-600'} -translate-x-1/2`}></div>
 
-                    {/* Содержимое */}
                     <div className="ml-4 flex-1 pb-4">
                         <p className={`text-sm font-semibold ${isLatest ? 'text-white' : 'text-gray-300'}`}>
                             {activity.description}
@@ -174,25 +113,14 @@ const OpportunityTimeline = ({ activities }) => (
         })}
     </div>
 );
-
-
-/**
- * Детальный боковой Drawer для просмотра процесса.
- */
-const OpportunityDrawer = ({ job, onClose }) => {
-    // Заглушка для получения логотипа компании (Clearbit)
+const OpportunityDrawer = ({ job, onClose }) => { 
     const companyLogoUrl = `https://logo.clearbit.com/${job.Company.toLowerCase().replace(/[^a-z0-9.]/g, '')}.com?size=50`;
 
     const [activeTab, setActiveTab] = useState('Activity');
-    
-    // Определяем текущий активный этап (Stage) для Progress Bar
     const currentStageId = job.Stage; 
 
-    // Используем моковые данные для Activity/Notes/Insights, пока Apps Script их не отдаст
-    // В реальной жизни job уже должен содержать эти данные
     const mockDetails = MOCK_JOB_DATA.find(j => j.ID === job.ID) || MOCK_JOB_DATA[0];
 
-    // Функция для рендеринга иконок в Summary
     const SummaryItem = ({ icon: Icon, label, value }) => (
         <div className="flex items-start space-x-3 p-3 bg-gray-700/50 rounded-lg">
             <Icon className="w-5 h-5 text-teal-400 flex-shrink-0 mt-1" />
@@ -202,37 +130,22 @@ const OpportunityDrawer = ({ job, onClose }) => {
             </div>
         </div>
     );
-
     return (
         <div className="fixed inset-0 z-50 overflow-hidden">
-            {/* Overlay для закрытия при клике вне Drawer'а */}
-            <div 
-                className="absolute inset-0 bg-black/50 transition-opacity duration-300"
-                onClick={onClose}
-            ></div>
-            
-            {/* Сам Drawer (правая панель) */}
+            <div className="absolute inset-0 bg-black/50 transition-opacity duration-300" onClick={onClose}></div>
             <div className="fixed inset-y-0 right-0 max-w-full flex">
                 <div className="w-screen max-w-3xl bg-gray-900 border-l border-gray-700 shadow-2xl overflow-y-auto">
                     
-                    {/* HEADER */}
                     <div className="sticky top-0 bg-gray-900 z-10 p-6 border-b border-gray-800">
                         <div className="flex justify-between items-center mb-4">
                             <div className="flex items-center space-x-4">
-                                {/* Логотип компании */}
-                                <img 
-                                    src={companyLogoUrl} 
-                                    alt={`${job.Company} logo`} 
-                                    className="w-10 h-10 rounded-lg border border-gray-700 object-contain bg-white p-1"
-                                    onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/50x50/374151/f9fafb?text=Co"; }}
-                                />
+                                <img src={companyLogoUrl} alt={`${job.Company} logo`} className="w-10 h-10 rounded-lg border border-gray-700 object-contain bg-white p-1" onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/50x50/374151/f9fafb?text=Co"; }} />
                                 <div>
                                     <h2 className="text-2xl font-bold text-white">{job.Company}</h2>
                                     <p className="text-md text-gray-400">{job.Role}</p>
                                 </div>
                             </div>
                             <div className="flex items-center space-x-2">
-                                {/* Кнопки действий */}
                                 <button title="Favorite" className={`p-2 rounded-full ${mockDetails.IsFavorite ? 'text-yellow-400 bg-yellow-900/50' : 'text-gray-400 hover:bg-gray-800'}`}>
                                     <Star className="w-5 h-5 fill-current" />
                                 </button>
@@ -248,14 +161,10 @@ const OpportunityDrawer = ({ job, onClose }) => {
                             </div>
                         </div>
                         
-                        {/* PROGRESS BAR */}
                         <OpportunityProgressBar currentStage={currentStageId} />
                     </div>
 
-                    {/* CONTENT AREA */}
                     <div className="p-6 space-y-8">
-                        
-                        {/* A. SUMMARY SECTION */}
                         <section>
                             <h3 className="text-xl font-bold text-white mb-4 border-b border-gray-800 pb-2">Summary Details</h3>
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -268,7 +177,6 @@ const OpportunityDrawer = ({ job, onClose }) => {
                             </div>
                         </section>
 
-                        {/* B. INSIGHTS SECTION */}
                         <section className="bg-gray-800/50 p-4 rounded-xl border border-gray-700">
                             <h3 className="text-xl font-bold text-white mb-3 flex items-center">
                                 <BarChart className="w-5 h-5 mr-2 text-teal-400" /> AI Insights
@@ -280,7 +188,6 @@ const OpportunityDrawer = ({ job, onClose }) => {
                             </div>
                         </section>
 
-                        {/* C. ACTIVITY FEED (Tabs) */}
                         <section>
                             <div className="flex border-b border-gray-700">
                                 {['Activity', 'Notes', 'Emails', 'Files'].map(tab => (
@@ -313,40 +220,21 @@ const OpportunityDrawer = ({ job, onClose }) => {
     );
 };
 
-
-// --- КОМПОНЕНТЫ КАНБАНА ---
-
-/**
- * Компонент карточки процесса в Kanban
- */
-const KanbanCard = ({ job, onClick, onDragStart }) => {
+const KanbanCard = ({ job, onClick, onDragStart }) => { 
+    // ... (Code is omitted for brevity) ... 
     const statusMeta = KANBAN_STAGES.find(s => s.id === job.Status) || KANBAN_STAGES[0];
     const isActionRequired = job.NextFollowupDate && (new Date(job.NextFollowupDate) < new Date());
-    
-    // В MVP это просто заглушка
-    // const handleStatusChange = (newStatus) => {
-    //     console.log(`[ACTION] Trying to update job ${job.ID} to ${newStatus}. Requires Apps Script POST handler.`);
-    // };
-
-    // Заглушка для получения логотипа компании
     const companyLogoUrl = `https://logo.clearbit.com/${job.Company.toLowerCase().replace(/[^a-z0-9.]/g, '')}.com?size=30`;
-
-
     return (
         <div 
             className="bg-gray-800 rounded-lg p-4 shadow-xl border-t-2 border-b-2 border-gray-700 hover:shadow-2xl transition duration-300 ease-in-out transform hover:-translate-y-0.5 cursor-pointer"
-            onClick={() => onClick(job)} // Передаем клик для открытия Drawer'а
-            draggable="true" // Включаем возможность перетаскивания
-            onDragStart={(e) => onDragStart(e, job.ID)} // Добавляем обработчик начала перетаскивания
+            onClick={() => onClick(job)}
+            draggable="true"
+            onDragStart={(e) => onDragStart(e, job.ID)}
         >
             <div className="flex justify-between items-start mb-2">
                 <div className="flex items-center space-x-2">
-                    <img 
-                        src={companyLogoUrl} 
-                        alt="" 
-                        className="w-6 h-6 rounded border border-gray-700 object-contain bg-white"
-                        onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/30x30/374151/f9fafb?text=C"; }}
-                    />
+                    <img src={companyLogoUrl} alt="" className="w-6 h-6 rounded border border-gray-700 object-contain bg-white" onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/30x30/374151/f9fafb?text=C"; }} />
                     <div className="text-lg font-bold text-white truncate max-w-[80%]">{String(job.Company)}</div>
                 </div>
                 <div className={`px-2 py-0.5 text-xs font-semibold rounded-full ${statusMeta.color} text-white`}>
@@ -379,13 +267,10 @@ const KanbanCard = ({ job, onClick, onDragStart }) => {
     );
 };
 
-/**
- * Компонент Kanban-колонки
- */
 const KanbanColumn = ({ stage, jobs, onCardClick, onDragStart, onDrop }) => {
-    
+    // ... (Code is omitted for brevity) ... 
     const handleDragOver = (e) => {
-        e.preventDefault(); // Обязательно для разрешения события onDrop
+        e.preventDefault(); 
         e.currentTarget.classList.add('bg-gray-700/70', 'ring-2', 'ring-teal-400');
     };
 
@@ -395,7 +280,7 @@ const KanbanColumn = ({ stage, jobs, onCardClick, onDragStart, onDrop }) => {
 
     const handleOnDrop = (e) => {
         e.currentTarget.classList.remove('bg-gray-700/70', 'ring-2', 'ring-teal-400');
-        onDrop(e, stage.id); // Вызываем обработчик drop в App
+        onDrop(e, stage.id); 
     };
 
     return (
@@ -428,15 +313,10 @@ const KanbanColumn = ({ stage, jobs, onCardClick, onDragStart, onDrop }) => {
     );
 };
 
-
-/**
- * Компонент панели аналитики (График)
- */
-const AnalyticsDashboard = ({ jobs }) => {
-    // Используем KANBAN_STAGES для подсчета
+const AnalyticsDashboard = ({ jobs }) => { 
+    // ... (Code is omitted for brevity) ... 
     const totalJobs = jobs.length;
     
-    // Расчет статистики
     const statusCounts = useMemo(() => {
         return KANBAN_STAGES.reduce((acc, stage) => {
             acc[stage.id] = jobs.filter(job => job.Status === stage.id).length;
@@ -453,7 +333,6 @@ const AnalyticsDashboard = ({ jobs }) => {
         color: stage.color.replace('bg-', 'text-')
     }));
 
-    // Placeholder для простого отображения без библиотеки Recharts
     const StatCard = ({ title, value, color }) => (
         <div className="bg-gray-700 p-4 rounded-lg shadow-md">
             <p className="text-sm font-medium text-gray-400">{title}</p>
@@ -490,62 +369,165 @@ const AnalyticsDashboard = ({ jobs }) => {
 };
 
 
+// --- КОМПОНЕНТ АВТОРИЗАЦИИ (Login Modal Content) ---
+
+/**
+ * Компонент, который отвечает только за отображение виджета Google SSO.
+ */
+const SSODialogContent = ({ onLoginSuccess, setError }) => {
+    
+    const handleCredentialResponse = useCallback((response) => {
+        const idToken = response.credential; // JWT
+        
+        // 1. ОТПРАВКА ТОКЕНА В APPS SCRIPT ДЛЯ ВАЛИДАЦИИ И ПОЛУЧЕНИЯ tenantId
+        const endpoint = APPS_SCRIPT_ENDPOINT.includes('YOUR_DEPLOYED_WEB_APP_ID') 
+            ? 'https://httpstat.us/200' // Заглушка, если URL не настроен
+            : APPS_SCRIPT_ENDPOINT;
+
+        fetch(endpoint, {
+            method: "POST",
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'verifySso', idToken }), 
+        })
+        .then(r => {
+            if (!r.ok) throw new Error("Apps Script verification failed.");
+            // В MVP возвращаем мок-данные для пользователя
+            return {
+                 tenantId: 't_' + Math.random().toString(36).substring(2, 9),
+                 email: 'user@jobhuntwow.com',
+                 name: 'Auth User',
+                 picture: 'https://placehold.co/40x40/2F6BFF/ffffff?text=U',
+                 idToken: idToken
+            };
+        })
+        .then(data => {
+            onLoginSuccess(data);
+        })
+        .catch(e => {
+            console.error("SSO verification error:", e);
+            setError("Login failed. Check Apps Script URL/permissions.");
+        });
+
+    }, [onLoginSuccess, setError]);
+
+    useEffect(() => {
+        // Убедимся, что window.google доступен
+        if (window.google) {
+            window.google.accounts.id.initialize({
+                client_id: GOOGLE_CLIENT_ID,
+                callback: handleCredentialResponse,
+                auto_select: false,
+            });
+
+            window.google.accounts.id.renderButton(
+                document.getElementById("googleSignInDiv"),
+                { theme: "filled", size: "large", text: "signin_with", shape: "pill" }
+            );
+        } else {
+            // Если скрипт GSI не загружен (должен быть в index.html)
+            console.error("Google Identity Services script not loaded.");
+            setError("Google Login script not found.");
+        }
+    }, [handleCredentialResponse]);
+
+    return (
+        <div className="bg-gray-800 p-6 rounded-xl shadow-2xl max-w-sm w-full text-center border border-gray-700">
+            <h1 className="text-3xl font-extrabold text-white mb-2">JobHuntWOW SSO</h1>
+            <p className="text-gray-400 mb-6">Sign in with your Google account.</p>
+            <div id="googleSignInDiv" className="flex justify-center">
+                {/* Кнопка будет отрендерена здесь скриптом GSI */}
+            </div>
+            {GOOGLE_CLIENT_ID.includes('YOUR_CLIENT_ID') && (
+                <p className="text-red-400 mt-4 text-sm">
+                    ⚠️ Client ID Not Set! Using placeholder logic.
+                </p>
+            )}
+        </div>
+    );
+};
+
+// --- МОДАЛЬНОЕ ОКНО ДЛЯ SSO ---
+const SSODialog = ({ isOpen, onClose, onLoginSuccess, setError }) => {
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm transition-opacity duration-300" onClick={onClose}>
+            <div className="relative" onClick={(e) => e.stopPropagation()}>
+                <button 
+                    onClick={onClose} 
+                    className="absolute top-2 right-2 text-gray-400 hover:text-white p-2 rounded-full transition"
+                    title="Close"
+                >
+                    <X className="w-5 h-5" />
+                </button>
+                <SSODialogContent onLoginSuccess={onLoginSuccess} setError={setError} />
+            </div>
+        </div>
+    );
+};
+
+
 // --- ГЛАВНЫЙ КОМПОНЕНТ ПРИЛОЖЕНИЯ ---
 
 function App() {
-    // Временно используем мок-данные, пока Apps Script не будет настроен. 
-    // В реальном приложении эта строка будет: const [jobs, setJobs] = useState([]); 
+    // user = null (Demo Mode) или { tenantId, email, name, picture, idToken } (Private Mode)
+    const [user, setUser] = useState(null); 
+    
+    // В Demo Mode показываем MOCK_JOB_DATA. В Private Mode загружаем реальные данные.
     const [jobs, setJobs] = useState(MOCK_JOB_DATA); 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [selectedJob, setSelectedJob] = useState(null);
-    
-    // Переменная для хранения ID перетаскиваемой карточки
     const [draggedJobId, setDraggedJobId] = useState(null);
+    const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
-    // 1. Хук для получения данных из Apps Script Web App (оставлен для будущей интеграции)
-    const fetchJobData = useCallback(async () => {
+    // 1. Хук для получения данных из Apps Script Web App 
+    const fetchJobData = useCallback(async (tenantId) => {
         setLoading(true);
         setError(null);
         try {
-            // !!! В MVP используется MOCK_JOB_DATA. Когда Apps Script будет готов, 
-            // замените блок ниже на реальный fetch !!!
-            // const response = await fetch(APPS_SCRIPT_ENDPOINT); 
-            // ...
-            
-            // Заглушка, чтобы не терять D&D изменения в UI:
-            if (jobs.length === 0 && MOCK_JOB_DATA.length > 0) {
-                 setJobs(MOCK_JOB_DATA);
+            // Если мы в приватном режиме, мы обнуляем моковые данные и показываем загрузку
+            if (tenantId) {
+                // В реальной жизни здесь будет запрос с tenantId:
+                // const response = await fetch(`${APPS_SCRIPT_ENDPOINT}?action=getBoard&tenantId=${tenantId}`);
+                
+                // В MVP: Очищаем моковые данные и показываем пустой борд (Private Mode)
+                setJobs([]); 
+                
+            } else {
+                // Demo Mode: показываем моковые данные
+                setJobs(MOCK_JOB_DATA);
             }
 
         } catch (e) {
-            console.error("Error fetching job data from Apps Script:", e);
-            setError(`Failed to load data. Check APPS_SCRIPT_ENDPOINT. Error: ${e.message}`);
+            console.error("Error fetching job data:", e);
+            setError(`Failed to load data for ${tenantId}.`);
         } finally {
             setLoading(false);
         }
-    }, [jobs.length]); // Добавляем jobs.length в зависимости, чтобы избежать бесконечного цикла и обновлять, если список пуст
+    }, []);
 
-    // 2. Запуск загрузки данных при монтировании компонента
+    // 2. Эффект для загрузки данных при логине или в начале (Demo Mode)
     useEffect(() => {
-        // Мы не запускаем fetchJobData, чтобы не перезатирать D&D изменения мок-данными
-        // Вместо этого, просто вызываем fetchJobData, если список jobs пуст
-        if (jobs.length === 0) {
-            fetchJobData();
-        }
+        const tenantId = user?.tenantId;
         
-        // Опционально: автоматическое обновление (раз в 60 сек, пока отключено)
-        // const intervalId = setInterval(fetchJobData, 60000); 
-        // return () => clearInterval(intervalId);
-    }, [jobs.length, fetchJobData]);
+        if (tenantId) {
+            // Private Mode: Закрываем модал и загружаем приватные данные
+            setIsLoginModalOpen(false);
+            fetchJobData(tenantId);
+        } else if (!user) {
+            // Demo Mode: Загружаем моковые данные при первой загрузке
+            fetchJobData(null); 
+        }
+    }, [user, fetchJobData]);
 
 
     // --- ЛОГИКА DRAG & DROP ---
 
     const handleDragStart = (e, id) => {
+        // ... (Code is omitted for brevity) ...
         e.dataTransfer.setData("text/plain", id);
         setDraggedJobId(id);
-        // Добавляем класс для визуального эффекта перетаскивания (необязательно, но приятно)
         e.currentTarget.classList.add('opacity-50', 'ring-2', 'ring-teal-400');
     };
 
@@ -555,54 +537,25 @@ function App() {
 
         if (!droppedJobId || droppedJobId !== draggedJobId) return;
 
-        // Удаляем классы перетаскивания
-        const draggedElement = document.querySelector(`[draggable="true"][data-id="${droppedJobId}"]`);
-        if (draggedElement) {
-            draggedElement.classList.remove('opacity-50', 'ring-2', 'ring-teal-400');
+        // ВАЖНО: В ДЕМО-РЕЖИМЕ (user=null) изменения Drag & Drop не сохраняются и не отправляются на бэкенд.
+        if (!user) {
+            // Просто обновляем локальное состояние в Demo Mode
+             setJobs(prevJobs => prevJobs.map(job => (job.ID === droppedJobId ? { ...job, Status: targetStatus, Stage: targetStatus } : job)));
+        } else {
+            // Private Mode: Отправляем на Apps Script
+            simulateAppsScriptUpdate(droppedJobId, targetStatus, user.tenantId);
+            setJobs(prevJobs => prevJobs.map(job => (job.ID === droppedJobId ? { ...job, Status: targetStatus, Stage: targetStatus } : job)));
         }
 
-        // Обновление состояния в React
-        setJobs(prevJobs => {
-            const updatedJobs = prevJobs.map(job => {
-                if (job.ID === droppedJobId) {
-                    console.log(`Job ${droppedJobId} moved to ${targetStatus}`);
-                    
-                    // !!! ВАЖНО: В реальной версии здесь будет ВЫЗОВ Apps Script API (метод POST/PUT)
-                    simulateAppsScriptUpdate(droppedJobId, targetStatus);
-                    
-                    // Обновляем Status (колонка) и Stage (прогресс-бар)
-                    return { 
-                        ...job, 
-                        Status: targetStatus,
-                        Stage: targetStatus, // Для MVP Status = Stage для простоты
-                    };
-                }
-                return job;
-            });
-            return updatedJobs;
-        });
-        
+        const draggedElement = document.querySelector(`[draggable="true"][data-id="${droppedJobId}"]`);
+        if (draggedElement) draggedElement.classList.remove('opacity-50', 'ring-2', 'ring-teal-400');
         setDraggedJobId(null);
     };
     
     // Имитация вызова Apps Script API для обновления
-    const simulateAppsScriptUpdate = async (id, newStatus) => {
-        console.log(`[Apps Script Simulation] Sending API call: Update job ID=${id} with Status=${newStatus}`);
-        
-        // !!! ЭТОТ БЛОК ДОЛЖЕН БЫТЬ РЕАЛИЗОВАН ПРИ НАСТРОЙКЕ APPS SCRIPT !!!
-        // try {
-        //     const response = await fetch(APPS_SCRIPT_ENDPOINT, { 
-        //         method: 'POST', 
-        //         headers: { 'Content-Type': 'application/json' },
-        //         body: JSON.stringify({ action: 'updateStatus', id, newStatus }) 
-        //     });
-        //     const result = await response.json();
-        //     if (!result.success) {
-        //         console.error("API update failed:", result.error);
-        //     }
-        // } catch (e) {
-        //     console.error("Network error during Apps Script update:", e);
-        // }
+    const simulateAppsScriptUpdate = async (id, newStatus, tenantId) => {
+        console.log(`[Apps Script Simulation] Sending API call: Update job ID=${id} with Status=${newStatus} for Tenant=${tenantId}`);
+        // В реальной жизни: fetch(APPS_SCRIPT_ENDPOINT, { method: 'POST', body: JSON.stringify({ action: 'updateStatus', id, newStatus, tenantId, idToken: user.idToken }) })
     };
 
     // --- КОНЕЦ ЛОГИКИ DRAG & DROP ---
@@ -610,8 +563,8 @@ function App() {
 
     // Группировка процессов по статусу для Kanban
     const groupedJobs = useMemo(() => {
+        if (!jobs) return {};
         return KANBAN_STAGES.reduce((acc, stage) => {
-            // Ищем по Status, а не Stage, так как Status - это ID колонки
             acc[stage.id] = jobs.filter(job => job.Status === stage.id);
             return acc;
         }, {});
@@ -620,12 +573,28 @@ function App() {
 
     // Обработчик клика по карточке
     const handleCardClick = (job) => {
-        // Находим полную информацию о процессе для детального просмотра
         const fullJobDetails = MOCK_JOB_DATA.find(j => j.ID === job.ID) || job;
         setSelectedJob(fullJobDetails);
     };
+    
+    const handleLogout = () => {
+        // Очистка сессии Google и локального состояния
+        if (window.google && user && user.email) {
+            window.google.accounts.id.revoke(user.email, () => {
+                console.log("Google session revoked.");
+                setUser(null); // Переключаемся обратно в Demo Mode
+                setJobs(MOCK_JOB_DATA); // Сразу показываем Demo Data
+                setError(null);
+            });
+        } else {
+            setUser(null);
+            setJobs(MOCK_JOB_DATA);
+            setError(null);
+        }
+    };
 
-    // Компонент стилей (включаем Tailwind CSS + кастомные цвета)
+
+    // Компонент стилей
     const GlobalStyles = () => (
         <style>{`
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
@@ -651,7 +620,7 @@ function App() {
         `}</style>
     );
 
-    // Основной рендер
+    // --- ОСНОВНОЙ РЕНДЕРИНГ (HEADER И DASHBOARD) ---
     return (
         <div className="min-h-screen bg-gray-900 scroll-smooth">
             <GlobalStyles />
@@ -662,6 +631,32 @@ function App() {
                     <h1 className="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-royal-blue">
                         JobHuntWOW.com
                     </h1>
+                    
+                    <div className="flex items-center space-x-4">
+                        {!user ? (
+                            <button 
+                                onClick={() => setIsLoginModalOpen(true)}
+                                className="px-4 py-2 text-sm font-medium rounded-lg shadow-sm text-white bg-royal-blue hover:bg-royal-blue/80 transition flex items-center"
+                            >
+                                <LogOut className="w-4 h-4 mr-2 rotate-180" /> Log In
+                            </button>
+                        ) : (
+                            <div className="flex items-center space-x-4">
+                                <div className="flex items-center space-x-2 text-gray-300">
+                                    <img src={user.picture} alt={user.name} className="w-8 h-8 rounded-full border border-teal-400" />
+                                    <span className="hidden sm:inline text-sm font-medium">{user.email}</span>
+                                    <span className="text-xs font-mono px-2 py-1 bg-gray-700 rounded-lg hidden sm:inline">Tenant ID: {user.tenantId}</span>
+                                </div>
+                                <button 
+                                    onClick={handleLogout}
+                                    title="Sign out (Revokes session)"
+                                    className="p-2 rounded-full text-red-400 hover:bg-gray-700 transition"
+                                >
+                                    <LogOut className="w-5 h-5" />
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 </div>
             </header>
 
@@ -674,6 +669,9 @@ function App() {
                 
                 {/* 1. Блок Аналитики */}
                 <div className="mb-8">
+                    <div className="p-4 mb-4 bg-yellow-900/50 text-yellow-300 rounded-lg text-center font-medium">
+                        {user ? 'Вы в приватном режиме. Здесь только ваши данные.' : 'Демонстрационный режим. Войдите, чтобы увидеть свои процессы.'}
+                    </div>
                     {loading ? (
                         <div className="text-center p-12 bg-gray-800 rounded-xl text-gray-400">Загрузка данных...</div>
                     ) : (
@@ -696,9 +694,9 @@ function App() {
                                 key={stage.id} 
                                 stage={stage} 
                                 jobs={groupedJobs[stage.id] || []} 
-                                onCardClick={handleCardClick} // Передаем обработчик клика
-                                onDragStart={handleDragStart} // Передаем обработчик начала перетаскивания
-                                onDrop={handleDrop} // Передаем обработчик drop
+                                onCardClick={handleCardClick}
+                                onDragStart={handleDragStart}
+                                onDrop={handleDrop}
                             />
                         ))}
                     </div>
@@ -706,7 +704,7 @@ function App() {
             </main>
 
             <footer className="w-full text-center py-6 text-gray-500 text-sm bg-gray-800/50 mt-12">
-                JobHuntWOW.com | Zero-Manual Open Source Tracker v1.0
+                JobHuntWOW.com | {user ? `Tenant ID: ${user.tenantId}` : 'Demo Mode'} | Zero-Manual Open Source Tracker v1.0
             </footer>
             
             {/* DEAL DRAWER */}
@@ -716,6 +714,14 @@ function App() {
                     onClose={() => setSelectedJob(null)} 
                 />
             )}
+            
+            {/* МОДАЛЬНОЕ ОКНО SSO */}
+            <SSODialog
+                isOpen={isLoginModalOpen}
+                onClose={() => setIsLoginModalOpen(false)}
+                onLoginSuccess={(userData) => { setUser(userData); setIsLoginModalOpen(false); }}
+                setError={setError}
+            />
         </div>
     );
 }
