@@ -3,7 +3,7 @@ import { LogOut, User, Send, ChevronRight, BarChart, HardHat, Star, Trash2, Link
 
 // --- НАСТРОЙКА: K.I.S.S. ENDPOINT ДЛЯ GOOGLE APPS SCRIPT ---
 // !!! ВСТАВЬТЕ СЮДА URL РАЗВЕРНУТОГО WEB APP ИЗ APPS SCRIPT (для API и SSO) !!!
-const APPS_SCRIPT_ENDPOINT = "https://script.google.com/macros/s/AKfycbzzZ4h-zRZTjv9TbyzKLd-vMmF5kElJOUmjP6WhMtx3IHKOB-aOPyou5S_Mn-U9bMGgLA/exec"; 
+const APPS_SCRIPT_ENDPOINT = "https://script.google.com/macros/s/AKfycbzgxZOalEUzGeh-lahVxeRjkvUpzRKnQXNOW4UPnmHqSpn7GmUfxyatOVUv7oMe8L3fNg/exec "; 
 // Ваш Google Client ID (полученный из Google Cloud Console)
 const GOOGLE_CLIENT_ID = "183243743994-djr06bg7i0f3kmvopbkluab6b1egu7be.apps.googleusercontent.com";
 
