@@ -1,0 +1,18 @@
+# Node / builds
+**/node_modules/
+**/dist/
+**/.vite/
+**/.cache/
+
+# Env / secrets
+**/.env
+**/.env.*
+**/*secret*
+**/*token*
+**/*key*
+
+# Logs
+**/*.log
+
+# Local data (optional)
+data/

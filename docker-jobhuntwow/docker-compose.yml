@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    networks:
+      - jobhunt-net
+
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+    networks:
+      - jobhunt-net
+
+networks:
+  jobhunt-net:
+    driver: bridge
