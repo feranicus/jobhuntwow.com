@@ -1,0 +1,14 @@
+server: { http_listen_port: 9080, grpc_listen_port: 0, log_level: warn }
+positions: { filename: /tmp/positions.yaml }
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+scrape_configs:
+  - job_name: jhw-events
+    static_configs:
+      - targets: [ localhost ]
+        labels: { job: jhw, __path__: /events/**/events.jsonl }
+    pipeline_stages:
+      - json:
+          expressions: { ts: ts, service: service, evt: evt, job_id: job, stage: stage }
+      - labels: { service: "", evt: "" }
+      - timestamp: { source: ts, format: RFC3339 }

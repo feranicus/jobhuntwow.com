@@ -1,0 +1,7 @@
+# Add to /opt/videodead/Caddyfile to serve the app at app.jobhuntwow.com
+# (frontend nginx already proxies /api to the backend, so one reverse_proxy is enough)
+app.jobhuntwow.com {
+    encode gzip zstd
+    reverse_proxy jhw_frontend:80   # or the published port: 127.0.0.1:8090
+}
+# DNS: add  CNAME app -> jobhuntwow.com  (or A app -> 64.225.108.200) in GoDaddy.

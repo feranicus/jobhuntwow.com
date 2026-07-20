@@ -1,0 +1,54 @@
+# Observability — Loki + Grafana + Promtail. KISS: no OTel collector, no metrics server, no sidecars.
+# Profile-gated: it NEVER runs during a normal apply. Start it with `python jhw.py obs`.
+#
+# Flow: services append JSON lines (agent/obs.py) -> Promtail tails the files -> Loki -> Grafana.
+# Promtail does NOT get the docker socket (that would be root-equivalent on the host); it only reads
+# the event files read-only. Secure by Design + least privilege.
+services:
+  loki:
+    image: grafana/loki:3.0.0
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./obs/loki.yml:/etc/loki/loki.yml:ro
+      - jhw_loki:/loki
+    expose: [ "3100" ]
+    security_opt: [ "no-new-privileges:true" ]
+    mem_limit: 512m
+    restart: unless-stopped
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "2" } }
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ./obs/promtail.yml:/etc/promtail/promtail.yml:ro
+      - ./agent/out:/events/agent:ro      # agent events.jsonl (READ-ONLY)
+    depends_on: [ loki ]
+    security_opt: [ "no-new-privileges:true" ]
+    cap_drop: [ "ALL" ]
+    mem_limit: 256m
+    restart: unless-stopped
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "2" } }
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-jobhuntwow}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    volumes:
+      - ./obs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./obs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - jhw_grafana:/var/lib/grafana
+    ports: [ "127.0.0.1:3000:3000" ]     # LOCAL ONLY
+    depends_on: [ loki ]
+    security_opt: [ "no-new-privileges:true" ]
+    mem_limit: 512m
+    restart: unless-stopped
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "2" } }
+
+volumes:
+  jhw_loki:
+  jhw_grafana:

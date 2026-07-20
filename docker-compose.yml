@@ -1,0 +1,56 @@
+# JobHuntWOW backend + frontend.
+# SECURE BY DESIGN (CLAUDE.md standing rule): local-only ports, no-new-privileges, resource limits,
+# healthchecks, bounded logs. Secrets stay in .env (gitignored) — never COPYed into an image.
+services:
+  backend:
+    build: ./backend
+    env_file: .env
+    volumes:
+      - jhw_data:/data
+      - jhw_events:/var/log/jhw
+    environment:
+      - EVENTS_LOG=/var/log/jhw/events.jsonl
+      - SERVICE=jhw-backend
+    expose:
+      - "8000"
+    ports:
+      # LOCAL ONLY. jhw-agent reaches this via host.docker.internal:8000 (Docker Desktop proxies to
+      # the host loopback). Never bind 0.0.0.0 — this proxy holds the DO inference key.
+      - "127.0.0.1:8000:8000"
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: 1.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:8090:80"
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  jhw_data:
+  jhw_events:

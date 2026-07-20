@@ -1,0 +1,23 @@
+{
+  "title": "JobHuntWOW — Apply Pipeline",
+  "uid": "jhw-apply",
+  "schemaVersion": 39,
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    { "type": "stat", "title": "Applies started (range)", "gridPos": {"h":4,"w":6,"x":0,"y":0},
+      "options": {"reduceOptions":{"calcs":["sum"]}},
+      "targets": [{"expr":"sum(count_over_time({job=\"jhw\", evt=\"apply_start\"}[$__range]))","refId":"A"}] },
+    { "type": "stat", "title": "Reached Review (range)", "gridPos": {"h":4,"w":6,"x":6,"y":0},
+      "options": {"reduceOptions":{"calcs":["sum"]}},
+      "targets": [{"expr":"sum(count_over_time({job=\"jhw\", evt=\"apply_review\"}[$__range]))","refId":"A"}] },
+    { "type": "stat", "title": "Blocked / halted (range)", "gridPos": {"h":4,"w":6,"x":12,"y":0},
+      "options": {"reduceOptions":{"calcs":["sum"]}},
+      "targets": [{"expr":"sum(count_over_time({job=\"jhw\", evt=\"apply_blocked\"}[$__range]))","refId":"A"}] },
+    { "type": "stat", "title": "Errors (range)", "gridPos": {"h":4,"w":6,"x":18,"y":0},
+      "options": {"reduceOptions":{"calcs":["sum"]}},
+      "targets": [{"expr":"sum(count_over_time({job=\"jhw\", evt=\"error\"}[$__range]))","refId":"A"}] },
+    { "type": "logs", "title": "All events", "gridPos": {"h":16,"w":24,"x":0,"y":4},
+      "options": {"showTime": true, "sortOrder": "Descending"},
+      "targets": [{"expr":"{job=\"jhw\"}","refId":"A"}] }
+  ]
+}

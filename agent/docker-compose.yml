@@ -1,0 +1,74 @@
+# jhw-agent secure-browser sandbox. `python jhw.py apply <job>` brings it up itself.
+# SECURE BY DESIGN (CLAUDE.md standing rule):
+#  - ALL ports bound to 127.0.0.1 ONLY. An exposed CDP :9222 is UNAUTHENTICATED remote control of a
+#    browser holding a live LinkedIn session + ATS accounts. It must never listen on 0.0.0.0.
+#  - no-new-privileges, resource limits, healthcheck, bounded logs.
+#  - run-chrome.sh is mounted and self-heals Chrome's stale profile lock on every start.
+services:
+  jhw-agent:
+    build: .
+    container_name: jhw-agent
+    env_file: .env
+    ports:
+      - "127.0.0.1:9090:9090"   # noVNC — watch/intervene. LOCAL ONLY.
+      - "127.0.0.1:5900:5900"   # raw VNC. LOCAL ONLY.
+      - "127.0.0.1:9222:9222"   # Chrome CDP. LOCAL ONLY — auth-less browser control, never expose.
+    environment:
+      - DISPLAY=:0
+    shm_size: 2gb
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 4g
+    cpus: 2.0
+    volumes:
+      - ./linkedin_cookies.json:/agent/linkedin_cookies.json:ro
+      - ./out:/agent/out
+      - ./agent.py:/agent/agent.py:ro
+      - ./tailor.py:/agent/tailor.py:ro
+      - ./ask.py:/agent/ask.py:ro
+      - ./obs.py:/agent/obs.py:ro
+      - ./run-chrome.sh:/usr/local/bin/run-chrome.sh:ro
+      - ./flows:/agent/flows:ro
+      - ../Profile.pdf:/agent/Profile.pdf:ro
+      - ./templates:/agent/templates:ro
+      - jhw_chrome_data:/home/chrome-user/chrome-data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9090/ >/dev/null && curl -fsS http://127.0.0.1:9222/json/version >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # JHW assistant bot — full LLM Telegram assistant (Cassandra-style) + human-in-the-loop relay.
+  # Same image, but runs jhw_bot.py instead of the Chrome sandbox. It is the ONLY Telegram poller.
+  jhw-bot:
+    build: .
+    container_name: jhw-bot
+    env_file: .env
+    environment:
+      - JHW_OUT_DIR=/agent/out
+      - JHW_ASK_DIR=/agent/out/asks
+    command: ["python3", "/agent/jhw_bot.py"]
+    working_dir: /agent
+    volumes:
+      - ./jhw_bot.py:/agent/jhw_bot.py:ro
+      - ./out:/agent/out
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 0.5
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  jhw_chrome_data:

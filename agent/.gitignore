@@ -1,0 +1,11 @@
+# Never commit the candidate's live LinkedIn session or scraped output
+linkedin_cookies.json
+*.json
+!package.json
+.env
+__pycache__/
+credentials.json
+events.jsonl
+wd_*.json
+recordings/
+auth.json

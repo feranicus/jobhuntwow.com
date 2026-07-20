@@ -1,0 +1,81 @@
+# JobHuntWOW — LOCAL per-user hybrid stack (Secure by Design; isolated in Docker).
+#   jhw-browser : tuned Chromium + noVNC + CDP (loopback). Owns the network namespace.
+#   jhw-hermes  : the Hermes brain. Isolated (read-only rootfs, cap-drop ALL, only userdata:ro).
+#                 SHARES jhw-browser's netns (network_mode: service) so it reaches Chrome at
+#                 127.0.0.1:9222 — same loopback, no cross-container CDP / Host-header problem.
+# Run:  python jhw.py local   (frees ports, starts backend, brings this up)
+services:
+  jhw-browser:
+    build: .
+    container_name: jhw-browser
+    shm_size: 1gb
+    environment:
+      - DISPLAY=:0
+      - CHROME_EXTRA_FLAGS=--disable-dev-shm-usage --disable-gpu --disable-extensions --disable-background-networking
+    ports:
+      - "127.0.0.1:9090:9090"                  # noVNC — WATCH the browser. LOCAL ONLY.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"    # netns owner: lets the shared stack reach the DO proxy on the host
+    networks: [jhwnet]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    cpus: 1.5
+    volumes:
+      - jhw_browser_profile:/home/chrome-user/chrome-data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9222/json/version >/dev/null && curl -fsS http://127.0.0.1:9090/ >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+
+  # Stagehand AI sidecar — the 20% the deterministic Playwright adapters can't do.
+  # Shares the browser netns so it drives the SAME Chrome at 127.0.0.1:9222.
+  jhw-stagehand:
+    build: ./stagehand-svc
+    container_name: jhw-stagehand
+    depends_on:
+      jhw-browser: {condition: service_healthy}
+    network_mode: "service:jhw-browser"
+    environment:
+      - PORT=8081
+      - CDP_URL=http://127.0.0.1:9222
+      - MODEL_NAME=${MODEL_NAME:-openai-gpt-oss-120b}
+      - OPENAI_BASE_URL=${JHW_PROXY_BASE:-http://host.docker.internal:8000/v1}
+      - OPENAI_API_KEY=${AGENT_PROXY_TOKEN:-}
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: 1.0
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+
+  # Candidate agent (Cassandra-style) — resume, cover letter, candidate.md. NO browser, NO terminal.
+  jhw-bot:
+    build: {context: ., dockerfile: bot/Dockerfile}
+    container_name: jhw-bot
+    env_file: .env
+    environment:
+      - JHW_OUT_DIR=/agent/out
+      - JHW_PROFILE=/data/candidate.md
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [jhwnet]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 512m
+    cpus: 0.5
+    volumes:
+      - ./out:/agent/out
+      - ./userdata:/data:ro
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+
+networks:
+  jhwnet:
+    driver: bridge
+
+volumes:
+  jhw_browser_profile:

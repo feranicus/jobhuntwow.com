@@ -1,0 +1,12 @@
+# jhw:jobhuntwow BEGIN — managed by CI (.github/workflows/web-deploy.yml).
+# Edit THIS file and push. NEVER hand-edit the droplet's Caddyfile: the deploy strips
+# everything between the markers and re-appends this block, so a manual edit is lost.
+jobhuntwow.com, www.jobhuntwow.com {
+	encode zstd gzip
+	# The SPA + the FastAPI API are the same container (Dockerfile.web).
+	# flush_interval -1 keeps SSE (/api/chat streams token-by-token) unbuffered.
+	reverse_proxy jhw-web:8000 {
+		flush_interval -1
+	}
+}
+# jhw:jobhuntwow END

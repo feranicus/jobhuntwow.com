@@ -1,0 +1,56 @@
+# JobHuntWOW web app (jhw-web) — PRODUCTION.
+# The image is BUILT IN CI and pushed to GHCR; it is NEVER built on the droplet.
+# Deployed by .github/workflows/web-deploy.yml into project 'jobhuntwow' at /opt/jobhuntwow.
+#
+# It joins the EXISTING external network that the droplet's shared Caddy is already on, so
+# Caddy reaches it as http://jhw-web:8000. VideoDead / Amnezia / colt-stack are never touched.
+#
+# HARD RULES encoded here (see CLAUDE.md):
+#   * NO published ports. Nothing on 0.0.0.0. Public traffic arrives only through the shared Caddy.
+#   * ONE network only. A container on two networks makes Docker DNS hand the proxy an
+#     unreachable IP -> intermittent 502 (this is a documented production outage).
+#   * Secrets come from the droplet's /opt/jobhuntwow/.env (chmod 600, gitignored, never in the image).
+#   * Least privilege + resource limits + healthcheck + bounded logs.
+services:
+  jhw-web:
+    image: ghcr.io/${GHCR_OWNER:-feranicus}/jhw-web:${WEB_TAG:-latest}
+    container_name: jhw-web
+    env_file:
+      - .env                      # runtime secrets on the droplet (DO_INFERENCE_KEY, AGENT_PROXY_TOKEN, ...)
+    environment:
+      - DATA_DIR=/data
+      - FRONTEND_DIST=/app/frontend_dist
+      - SERVICE=jhw-web
+      - EVENTS_LOG=/var/log/jhw/events.jsonl
+    volumes:
+      - jhw_data:/data
+      - jhw_events:/var/log/jhw
+    networks:
+      - appnet
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  jhw_data: {}
+  jhw_events: {}
+
+networks:
+  appnet:
+    external: true
+    name: ${JHW_NETWORK:-videodead_appnet}    # the network the shared Caddy is already on

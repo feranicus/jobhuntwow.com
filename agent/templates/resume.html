@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Jev Vainsteins — Principal Cyber Security Architect & Strategic Development, DACH</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#16243a; --body:#33414f; --muted:#6b7787; --accent:#1f5fa8;
+    --rule:#e4e9ef; --chip-bg:#eef3f9; --chip-bd:#d6e2ef; --chip-tx:#244a73;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#f2f4f7}
+  body{font-family:'Inter',Arial,sans-serif;color:var(--body);font-size:10.4px;line-height:1.46;-webkit-font-smoothing:antialiased}
+  .page{width:210mm;min-height:297mm;margin:14px auto;background:#fff;padding:14mm 15mm;box-shadow:0 6px 24px rgba(20,30,50,.12)}
+  a{color:var(--accent);text-decoration:none}
+
+  /* Header */
+  header{border-bottom:2.5px solid var(--accent);padding-bottom:11px;margin-bottom:13px}
+  .name{font-size:29px;font-weight:800;color:var(--ink);letter-spacing:-.4px;line-height:1.02}
+  .headline{font-size:12px;font-weight:600;color:var(--accent);margin-top:4px;letter-spacing:.2px}
+  .tagline{font-size:10.5px;color:var(--muted);font-style:italic;margin-top:1px}
+  .contact{margin-top:9px;font-size:9.6px;color:var(--body);display:flex;flex-wrap:wrap;gap:4px 0}
+  .contact span{white-space:nowrap}
+  .contact span+span::before{content:"•";color:var(--chip-bd);margin:0 8px}
+
+  /* Sections */
+  section{margin-top:14px}
+  h2{font-size:11px;font-weight:800;color:var(--ink);text-transform:uppercase;letter-spacing:1.3px;
+     padding-bottom:4px;border-bottom:1.5px solid var(--rule);margin-bottom:9px}
+  .summary{font-size:10.6px;line-height:1.5;color:var(--body)}
+
+  /* Expertise groups */
+  .exp-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 22px}
+  .exp-grp b{color:var(--ink);font-weight:700;font-size:10px}
+  .exp-grp p{font-size:9.7px;color:var(--body);margin-top:1px}
+
+  /* Experience */
+  .job{margin-bottom:11px;page-break-inside:avoid}
+  .job-top{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+  .role{font-size:11.4px;font-weight:700;color:var(--ink)}
+  .co{font-size:10.4px;font-weight:600;color:var(--accent)}
+  .when{font-size:9.4px;color:var(--muted);white-space:nowrap;font-weight:500}
+  .job .lede{font-size:10px;color:var(--body);margin:2px 0 3px}
+  ul{list-style:none;margin-top:2px}
+  li{position:relative;padding-left:12px;margin-bottom:2.5px;font-size:10px;line-height:1.4}
+  li::before{content:"";position:absolute;left:1px;top:6px;width:4px;height:4px;border-radius:50%;background:var(--accent)}
+
+  /* Footer band */
+  .band{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:22px;margin-top:14px}
+  .band h2{margin-bottom:7px}
+  .band p,.band li{font-size:9.7px}
+  .band ul li{padding-left:11px;margin-bottom:2px}
+  .k{color:var(--ink);font-weight:700}
+
+  .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+  .chip{background:var(--chip-bg);border:1px solid var(--chip-bd);color:var(--chip-tx);
+        border-radius:4px;padding:2px 7px;font-size:9px;font-weight:500}
+
+  @media print{
+    html,body{background:#fff}
+    .page{width:auto;min-height:auto;margin:0;padding:0;box-shadow:none}
+    @page{size:A4;margin:13mm 14mm}
+    a{color:var(--accent)}
+    body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="name">JEV VAINSTEINS</div>
+    <div class="headline">Principal Cyber Security Architect &amp; Strategic Development — DACH</div>
+    <div class="tagline">Turning cyber risk into business value</div>
+    <div class="contact">
+      <span>Frankfurt Rhine-Main, Germany</span>
+      <span>+49 157 85541545</span>
+      <span><a href="mailto:feranicus@s4biz.io">feranicus@s4biz.io</a></span>
+      <span><a href="https://linkedin.com/in/feranicus">linkedin.com/in/feranicus</a></span>
+      <span><a href="https://cybergod.ai">cybergod.ai</a></span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Professional Summary</h2>
+    <p class="summary">Cybersecurity, Cloud &amp; Digital-Transformation leader with 20+ years building, securing and scaling technology across telecom, defense and enterprise. Blends executive engagement (CIO/CISO) with hands-on product creation — from SASE/SD-WAN and Zero Trust to LLM-powered security tooling. Proven at multi-million-euro transformations (AWS, Azure, GCP), 10,000-node edge rollouts, and turning cyber risk into board-ready business value.</p>
+  </section>
+
+  <section>
+    <h2>Core Expertise</h2>
+    <div class="exp-grid">
+      <div class="exp-grp"><b>Cybersecurity</b><p>Offensive &amp; Defensive Ops · Zero Trust / ZTNA · SASE / SSE / SD-WAN · Threat Intelligence · SIEM / XDR / MDR · CSPM / CWPP · IAM / PAM · DevSecOps · DORA · NIS2 · CRA · GDPR</p></div>
+      <div class="exp-grp"><b>AI &amp; Automation</b><p>LLM agents &amp; tooling · OpenAI · Gemini · Anthropic · Llama · AWS Bedrock · GenAI automation · Python</p></div>
+      <div class="exp-grp"><b>Cloud &amp; Infrastructure</b><p>AWS · Azure · GCP · Kubernetes (EKS/AKS) · Rancher · OpenStack · Edge · Terraform · Ansible · FinOps · CAF / CCoE</p></div>
+      <div class="exp-grp"><b>Leadership &amp; GTM</b><p>Enterprise Sales · MEDDPICC · Strategic Accounts · Deal Leadership · Program &amp; T&amp;T Management · Executive Engagement · Product Creation</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Professional Experience</h2>
+
+    <div class="job">
+      <div class="job-top"><div><span class="role">Cyber Security Client Partner</span> &nbsp;·&nbsp; <span class="co">Colt Technology Services</span></div><span class="when">Feb 2026 – Present · Frankfurt</span></div>
+      <p class="lede">Drive enterprise growth across Germany, Switzerland &amp; Austria through Network &amp; Cybersecurity transformation (SD-WAN / SASE / SSE). Matrix responsibility for 35+ Account Executives; advise CIOs, CISOs and executives from discovery to close.</p>
+      <ul>
+        <li>Built <b>Stratos</b> — a passive external-attack-surface platform mapping a customer's real internet-facing estate before the first meeting, turning discovery into hard evidence.</li>
+        <li>Created <b>C-BIQ</b> (Cyber Business Impact Quantification) — a board-ready model that prices cyber risk in euros, moving the conversation from fear to finance.</li>
+        <li>Built <b>GEOPOL</b> — national-authority-grade geopolitical threat assessment naming adversaries, CVEs and geopolitics; feeds DORA / TIBER-EU testing.</li>
+        <li>Shipped <b>ELECTRONIC LLM</b> — two zero-trust AI agents putting Stratos, C-BIQ &amp; GEOPOL in every AE's hands: one command runs recon, prices risk and generates four board-ready decks in minutes.</li>
+        <li>Own technology strategy, solutioning, pricing &amp; commercials; orchestrate Sales, Product, Delivery and Partners (Fortinet, Zscaler, Versa, Cisco, Palo Alto) into winning proposals.</li>
+      </ul>
+    </div>
+
+    <div class="job">
+      <div class="job-top"><div><span class="role">Founder &amp; Principal Developer / T&amp;T Director</span> &nbsp;·&nbsp; <span class="co">Stars4Business OÜ (S4biz)</span></div><span class="when">2016 – Present</span></div>
+      <ul>
+        <li>Led global rollout of the <b>Volkswagen D³ Edge Box</b> to 10,000+ dealerships across 140+ countries (Fortinet vFirewall, K3s/Rancher, ZEDEDA Edge Cloud).</li>
+        <li>Architected <b>Perseus Shield / Cybergod</b> — open-source endpoint cybersecurity for a major European bank (C#, Python, Scala/Akka, LXC).</li>
+        <li>Directed technical support for the viral <b>AIHAWK</b> GenAI project — 280k+ users; featured in Business Insider, MSN, 404 Media.</li>
+        <li>Delivered offensive-cyber and nationwide DPI programs for government agencies (national security &amp; intelligence).</li>
+      </ul>
+    </div>
+
+    <div class="job">
+      <div class="job-top"><div><span class="role">Transition &amp; Transformation Director (account COO)</span> &nbsp;·&nbsp; <span class="co">Amazon Web Services — for Telefónica Germany</span></div><span class="when">Germany</span></div>
+      <ul>
+        <li>Owned 20+ digital-transformation programs (&gt;€100M scope, B2B &amp; B2C): AWS migrations, Oracle &amp; data-centre exits, Kubernetes &amp; FinOps optimisation, GenAI, Big Data, CCaaS/Salesforce.</li>
+        <li>Embedded cloud security &amp; compliance — GDPR, confidential computing, IAM, incident-response simulation, CloudTrail, partner cyber solutions.</li>
+      </ul>
+    </div>
+
+    <div class="job">
+      <div class="job-top"><div><span class="role">Post-M&amp;A Transition &amp; Transformation Director</span> &nbsp;·&nbsp; <span class="co">TOSCA LTD</span></div><span class="when">EU</span></div>
+      <ul>
+        <li>Consolidated three companies' IT into a single pane of glass on Microsoft Azure (end customer: ALDI Group); merged 3 ERPs toward MS Dynamics; delivered IoT / Industry 4.0.</li>
+      </ul>
+    </div>
+
+    <div class="job">
+      <div class="job-top"><div><span class="role">Project Manager — Cloud Adoption &amp; IAM</span> &nbsp;·&nbsp; <span class="co">Luxair</span> &nbsp;|&nbsp; <span class="role" style="font-weight:700">IT Solutions Sales Director</span> &nbsp;·&nbsp; <span class="co">Huawei</span></div><span class="when">2014 – 2016</span></div>
+      <ul>
+        <li>Luxair: led Cloud Adoption Framework &amp; IAM strategy (Azure, MS IAM) with Telindus Advisory Services. Huawei: senior sales leadership for enterprise IT &amp; data-centre solutions.</li>
+      </ul>
+    </div>
+
+    <div class="job">
+      <div class="job-top"><div><span class="role">Earlier senior technical, sales &amp; leadership roles</span></div></div>
+      <p class="lede">NetApp · Red Hat · Canonical · Cogent · Verint · Mobotix · D-Link · Bezeq International · LR Group — two decades of cloud, open-source and cybersecurity delivery for top-tier vendors and service providers.</p>
+    </div>
+  </section>
+
+  <div class="band">
+    <div>
+      <h2>Education</h2>
+      <p><span class="k">B.Sc. Computer Science</span><br>Champlain College · 2000–2003</p>
+      <h2 style="margin-top:11px">Languages</h2>
+      <p>English · German · Russian · Hebrew<br><span style="color:var(--muted)">All native / bilingual</span></p>
+    </div>
+    <div>
+      <h2>Certifications</h2>
+      <ul>
+        <li>AWS Certified Cloud Practitioner</li>
+        <li>ZEDEDA Certified Edge Computing Associate (ZCEA)</li>
+        <li>ZEDEDA Certified Edge Administration Specialist (ZCES)</li>
+        <li>ZEDEDA Certified Sales Associate (ZCSA)</li>
+      </ul>
+      <h2 style="margin-top:9px">Awards</h2>
+      <p>Future Star Award · WEU DC Multi Intensive Award 2015</p>
+    </div>
+    <div>
+      <h2>Key Skills</h2>
+      <div class="chips">
+        <span class="chip">SASE</span><span class="chip">SD-WAN</span><span class="chip">Zero Trust</span><span class="chip">Threat Intel</span><span class="chip">SIEM/XDR</span><span class="chip">IAM/PAM</span><span class="chip">DevSecOps</span><span class="chip">DORA/NIS2</span><span class="chip">AWS</span><span class="chip">Azure</span><span class="chip">Kubernetes</span><span class="chip">LLM Agents</span><span class="chip">Python</span><span class="chip">MEDDPICC</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

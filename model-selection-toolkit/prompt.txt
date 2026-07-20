@@ -1,0 +1,16 @@
+You are filling a job application for a candidate, one step at a time. You receive the CURRENT page's interactive elements as JSON (each with an index i) plus the candidate facts. Reply with ONLY a JSON object for the SINGLE next action:
+{"action":"fill|click|ask|done","i":<index>,"value":"<text>","question":"<for ask>","why":"<short>"}
+Rules: fill text inputs from the facts. To answer a dropdown, click it. Click 'Save and Continue'/'Next' once required fields are done. If a value is NOT in the facts (visa, salary, notice period), use action ask. When you see a Review/Submit page, action done. NEVER click Submit.
+
+FACTS:
+Name: Jev Vainsteins. Email feranicus@s4biz.io. Phone +49 157 85541545. Location Frankfurt, Germany. Employed at Colt Technology Services. Languages: English, German, Russian, Hebrew.
+
+ELEMENTS:
+[{"i":0,"tag":"input","type":"text","label":"First Name","val":""},
+ {"i":1,"tag":"input","type":"text","label":"Last Name","val":""},
+ {"i":2,"tag":"input","type":"email","label":"Email","val":""},
+ {"i":3,"tag":"input","type":"tel","label":"Phone","val":""},
+ {"i":4,"tag":"button","label":"How many years of project management experience?","text":"Select One"},
+ {"i":5,"tag":"button","text":"Save and Continue"}]
+
+What is the single next action?

@@ -1,0 +1,91 @@
+# syntax=docker/dockerfile:1.7
+# JobHuntWOW ("Electronic") — ONE image: the built React SPA + the FastAPI backend.
+# Built IN GitHub Actions and pushed to GHCR (.github/workflows/web-deploy.yml).
+# NEVER built on the droplet (see DEPLOY.md).
+#
+# Secure by design (CLAUDE.md standing rule): non-root USER, no secrets in the image
+# (runtime env only), healthcheck on /api/health, single exposed port 8000, no published
+# port here — the shared Caddy reaches this container by name over the shared network.
+
+# ------------------------------------------------------------------ stage 1: build the SPA
+FROM node:20-slim AS fe
+WORKDIR /fe
+# package-lock.json is optional in this repo -> `npm install`, not `npm ci`.
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build && test -f /fe/dist/index.html
+
+# ------------------------------------------------------------------ stage 2: FastAPI + SPA
+FROM python:3.12-slim
+ARG SOURCE_URL=https://github.com/feranicus/jobhuntwow-app
+LABEL org.opencontainers.image.source=$SOURCE_URL \
+      org.opencontainers.image.title="jhw-web" \
+      org.opencontainers.image.description="JobHuntWOW cabinet: FastAPI backend + React SPA"
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    FRONTEND_DIST=/app/frontend_dist \
+    DATA_DIR=/data
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/app ./app
+COPY --from=fe /fe/dist ./frontend_dist
+
+# serve.py is the ASGI entrypoint. It imports the UNMODIFIED backend app (backend/app/main.py
+# is owned by the app team — this deploy chain never edits it) and adds SPA static serving on
+# top. /api/* routes are registered by app.main FIRST, so they always win over the catch-all.
+RUN cat > /app/serve.py <<'PY'
+"""ASGI entrypoint for the single-image deploy: FastAPI backend + built React SPA.
+
+Import order matters: app.main registers every /api/* route before we add the SPA
+catch-all, and Starlette matches routes in registration order, so the API always wins.
+"""
+import os
+
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.main import app  # noqa: F401  (the real backend, unmodified)
+
+DIST = os.environ.get("FRONTEND_DIST", "/app/frontend_dist")
+INDEX = os.path.join(DIST, "index.html")
+
+if os.path.isdir(os.path.join(DIST, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(DIST, "assets")), name="assets")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa(full_path: str):
+    # Never let the SPA swallow an unknown API path -- that would turn a 404 into HTML.
+    if full_path.startswith("api/"):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    candidate = os.path.normpath(os.path.join(DIST, full_path))
+    if full_path and candidate.startswith(DIST) and os.path.isfile(candidate):
+        return FileResponse(candidate)
+    if os.path.isfile(INDEX):
+        return FileResponse(INDEX)
+    return JSONResponse({"detail": "frontend not built"}, status_code=404)
+PY
+
+RUN python -m py_compile /app/serve.py
+
+# non-root; /data is the runtime store (mounted as a named volume in docker-compose.web.yml)
+RUN useradd -r -u 10001 -m -d /home/jhw jhw \
+ && mkdir -p /data \
+ && chown -R jhw:jhw /data /app
+
+USER jhw
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
+
+CMD ["uvicorn", "serve:app", "--host", "0.0.0.0", "--port", "8000"]

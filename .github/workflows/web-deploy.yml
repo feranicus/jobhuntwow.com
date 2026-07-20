@@ -1,0 +1,170 @@
+name: Deploy web (jobhuntwow.com)
+
+# Build the jhw-web image IN GitHub, push it to GHCR, then ship it to the droplet.
+# NOTHING is built on the droplet and NOTHING on the droplet is hand-edited: the vhost comes
+# from the committed snippet deploy/caddy/jobhuntwow.caddy. VideoDead / Amnezia / colt-stack
+# are never touched. See DEPLOY.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "Dockerfile.web"
+      - "docker-compose.web.yml"
+      - "deploy/caddy/**"
+      - ".github/workflows/web-deploy.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: prod-jhw-web-deploy
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------- build + push to GHCR
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write            # push to GHCR with the built-in GITHUB_TOKEN
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve the image name (GHCR rejects uppercase)
+        id: img
+        run: echo "name=ghcr.io/$(echo '${{ github.repository_owner }}' | tr 'A-Z' 'a-z')/jhw-web" >> "$GITHUB_OUTPUT"
+      - name: Build + push jhw-web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.web
+          push: true
+          tags: |
+            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.name }}:${{ github.sha }}
+          build-args: |
+            SOURCE_URL=https://github.com/${{ github.repository }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------- deploy to the droplet
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read            # the droplet pulls with this workflow token
+    env:
+      # the `secrets` context is NOT available in a step-level `if:` -> hoist it to `env` here
+      TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+      H: ${{ vars.TAILNET_HOST || secrets.DROPLET_HOST }}
+      U: ${{ secrets.DROPLET_USER || 'root' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Connect to Tailscale (only if the droplet is reached over the tailnet)
+        if: env.TS_AUTHKEY != ''
+        uses: tailscale/github-action@v3
+        with: { authkey: "${{ secrets.TS_AUTHKEY }}", version: latest }
+
+      - name: Install the deploy SSH key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          test -s ~/.ssh/deploy_key || { echo "::error::secret DROPLET_SSH_KEY is empty"; exit 1; }
+
+      - name: Ship compose + Caddy snippet + runtime env to the droplet
+        env:
+          JHW_ENV_B64: ${{ secrets.JHW_ENV_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$H" || { echo "::error::set repo variable TAILNET_HOST or secret DROPLET_HOST"; exit 1; }
+          # EVERY ssh/scp fails fast. A missing ConnectTimeout once hung a deploy for 40 minutes.
+          SSHOPT="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i $HOME/.ssh/deploy_key"
+          ssh $SSHOPT "$U@$H" 'mkdir -p /opt/jobhuntwow/deploy/caddy'
+          scp $SSHOPT docker-compose.web.yml        "$U@$H:/opt/jobhuntwow/docker-compose.web.yml"
+          scp $SSHOPT deploy/caddy/jobhuntwow.caddy "$U@$H:/opt/jobhuntwow/deploy/caddy/jobhuntwow.caddy"
+          # Runtime secrets come from the JHW_ENV_B64 secret ONLY (never echoed, never in git).
+          # If it is unset we keep whatever /opt/jobhuntwow/.env already has.
+          if [ -n "${JHW_ENV_B64:-}" ]; then
+            printf '%s' "$JHW_ENV_B64" | ssh $SSHOPT "$U@$H" \
+              'base64 -d > /opt/jobhuntwow/.env && chmod 600 /opt/jobhuntwow/.env && echo "[env] /opt/jobhuntwow/.env refreshed from JHW_ENV_B64"'
+          else
+            ssh $SSHOPT "$U@$H" 'test -s /opt/jobhuntwow/.env || { echo "::error::/opt/jobhuntwow/.env is missing. Set the JHW_ENV_B64 secret (base64 of your .env) and re-run."; exit 1; }; echo "[env] keeping existing /opt/jobhuntwow/.env"'
+          fi
+
+      - name: Pull image + (re)start jhw-web + wire Caddy (idempotent)
+        env:
+          TAG: ${{ github.sha }}
+          OWNER: ${{ github.repository_owner }}
+          ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NET: ${{ vars.JHW_NETWORK || 'videodead_appnet' }}
+        run: |
+          set -euo pipefail
+          SSHOPT="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i $HOME/.ssh/deploy_key"
+          LOWNER="$(echo "$OWNER" | tr 'A-Z' 'a-z')"
+          ssh $SSHOPT "$U@$H" "WEB_TAG='$TAG' GHCR_OWNER='$LOWNER' GHCR_TOKEN='$GHCR_TOKEN' ACTOR='$ACTOR' JHW_NETWORK='$NET' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jobhuntwow
+          export WEB_TAG GHCR_OWNER JHW_NETWORK
+
+          # 0) the shared network must already exist (it is owned by the stack that runs Caddy)
+          docker network inspect "$JHW_NETWORK" >/dev/null 2>&1 \
+            || { echo "[net] ERROR: external network $JHW_NETWORK does not exist here"; docker network ls; exit 1; }
+
+          # 1) pull the CI-built image (the login is a no-op when the GHCR package is public)
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin >/dev/null 2>&1 || true
+          docker compose -p jobhuntwow -f docker-compose.web.yml pull
+          # NEVER pass the remove-orphans flag here: this compose file is a SUBSET of the
+          # project and that flag has deleted live sibling services before.
+          docker compose -p jobhuntwow -f docker-compose.web.yml up -d --force-recreate
+
+          # 2) wire jobhuntwow.com into the shared Caddy from the COMMITTED snippet (idempotent)
+          CADDY_CT="$(docker ps --format '{{.Names}}' | grep -i caddy | head -1)"
+          test -n "$CADDY_CT" || { echo "[caddy] ERROR: no running caddy container found"; exit 1; }
+          CF="$(docker inspect "$CADDY_CT" --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Source}}{{end}}{{end}}')"
+          test -n "$CF" || { echo "[caddy] ERROR: no Caddyfile mount found on $CADDY_CT"; exit 1; }
+          BAK="$CF.bak.$(date +%s)"; cp "$CF" "$BAK"
+          # Remove ONLY our own marked block. Deliberately NOT a broad /jobhuntwow/,/^}/d sweep:
+          # the shared Caddyfile may host other jobhuntwow vhosts (e.g. app.jobhuntwow.com) which
+          # this deploy must not delete.
+          sed -i '/# jhw:jobhuntwow BEGIN/,/# jhw:jobhuntwow END/d' "$CF"
+          cat deploy/caddy/jobhuntwow.caddy >> "$CF"
+          if docker exec "$CADDY_CT" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null; then
+            docker exec "$CADDY_CT" caddy reload --config /etc/caddy/Caddyfile --force 2>/dev/null \
+              || docker exec "$CADDY_CT" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force 2>/dev/null \
+              || docker restart "$CADDY_CT" >/dev/null
+            echo "[caddy] wired jobhuntwow.com + www -> jhw-web:8000 in $CF (via $CADDY_CT)"
+          else
+            echo "[caddy] validate FAILED -- restoring $BAK"; cp "$BAK" "$CF"; exit 1
+          fi
+
+          # 3) verify (fatal): image, single network, and the actual proxy hop Caddy will make
+          sleep 5
+          echo -n "[verify] jhw-web image : "; docker inspect jhw-web -f '{{.Config.Image}}'
+          echo -n "[verify] jhw-web nets  : "; docker inspect jhw-web -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'; echo
+          NETS="$(docker inspect jhw-web -f '{{len .NetworkSettings.Networks}}')"
+          [ "$NETS" = "1" ] || { echo "::error::jhw-web is on $NETS networks -- the documented 502 cause"; exit 1; }
+          HOP="$(docker exec "$CADDY_CT" wget -qO- -T5 http://jhw-web:8000/api/health 2>&1 | head -c 200 || true)"
+          echo "[verify] caddy->jhw-web:8000/api/health -> $HOP"
+          case "$HOP" in *ok*|*status*|*health*) : ;; *) echo "::error::Caddy cannot reach jhw-web:8000/api/health"; exit 1 ;; esac
+
+          # 4) verify (warning only): the PUBLIC vhost. This needs the one human step -- the DNS
+          #    A-records -- before Caddy can get a certificate, so it must not fail the deploy.
+          code="$(curl -sk --resolve www.jobhuntwow.com:443:127.0.0.1 https://www.jobhuntwow.com/api/health -o /dev/null -w '%{http_code}' || true)"
+          echo "[verify] https://www.jobhuntwow.com/api/health (from droplet) -> $code   (200 = live)"
+          [ "$code" = "200" ] || echo "::warning::public vhost returned $code -- if this is not 200, check that DNS A records for jobhuntwow.com and www point at this droplet so Caddy can issue a certificate"
+          docker compose -p jobhuntwow -f docker-compose.web.yml ps
+          REMOTE
