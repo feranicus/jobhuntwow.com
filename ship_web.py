@@ -30,7 +30,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKFLOW = "web-deploy.yml"
-DEFAULT_REPO = "feranicus/jobhuntwow-app"
+DEFAULT_REPO = "feranicus/jobhuntwow.com"
 DOMAIN = "www.jobhuntwow.com"
 HEALTH = "https://%s/api/health" % DOMAIN
 # never push these, whatever git thinks

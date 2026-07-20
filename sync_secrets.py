@@ -16,7 +16,7 @@ import argparse, base64, os, secrets, subprocess, sys
 
 HERE   = os.path.abspath(os.path.dirname(__file__))
 PARENT = os.path.abspath(os.path.join(HERE, ".."))          # ...\Linkedin Scraper (cybergod)
-DEFAULT_REPO = os.environ.get("JHW_REPO", "feranicus/jobhuntwow-app")
+DEFAULT_REPO = os.environ.get("JHW_REPO", "feranicus/jobhuntwow.com")
 DROPLET_IP   = os.environ.get("DROPLET_HOST", "64.225.108.200")
 
 # source .env files, in priority order (later files do NOT override earlier ones)
