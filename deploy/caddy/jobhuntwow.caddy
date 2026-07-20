@@ -1,10 +1,15 @@
-# jhw:jobhuntwow BEGIN — managed by CI (.github/workflows/web-deploy.yml).
-# Edit THIS file and push. NEVER hand-edit the droplet's Caddyfile: the deploy strips
+# jhw:jobhuntwow BEGIN — managed by deploy_direct.py / CI.
+# Edit THIS file and redeploy. NEVER hand-edit the droplet's Caddyfile: the deploy strips
 # everything between the markers and re-appends this block, so a manual edit is lost.
-jobhuntwow.com, www.jobhuntwow.com {
+
+# ONE canonical URL: https://jobhuntwow.com  — www permanently redirects to the apex.
+www.jobhuntwow.com {
+	redir https://jobhuntwow.com{uri} permanent
+}
+
+jobhuntwow.com {
 	encode zstd gzip
-	# The SPA + the FastAPI API are the same container (Dockerfile.web).
-	# flush_interval -1 keeps SSE (/api/chat streams token-by-token) unbuffered.
+	# SPA + FastAPI are the same container. flush_interval -1 keeps SSE (chat) unbuffered.
 	reverse_proxy jhw-web:8000 {
 		flush_interval -1
 	}
