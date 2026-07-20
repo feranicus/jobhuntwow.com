@@ -18,7 +18,21 @@ import argparse, os, subprocess, sys, tarfile, tempfile
 HERE = os.path.abspath(os.path.dirname(__file__))
 HOST = os.environ.get("DROPLET_HOST", "64.225.108.200")
 USER = os.environ.get("DROPLET_USER", "root")
-KEY  = os.environ.get("SSH_KEY", "")
+def _find_key() -> str:
+    """Auto-detect the droplet key so PowerShell users need no $env:SSH_KEY.
+    Windows OpenSSH does not read ~/.ssh the way WSL does, so we pass -i explicitly."""
+    k = os.environ.get("SSH_KEY", "")
+    if k and os.path.exists(k):
+        return k
+    home = os.path.expanduser("~")
+    for name in ("id_ed25519", "id_rsa", "id_ecdsa"):
+        cand = os.path.join(home, ".ssh", name)
+        if os.path.exists(cand):
+            return cand
+    return ""
+
+
+KEY  = _find_key()
 TGT  = f"{USER}@{HOST}"
 APP  = "/opt/jobhuntwow"
 PROJ = "jobhuntwow"                       # isolated compose project: never touches colt-stack/videodead
@@ -62,8 +76,9 @@ def preflight():
             "      * Or the droplet is not answering :22 from this network. Test:  ssh -v " + TGT + " \"echo ok\"\n")
     if r.returncode:
         sys.exit(f"[X] cannot SSH to {TGT} (exit {r.returncode})\n\n"
-                 "    Passphrase-protected key? Load it once, then re-run:\n"
-                 "        eval $(ssh-agent -s) && ssh-add ~/.ssh/id_ed25519\n\n"
+                 "    Passphrase-protected key? Load it ONCE so it stops asking:\n"
+                 "      PowerShell:  Start-Service ssh-agent; ssh-add $env:USERPROFILE\\.ssh\\id_ed25519\n"
+                 "      WSL/bash  :  eval $(ssh-agent -s) && ssh-add ~/.ssh/id_ed25519\n\n"
                  f"    Test it directly:  ssh -v {TGT} \"echo ok\"\n"
                  "    PowerShell uses C:\\Users\\<you>\\.ssh, WSL uses ~/.ssh — or set SSH_KEY=<path>.")
     print("  ssh OK", flush=True)
