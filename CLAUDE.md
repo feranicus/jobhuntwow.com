@@ -2498,3 +2498,18 @@ THE REAL ANSWER FOR A NEW ATS IS THE RECORDING, and it worked first time: his co
 compiled to `flows/knowledge/ashby.json` (32 steps -> 4 fields, 1 recorded choice, 3 buttons, 1 upload)
 including `Notice period / availability -> 'one month'` and the expected-salary figure. Stagehand's
 500 on the unknown-ATS path cost ~40s and produced nothing; the recording produces facts.
+
+## 'UNKNOWN' REACHED AN EMPLOYER'S ESSAY BOX, AND 'Man' WAS THE ONE TICK THAT MISSED (Ashby, 2026-08-17)
+Two defects, both in code I wrote an hour earlier:
+1. **A GUARD ON ONE PATH IS NOT A GUARD.** The essay filler correctly refused a 7-character model
+   answer (`only 7 chars available — NOT typing a stub`) — and then the RESIDUAL required-field pass
+   typed the same string through `_fill_by_label`, so the screenshot shows **`UNKNOWN`** sitting in
+   "What about n8n and the role caught your attention". `usable_essay()` is now PURE, refuses
+   UNKNOWN/ASK/TBD/yes/no/?/n-a and anything under 40 characters, and EVERY path calls it.
+   HIS RECORDING IS NOW TRIED FIRST, not as a fallback: it was consulted only after the model, so a
+   stub got the first attempt at every box while his own words sat unused in the knowledge file.
+2. **A THREE-LETTER LABEL MUST BE MATCHED EXACTLY.** 17 recorded ticks, 16 applied — the missing one
+   was `Man`, so *What is your gender identity?* was left blank. Prefix matching on a 3-letter name
+   resolves by DOM order across every control containing those letters. Exact -> anchored -> prefix,
+   and prefix is refused below 6 characters. A self-declaration is the last thing that may be matched
+   loosely.

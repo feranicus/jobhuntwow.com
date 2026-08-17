@@ -262,6 +262,33 @@ async def _typeahead(page, query: str, pick_contains: str = "") -> bool:
         return False
 
 
+_STUB = re.compile(r"^\s*(unknown|ask|tbd|n/?a|none|null|todo|\?+|-+|yes|no)\s*[.!]?\s*$", re.I)
+
+
+def usable_essay(v: str, min_len: int = 40) -> bool:
+    """Is this prose, or a stub? PURE, so it is a test and not a hope.
+
+    MEASURED: `UNKNOWN` was typed into "What about n8n and the role caught your attention" — the essay
+    guard refused the 7-character stub, and then the RESIDUAL required-field pass typed the same string
+    through `_fill_by_label`. One guard on one path is not a guard. A stub in an essay box is worse
+    than an empty one: it reads as contempt, and it cannot be retracted."""
+    t = (v or "").strip()
+    return len(t) >= min_len and not _STUB.match(t)
+
+
+def recorded_essay(label: str, min_len: int = 40) -> str:
+    """HIS OWN recorded answer for this question, or ''. Tried FIRST, not as a fallback."""
+    try:
+        from recordings import known_value
+        for probe in (label, label[:60], label[:40]):
+            v = known_value("ashby", probe) or ""
+            if usable_essay(v, min_len):
+                return v
+    except Exception:
+        pass
+    return ""
+
+
 async def _answer_text(page, label_rx: str, value: str) -> bool:
     if not value:
         return False
@@ -292,8 +319,10 @@ async def _answer_text(page, label_rx: str, value: str) -> bool:
             # twice — the model returned something like "Yes" and it was accepted and counted as
             # filled. An open question needs prose; below 40 characters it is not one, so fall back to
             # the RECORDED answer and, failing that, report it unresolved so the ladder asks him.
-            val = value or ""
-            if len(val.strip()) < 40:
+            # HIS RECORDING FIRST. It was a fallback-after-the-model, so a 7-char model answer got
+            # the first attempt at every box and a stub was typed before his own words were tried.
+            val = recorded_essay(lab) or (value or "")
+            if not usable_essay(val):
                 try:
                     from recordings import known_value
                     rec = known_value("ashby", lab[:60]) or ""
@@ -303,9 +332,9 @@ async def _answer_text(page, label_rx: str, value: str) -> bool:
                         val = rec
                 except Exception:
                     pass
-            if len(val.strip()) < 40:
-                _log(f"  essay~{label_rx[:30]!r}: only {len(val.strip())} chars available — "
-                     f"NOT typing a stub, leaving it for the ladder")
+            if not usable_essay(val):
+                _log(f"  essay~{label_rx[:30]!r}: {str(val).strip()[:18]!r} is not an answer — "
+                     f"NOT typing a stub, leaving it for you")
                 return False
             await el.click(timeout=3000)
             await el.fill(val[:4000], timeout=8000)
@@ -401,9 +430,32 @@ async def _tick_required(page, r: dict, log=_log) -> int:
     done = 0
     for name in want:
         try:
-            el = page.get_by_role("checkbox", name=name, exact=False).first
-            if not await el.count():
-                el = page.get_by_role("radio", name=name, exact=False).first
+            # A SHORT LABEL NEEDS AN EXACT MATCH FIRST. 'Man' as a prefix matches "Man" but also
+            # "Management"/"Manager" wording elsewhere, and Playwright's `.first` then resolves by DOM
+            # order — which is why the recorded 'Man' tick was the ONE of seventeen that did not land
+            # (16 applied, gender left blank). Exact, then anchored, then prefix.
+            el = None
+            for role in ("radio", "checkbox"):
+                for kind in ("exact", "anchored", "prefix"):
+                    try:
+                        if kind == "exact":
+                            c = page.get_by_role(role, name=name, exact=True).first
+                        elif kind == "anchored":
+                            c = page.get_by_role(
+                                role, name=re.compile(rf"^{re.escape(name)}$", re.I)).first
+                        else:
+                            if len(name) < 6:
+                                continue          # never prefix-match a 3-letter declaration
+                            c = page.get_by_role(role, name=name, exact=False).first
+                        if await c.count() and await c.is_visible():
+                            el = c
+                            break
+                    except Exception:
+                        continue
+                if el is not None:
+                    break
+            if el is None:
+                continue
             if not await el.count() or not await el.is_visible():
                 continue
             if await el.is_checked():
@@ -603,8 +655,15 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
         for lab in list(blank):
             if re.search(r"name|email|phone|resume|cv|upload", lab, re.I):
                 continue
-            val = await _ans(lab)
+            # HIS OWN RECORDED ANSWER FIRST, then the ladder. `UNKNOWN` reached this box because the
+            # essay guard sat on one path and this one typed the stub anyway.
+            val = recorded_essay(lab) or await _ans(lab)
             if not val:
+                continue
+            if not usable_essay(val, 12):
+                _log(f"    {lab[:44]!r}: the ladder gave {str(val).strip()[:20]!r} — "
+                     f"NOT typing a stub; it stays unresolved for you")
+                r["unresolved"] = list(dict.fromkeys((r.get("unresolved") or []) + [lab]))
                 continue
             if await _answer_text(page, re.escape(lab[:40]), val) or await _fill_by_label(page, re.escape(lab[:40]), val):
                 r["filled"].append(f"req:{lab[:24]}")
@@ -685,6 +744,18 @@ def _selftest() -> int:
        "salary is PLAIN DIGITS, as recorded")
     b = _basics({"basics": {"legal_name": "Jev Vainsteins", "email": "a@b.c"}})
     ck(b["full_name"] == "Jev Vainsteins", "full name")
+    print("\n[stub contracts — 'UNKNOWN' was typed into the n8n motivation box]")
+    for bad in ("UNKNOWN", "ASK", "TBD", "No", "yes", "?", "n/a", "  none "):
+        ck(not usable_essay(bad), f"{bad!r} is never typed as an essay")
+    ck(usable_essay("I led enablement for 70 reps across DACH and rolled out MEDDICC end to end."),
+       "real prose is accepted")
+    ck(bool(recorded_essay("What about n8n and the role caught your attention")),
+       "his RECORDED n8n answer is available and tried first")
+    import inspect as _insp
+    _tk2 = _insp.getsource(_tick_required)
+    ck("exact=True" in _tk2 and "len(name) < 6" in _tk2,
+       "a short declaration ('Man') is matched EXACTLY, never by prefix")
+
     print("\n[bad-run contracts — 2026-08-17, all eight location boxes were ticked]")
     try:
         from recordings import load as _kb
