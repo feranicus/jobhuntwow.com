@@ -70,7 +70,16 @@ def _defaults(data: dict) -> dict:
                     break
                 m = re.match(r"-\s*([^:]+):\s*(.*)$", ln.strip())
                 if m:
-                    out[m.group(1).strip()] = m.group(2).strip().strip('"')
+                    # STRIP THE INLINE COMMENT AND THE QUOTES. candidate.md is written for a
+                    # HUMAN, so a line reads
+                    #   - available_start_date: "2026-08-20"   # ALWAYS one month from the appl...
+                    # and this parser kept it verbatim — so the Notice period box on a real employer's
+                    # form received `2026-08-20"       # ALWAYS one month from the appl`. CLAUDE.md
+                    # already records this exact defect for the Workday screening parser; it is the
+                    # same file being read by a second parser that never learned the lesson.
+                    _v = m.group(2)
+                    _v = re.split(r"\s+#", _v)[0].strip().strip('"').strip("'").strip()
+                    out[m.group(1).strip()] = _v
     except Exception:
         pass
     sd = data.get("screening_defaults") or {}
@@ -473,6 +482,20 @@ async def _tick_required(page, r: dict, log=_log) -> int:
                 if el is not None:
                     break
             if el is None:
+                # CODEGEN TRUNCATES A NAME: the age radio was recorded as '-49' and the real option is
+                # '40-49', so exact/anchored/prefix all miss. A CONTAINS match is the honest last try,
+                # and only when the fragment is distinctive enough to identify one control.
+                if len(name) >= 3:
+                    try:
+                        for role in ("radio", "checkbox"):
+                            c = page.get_by_role(role, name=re.compile(
+                                re.escape(name), re.I)).first
+                            if await c.count() == 1 and await c.is_visible():
+                                el = c
+                                break
+                    except Exception:
+                        pass
+            if el is None:
                 continue
             if not await el.count() or not await el.is_visible():
                 continue
@@ -767,6 +790,14 @@ def _selftest() -> int:
        "salary is PLAIN DIGITS, as recorded")
     b = _basics({"basics": {"legal_name": "Jev Vainsteins", "email": "a@b.c"}})
     ck(b["full_name"] == "Jev Vainsteins", "full name")
+    print("\n[candidate.md is written for a HUMAN — a comment must never reach a form]")
+    _d = _defaults({})
+    ck(not any("#" in str(v) for v in _d.values()), "no inline comment survives the parser")
+    ck(not any(str(v).strip().startswith(('"', "'")) for v in _d.values()), "no quote survives")
+    ck(_d.get("available_start_date") == "2026-08-20",
+       f"the real line parses clean (got {_d.get('available_start_date')!r})")
+    ck(_notice_text(_d) == "one month", "and the notice box gets 'one month', not a date + comment")
+
     print("\n[typeahead contracts — it clicked a CHECKBOX LABEL instead of a dropdown option]")
     import inspect as _insp
     import re as _re2
