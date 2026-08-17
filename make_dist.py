@@ -486,10 +486,24 @@ def _verify(secrets: dict, log=print) -> list:
             for k, v in secrets.items():
                 if v in blob:
                     bad.append(f"{rel}: contains the live value of {k}")
+            # A SELFTEST FIXTURE IS CREDENTIAL-SHAPED ON PURPOSE. `memory.py` asserts that an API
+            # key is refused, so it necessarily contains an OpenAI-shaped fixture value. Refusing to
+            # ship the file would mean shipping software whose first run reports failures — the same
+            # trade already recorded here for redacting one side of a test's input/expected pair.
+            # The escape hatch is SCOPED: a marker is honoured only BELOW `def _selftest`, so a
+            # credential in shipping code is still a hard refusal.
+            cut = blob.find("\ndef _selftest")
             for rx, what in pii_rx:
-                m = rx.search(blob)
-                if m:
+                for m in rx.finditer(blob):
+                    line_start = blob.rfind("\n", 0, m.start()) + 1
+                    line_end = blob.find("\n", m.end())
+                    line = blob[line_start:line_end if line_end > 0 else len(blob)]
+                    marked = ("pragma: allowlist secret" in line
+                              or "gitleaks:allow" in line)
+                    if marked and cut != -1 and m.start() > cut:
+                        continue
                     bad.append(f"{rel}: {what} -> {m.group(0)[:40]!r}")
+                    break
             # NEVER governs what may be COPIED FROM SOURCE. It must not flag the templates this
             # script AUTHORS -- `agent/userdata/candidate.md` is a placeholder file we wrote, and the
             # source one (with his address and declarations) is excluded precisely by that rule.

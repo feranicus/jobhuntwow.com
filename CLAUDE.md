@@ -2290,3 +2290,65 @@ was no git copy. CLAUDE.md already carries this rule twice ("validate EVERY anch
 and the fix is the same every time: **validate all anchors up front, then write, then verify** — and
 never patch a corrupted file, rewrite the region whole. The next edit set validated 11 anchors before
 touching anything, and the FIRST one did not match, so nothing was written and nothing was lost.
+
+## YOUR CV AND HOME ADDRESS WERE PUBLIC ON GITHUB — measured, not suspected (2026-08-17)
+He asked for git as a second source of truth *"because otherwise you will corrupt me the version that
+we work on"* — a fair charge, and the record earns it. Setting it up found something worse than a
+corrupted file. THE EVIDENCE, in this order, and none of it is inference:
+```
+git remote -v                     -> origin  https://github.com/feranicus/jobhuntwow.com.git
+git cat-file -e origin/main:agent/userdata/candidate.md    -> EXISTS
+web_fetch (NO auth) raw.githubusercontent.com/.../agent/userdata/candidate.md -> 200, full contents
+```
+**This working tree's origin is the PUBLIC GitHub-Pages repo of the landing site**, and 12 private
+files were tracked and published: `candidate.md` (home address, phone, gender, EEO self-disclosures,
+education, employment history), `candidate_profile.md` x2, `CANDIDATE_PROFILE.md`, and five CV /
+cover-letter files including `jevpreDE2025.pdf`. No password leaked — candidate.md stores env var
+NAMES only — but the PII is real, published, and `git rm` cannot take it back.
+`gitops.purge_plan()` prints the three real options with their real costs (make it private, which may
+break Pages on a free plan · `git filter-repo` + force-push · delete and recreate) and DELIBERATELY
+automates none of them: it force-pushes rewritten history over a repo serving a live website, and that
+is his decision, not a side effect of an apply.
+
+**AND A STALE LOCK HAD BEEN EATING EVERY GIT WRITE FOR A DAY.** `.git/index.lock`, dated
+2026-08-16 12:26, made every `git rm --cached` return `fatal: Unable to create ... index.lock` — and
+`git rev-list origin/main..HEAD` read **0**, so the tree looked perfectly in sync while 123 files sat
+unsaved and nothing ever said so. Git leaves that file behind when a process is killed mid-write,
+which is exactly what a timeout does. `clear_stale_lock()` removes it only when it is OLD (deleting a
+LIVE lock corrupts the index — age is the discriminator) and says so out loud.
+
+## `flows/../gitops.py` — a safepoint after every run, and a guard so it can never publish him
+`_safepoint()` runs BEFORE and AFTER `python jhw.py apply`: before, so a crash mid-run leaves a commit
+describing the code that produced it; after, so the learning database and compiled knowledge are
+saved. NON-BLOCKING by construction — a bookkeeping step that can abort an application is a worse
+defect than the one it prevents.
+THE ORDER IS THE SAFETY PROPERTY, asserted by AST: stage -> INSPECT WHAT IS STAGED -> only then
+commit. A check that runs after the commit has already written the file into history.
+It refuses to push the automation to a remote whose name is the landing site, so the two repos stay
+separate: the site public, the agent in its own PRIVATE repo (`python jhw.py git --repo`).
+
+**FIVE DEFECTS IN MY OWN GUARD, every one found by running it against the real tree:**
+1. **IT REFUSED DELETIONS.** `git diff --cached --name-only` lists a staged REMOVAL, so the guard saw
+   "a private file is staged" while `git rm --cached candidate.md` was cleaning the tree, aborted, and
+   `git reset` undid the cleanup. The guard was structurally incapable of letting the tree be fixed.
+   `--diff-filter=ACMR`.
+2. **44 FALSE POSITIVES, then 18 more.** Keying on the WORD before the `=` flagged
+   `_key = sha1(...).hexdigest()`, `key={i}` in JSX, `SESSION_SECRET = secrets.token_urlsafe(48)` (which
+   GENERATES one), `GF_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-jobhuntwow}`, and a redacted quote in this
+   very file. **A guard that refuses 44 legitimate source files gets switched off within a week.**
+   Rewritten the way gitleaks/trufflehog work: known provider prefixes (sk-, ghp_, doo_v1_, xox[baprs]-,
+   AKIA, a Telegram bot token, a PEM header) plus a shape test on the VALUE (>=16 chars, >=3 character
+   classes, no whitespace, no `(`, not ALL_CAPS). The name is only a hint about where to look.
+3. **IT BLOCKED ITS OWN SUITE.** `memory.py` and `gitops.py` both assert that a credential is refused,
+   so both contain one. `# pragma: allowlist secret` (detect-secrets' convention) is honoured — and
+   SCOPED: only below `def _selftest`, so a credential in shipping code is still a hard refusal. The
+   same scoped rule went into `make_dist.py`'s independent verifier, which had started refusing to
+   build over the identical fixture. Shipping software whose first run reports failures is worse than
+   the fixture.
+4. **MY MARKER WENT ON THE WRONG LINE** — I guessed the offending string instead of asking the
+   detector which line it had flagged. Marked by DETECTION afterwards, and the same pass reports
+   anything credential-shaped ABOVE the selftest, where a marker would not be honoured.
+5. **AN EDIT OF MINE DELETED `clear_stale_lock` AND THE SUITE STILL PASSED.** Ruff's F821 caught it —
+   the gate that exists because of the angermann NameError outage — because the suite exercised the
+   PURE functions and never CALLED `harden()` or `safepoint()`. Presence is not reachability. §5b now
+   invokes every entry point.
