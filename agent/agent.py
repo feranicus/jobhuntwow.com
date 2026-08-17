@@ -12,7 +12,7 @@ import argparse, asyncio, json, os, re, secrets, sys, time
 import httpx
 from browser_use import Agent, BrowserSession, BrowserProfile, ChatOpenAI, Tools
 import ask, obs
-from flows import atscreds
+from flows import atscreds, ashby
 from flows import (linkedin, workday, page_agent, llm_driver, greenhouse, easyapply, icims,
                    workday_gevernova, stagehand, electronic, phenom, workday_wd)
 
@@ -388,6 +388,16 @@ async def run_apply(jid):
         await _report("greenhouse", await greenhouse.drive(
             data, resume_path, prep.get("ats_url", ""), answer_fn=llm_answer,
             asker=ask.ask_human)); return
+
+    if prep["apply_type"] == "external" and "ashbyhq.com" in ats:
+        # ASHBY, FROM HIS RECORDING. Before this the URL fell through to "Unknown ATS" -> Stagehand
+        # (which answered HTTP 500 and did nothing, ~40s) -> the generic driver, which filled ONE field
+        # of fourteen and pressed Submit. The recording is the ground truth; a generic agent must not
+        # be turned loose on a form with a mandatory consent box.
+        print("[i] Ashby — recorded adapter (upload -> location -> salary/notice -> radios -> essays)")
+        await _report("ashby", await ashby.drive(
+            data, resume_path, answer_fn=llm_answer, asker=ask.ask_human,
+            ats_url=prep.get("ats_url", ""))); return
 
     if prep["apply_type"] == "external" and "icims.com" in ats:
         print("[i] iCIMS — recorded adapter (pre-fill, then hand CAPTCHA/OTP to the human) ...")

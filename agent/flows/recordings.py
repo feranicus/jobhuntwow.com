@@ -90,11 +90,20 @@ _STEP = re.compile(
                    |\.\s*(?:first|last))*)
         \.\s*(?P<act>%s)\s*\((?P<arg>(?:[^()]|\([^()]*\))*)\)""" % "|".join(_ACTS),
     re.X)
+# AN APOSTROPHE IS NOT A DELIMITER, AND EXCLUDING BOTH QUOTES DROPPED TWO OF HIS ANSWERS.
+# MEASURED 2026-08-17 on recordings/n8n_ashby.py: `(?:[^"'\\]|\\.)*` stops at the FIRST quote
+# character of EITHER kind, so
+#     .fill("I love the product ... I'm also a builder ...")
+#     get_by_role("radio", name="I've been building workflows with n8n for over a year")
+# both failed to match -- the fill silently compiled to `value: ""` and the radio tick vanished from
+# the recording entirely. Two of the n8n form's fourteen required questions therefore had NO recorded
+# answer, and nothing said so. The delimiter is whichever quote OPENED the string; the other one is
+# ordinary text. `(?!(?P=q))` is what expresses that.
 _BYROLE = re.compile(r"get_by_role\(\s*[\"'](?P<role>\w+)[\"']\s*(?:,\s*name\s*=\s*"
-                     r"(?P<q>[\"'])(?P<name>(?:[^\"'\\]|\\.)*)(?P=q))?")
+                     r"(?P<q>[\"'])(?P<name>(?:\\.|(?!(?P=q))[^\\])*)(?P=q))?")
 _BYLABEL = re.compile(r"get_by_(?P<kind>label|placeholder|title|text)\(\s*(?P<q>[\"'])"
-                      r"(?P<name>(?:[^\"'\\]|\\.)*)(?P=q)")
-_STRARG = re.compile(r"^\s*(?P<q>[\"'])(?P<v>(?:[^\"'\\]|\\.)*)(?P=q)")
+                      r"(?P<name>(?:\\.|(?!(?P=q))[^\\])*)(?P=q)")
+_STRARG = re.compile(r"^\s*(?P<q>[\"'])(?P<v>(?:\\.|(?!(?P=q))[^\\])*)(?P=q)")
 _GOTO = re.compile(r"""(?P<obj>page\d*)\.goto\(\s*(?P<q>["'])(?P<url>[^"']+)(?P=q)""")
 
 # WHICH ATS AM I LOOKING AT. Keyed on the URL, because that is the one thing a recording always has.

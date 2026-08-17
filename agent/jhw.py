@@ -104,6 +104,8 @@ _SELFTESTS = [
      "learned answers: recalled across employers, secrets refused"),
     (["/agent/flows/memory.py", "--logic"], "ALL MEMORY CONTRACTS HOLD",
      "the one store: nothing is learned until the SITE confirms the submission"),
+    (["/agent/flows/ashby.py", "--logic"], "ALL ASHBY CONTRACTS HOLD",
+     "Ashby from his recording: plain-digit salary, 'one month', required ticks block Submit"),
     (["/agent/flows/workday_questions.py", "--logic"], "ALL WORKDAY QUESTION CONTRACTS HOLD",
      "the questions page: the date in the format the BOX asks for, his salary, never 'ASK'"),
     (["/agent/flows/presubmit.py", "--logic"], "ALL PRE-SUBMIT CONTRACTS HOLD",

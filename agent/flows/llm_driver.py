@@ -10,10 +10,44 @@ import asyncio, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from playwright.async_api import async_playwright
 import httpx
+# flows/ ITSELF on the path, exactly as flows/greenhouse.py already does it, so the ladder modules
+# import the same way from a container run, a bare run and a self-test.
+# NOTE flows/selectors is a DIRECTORY with no __init__.py, i.e. a PEP 420 namespace PORTION, and a
+# namespace portion LOSES to a regular module found later on the path -- measured, stdlib `selectors`
+# still resolves to /usr/lib/python3.x/selectors.py with flows/ first on sys.path. greenhouse.py has
+# carried this insert in production all along.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import ask
 except Exception:
     ask = None
+
+# THE ANSWER LADDER -- the same rungs, the same owners and the same order as flows/greenhouse.py.
+# MEASURED on Ashby (jobs.ashbyhq.com/n8n, 2026-08-17): the operator's own recording of that exact
+# form was compiled to flows/knowledge/ashby.json and THIS DRIVER NEVER OPENED IT, so it asked a
+# MODEL for values a human had already typed -- and filled 1 field of 14 in 170 seconds before
+# pressing Submit. Every import is guarded: a missing rung must degrade this driver to what it was,
+# never take it down.
+try:
+    import recordings as KB          # 1. what a HUMAN entered on THIS ATS
+except Exception:                                                            # pragma: no cover
+    KB = None
+try:
+    import learned as LN             # 2. what we answered before and the SITE confirmed
+except Exception:                                                            # pragma: no cover
+    LN = None
+try:
+    import choose as CH              # 5. closed lists: rule -> 3-LLM panel -> the human
+except Exception:                                                            # pragma: no cover
+    CH = None
+try:
+    import essay as ES               # 6. free text, written from HIS OWN documents
+except Exception:                                                            # pragma: no cover
+    ES = None
+try:
+    import workday_wd as WD          # candidate.md has ONE parser (presubmit.py's rule)
+except Exception:                                                            # pragma: no cover
+    WD = None
 
 CDP_URL = os.getenv("JHW_CDP_URL", "http://127.0.0.1:9222").replace("localhost", "127.0.0.1")
 # DEFAULT = the SHARED DOCKER NETWORK name, not host.docker.internal. Windows refused to bind
@@ -741,12 +775,7 @@ async def _submit(page, r: dict) -> bool:
     The docstring already claimed "never called while anything is unresolved" — a comment is not a
     guard."""
     try:
-        idx = await page.evaluate(ENUM_JS) or {}
-        blank = [e.get("label") for e in (idx.get("elements") or idx.get("controls") or [])
-                 if isinstance(e, dict) and e.get("required")
-                 and not str(e.get("val") or e.get("value") or "").strip()
-                 and not e.get("checked") and not e.get("trap")]
-        blank = [b for b in blank if b][:8]
+        blank = [b for b in (r.get("_missing") or []) if b][:8]
         if blank:
             print(f"[llm_driver] REFUSING to submit: {len(blank)} required field(s) are still "
                   f"empty -> {blank}", flush=True)
@@ -795,12 +824,460 @@ async def _submit(page, r: dict) -> bool:
     return ok
 
 
+# ═══════════════════════════════════════════════════════════════════════ THE ANSWER LADDER
+# Cheapest and most certain first. Identical to flows/greenhouse.py, and that is the whole point:
+#   1. flows/knowledge/<ats>.json   what a HUMAN successfully entered on THIS ATS   (recordings.py)
+#   2. learned.py                   what we answered before and the SITE confirmed
+#   3. candidate.md                 a fact he WROTE DOWN                (essay.deterministic, PURE)
+#   4. resume_data.json             the profile
+#   5. choose.decide()              closed lists ONLY, over the options ON SCREEN
+#   6. essay.write()                free text, from his own CV + cover letter + the JD
+#   7. the human on Telegram        last
+# A MODEL IS THE SIXTH THING CONSULTED, NOT THE FIRST. Rungs 1-4 are deterministic, offline and
+# free, which is also the speed fix: the Ashby run spent 170s on two steps because every value went
+# through an inference call.
+
+_LADDER_MAX_ROUNDS   = int(os.getenv("JHW_LADDER_ROUNDS", "6"))
+_LADDER_MAX_ASKS     = int(os.getenv("JHW_LADDER_ASKS", "2"))
+_LADDER_MAX_PER_PASS = int(os.getenv("JHW_LADDER_FIELDS", "12"))
+
+# A BOT TRAP NAMES ITSELF. ENUM_JS already refuses to index one (geometry + clipping, not
+# display/visibility -- the Accenture `beecatcher` was indexed as an ordinary text input until that
+# was fixed), and `_ladder_targets` additionally requires a field to BE in that index. This is the
+# second, independent barrier: a label that says so out loud is refused by name as well, because
+# filling a trap silently discards the whole application and nothing in the log ever admits it.
+_TRAP_RX = re.compile(r"robots only|do not enter if you|only for robots|"
+                      r"leave (this|it) (field |input )?(blank|empty)|honeypot|beecatcher", re.I)
+
+_ATS_SAFE = re.compile(r"[^a-z0-9_-]+")
+
+
+def _ats_name(url: str) -> str:
+    """'https://jobs.ashbyhq.com/n8n/.../application' -> 'ashby'. PURE.
+
+    `recordings.load(ats)` opens `flows/knowledge/<ats>.json`, so this string BECOMES A FILENAME and
+    it arrives from the page -- hence the sanitiser: a hostname must never be able to walk the path.
+    `recordings.ats_of()` owns the URL->vendor table, so there is ONE home for it; an unrecognised
+    host degrades to its own second-level label so a knowledge file added for it later is found with
+    no code change, and `load()` returning {} for a name we have never recorded is not an error.
+    """
+    u = (url or "").strip()
+    if not u:
+        return "unknown"
+    if KB is not None:
+        try:
+            name = KB.ats_of([u]) or ""
+            if name and name != "unknown":
+                return name
+        except Exception:
+            pass
+    m = re.search(r"https?://([^/:?#]+)", u, re.I)
+    host = (m.group(1) if m else u).lower()
+    parts = [p for p in host.split(".")
+             if p and p not in ("www", "jobs", "job-boards", "boards", "careers", "apply", "my")]
+    label = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
+    return _ATS_SAFE.sub("", label) or "unknown"
+
+
+def _employer(url: str) -> str:
+    """The employer this application belongs to, for `learned`'s scope. PURE.
+
+    `learned.recall/remember` take `employer=` (read, not assumed: `_scope(scope, employer)` accepts
+    both spellings precisely because every caller passing `employer=` used to raise TypeError and the
+    learned rung was silently DEAD). memory.py refuses to reuse an answer that is ABOUT the employer
+    across employers, so the scope has to be a real name.
+    """
+    u = url or ""
+    m = re.search(r"https?://[^/]+/([\w.-]{2,40})", u)
+    if m and m.group(1).lower() not in ("jobs", "job", "apply", "careers", "en-us", "en", "de"):
+        return m.group(1).lower()
+    m = re.search(r"https?://([^/:?#]+)", u)
+    return m.group(1).lower() if m else ""
+
+
+_PROF_CACHE: dict = {}
+_DEF_CACHE: dict = {}
+_JOB_CACHE: dict = {}
+
+
+def _profile(data: dict | None = None) -> dict:
+    """resume_data.json. The caller may inject it; nothing in agent.py does, so it is loaded here."""
+    if isinstance(data, dict) and data:
+        return data
+    if _PROF_CACHE:
+        return _PROF_CACHE
+    for p in (os.getenv("JHW_DATA", "/agent/templates/resume_data.json"),
+              os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "templates", "resume_data.json")):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                _PROF_CACHE.update(json.load(fh) or {})
+            break
+        except Exception:
+            continue
+    return _PROF_CACHE
+
+
+def _defaults() -> dict:
+    """candidate.md's written answers. ONE parser: `workday_wd.candidate_answers()`.
+
+    presubmit.py already established that function as the single owner ("so candidate.md has one
+    parser"); greenhouse.py's private copy of the same parser is the "one value, several homes"
+    defect this repo keeps paying for, and this driver is not adding a third. Its regex strips the
+    inline comment, which is load-bearing: keeping a line verbatim once put `Yes"  # ALWAYS Yes`
+    into a real employer's form field.
+    """
+    if _DEF_CACHE:
+        return _DEF_CACHE
+    if WD is not None:
+        try:
+            _DEF_CACHE.update(WD.candidate_answers() or {})
+        except Exception as e:
+            print(f"[llm_driver] [ladder] candidate.md unreadable ({type(e).__name__}) — "
+                  f"the written-fact rung is empty this run", flush=True)
+    return _DEF_CACHE
+
+
+def _norm_label(label: str) -> str:
+    return re.sub(r"\s+", " ", (label or "").lower()).strip(" *: \t")
+
+
+# label fragment -> resume_data.json basics key. ONLY fields whose answer is a plain FACT about the
+# candidate that cannot be got wrong. Nothing inferred and nothing reformatted: the phone is passed
+# through exactly as agent.py's facts block already gives it to the model, so this rung changes WHO
+# answers and HOW FAST, never WHAT is typed on a path that already works (NTT/Phenom).
+_PROF_KEYS = (
+    (r"^(first and last|full|legal|candidate) name|^name$|your name", ("legal_name", "name")),
+    (r"^first name|given name|vorname",                              ("_first",)),
+    (r"^last name|family name|surname|nachname",                     ("_last",)),
+    (r"preferred (first )?name",                                     ("preferred_name", "name")),
+    (r"e-?mail",                                                     ("email",)),
+    (r"phone|telefon|mobile|handy",                                  ("phone",)),
+    (r"linkedin",                                                    ("linkedin",)),
+    (r"github",                                                      ("github",)),
+    (r"web ?site|homepage|portfolio",                                ("website",)),
+    (r"^city|^town|location \(city\)|^ort$",                         ("city",)),
+    (r"^country|^land$",                                             ("country",)),
+    (r"street|^address|adresse",                                     ("address",)),
+)
+
+
+def _profile_value(label: str, prof: dict) -> str:
+    """Rung 4. PURE."""
+    b = (prof or {}).get("basics", {}) or {}
+    n = _norm_label(label)
+    if not n:
+        return ""
+    legal = str(b.get("legal_name") or b.get("name") or "").split()
+    for rx, keys in _PROF_KEYS:
+        if not re.search(rx, n):
+            continue
+        for k in keys:
+            if k == "_first":
+                if legal:
+                    return legal[0]
+                continue
+            if k == "_last":
+                if len(legal) > 1:
+                    return " ".join(legal[1:])
+                continue
+            v = b.get(k)
+            if v and str(v).strip():
+                return str(v).strip()
+    return ""
+
+
+def _text_answer(label: str, ats: str = "", employer: str = "",
+                 prof: dict | None = None, defaults: dict | None = None) -> tuple:
+    """Rungs 1-4 for a FREE-TEXT field -> (value, via). PURE: no await, no model, no network.
+
+    Pure on purpose -- the `presubmit._decide_from_verdict` lesson -- so the ordering that matters
+    most in this file is testable with no browser and no models. `via` is one of
+    knowledge / learned / fact / profile / ''.
+
+    RUNG 1 WINS AND THAT IS THE POINT, measured on ashby.json: for
+    'Notice period / availability details' the human typed **'one month'**, while
+    `essay.deterministic()` sees the word "notice" and answers with a computed **DATE**. Both are
+    defensible; only one of them is what he actually put on that form and got through with.
+    """
+    prof = prof if isinstance(prof, dict) else {}
+    defaults = defaults if isinstance(defaults, dict) else {}
+    if KB is not None and ats:
+        try:
+            v = KB.known_value(ats, label) or ""
+            if v and not str(v).startswith("<redacted"):
+                return str(v), "knowledge"
+        except Exception:
+            pass
+    if LN is not None:
+        try:
+            v = LN.recall(label, employer=employer) or ""
+            if v:
+                return str(v), "learned"
+        except Exception:
+            pass
+    if ES is not None:
+        try:
+            v = ES.deterministic(label, defaults, prof) or ""
+            if v:
+                return str(v), "fact"
+        except Exception:
+            pass
+    v = _profile_value(label, prof)
+    return (v, "profile") if v else ("", "")
+
+
+def _model_may_answer(label: str) -> bool:
+    """False for a DECLARATION ABOUT THE CANDIDATE. PURE.
+
+    Veteran status, disability, race, gender, pronouns, criminal record, clearance, visa status and
+    SALARY go to something he WROTE DOWN or to him -- never to a model. Getting one wrong is a
+    misrepresentation to an employer, and three models voting on somebody's gender is exactly what
+    must never happen. `choose.SENSITIVE` is the ONE owner of that list (greenhouse reaches the same
+    regex through `choose.decide`), so this driver cannot develop a second, staler opinion about what
+    is sensitive. With choose unavailable the answer is False: refusing to generate is the safe
+    direction, and the human rung still runs.
+    """
+    if CH is None:
+        return False
+    try:
+        return not bool(CH.SENSITIVE.search(label or ""))
+    except Exception:
+        return False
+
+
+def _ladder_targets(els: list, miss: list) -> list:
+    """The required+empty fields the ladder MAY touch, each paired with its element. PURE.
+
+    FOUR THINGS ARE REFUSED HERE and every one of them is a guard this repo has already paid for:
+      * a field ENUM_JS DID NOT INDEX (`i` is None, or no element carries that index). ENUM_JS's
+        vis() rejects a bot trap by GEOMETRY and CLIPPING, so requiring membership of its index means
+        the ladder can only ever act on a control that predicate approved.
+      * a label that ADMITS it is a trap ("this input is for robots only") -- the second barrier.
+      * a CHECKBOX or RADIO. The Ashby recording's ticks include 'Man', 'White',
+        'Heterosexual / straight' and 'None of the above': EEO SELF-DECLARATIONS. A tick is not a
+        value for a driver to infer from a knowledge file, and it is not idempotent either -- a
+        second click UNTICKS it, which is why CHECK_JS exists. Consent boxes stay with CHECK_JS.
+      * file / hidden / submit / button, which are not answers at all.
+    """
+    by_i = {e.get("i"): e for e in (els or []) if isinstance(e, dict)}
+    out = []
+    for m in (miss or []):
+        if not isinstance(m, dict):
+            continue
+        lab = (m.get("label") or "").strip()
+        if not lab or _TRAP_RX.search(lab):
+            continue
+        i = m.get("i")
+        if i is None:
+            continue
+        el = by_i.get(i)
+        if not isinstance(el, dict):
+            continue
+        if _TRAP_RX.search((el.get("label") or "") + " " + (el.get("text") or "")):
+            continue
+        if str(el.get("type") or "").lower() in ("checkbox", "radio", "file", "hidden",
+                                                 "submit", "button", "image", "reset"):
+            continue
+        out.append((m, el))
+        if len(out) >= _LADDER_MAX_PER_PASS:
+            break
+    return out
+
+
+def _budget_asker(r: dict, asker):
+    """Wrap `asker` so the counter moves only when a question is REALLY asked.
+
+    A required field on every page must not turn one application into twenty Telegram messages, and
+    counting an ask that never happened would silence the rung that matters. Past the cap the
+    EXISTING stall path (repeat-breaker -> ask.ask_human) still reaches him, so nothing is lost.
+    """
+    if asker is None:
+        return None
+
+    async def _a(q: str) -> str:
+        if r.get("_asked", 0) >= _LADDER_MAX_ASKS:
+            print("[llm_driver] [ladder] ask budget spent this run — not asking again here",
+                  flush=True)
+            return ""
+        r["_asked"] = r.get("_asked", 0) + 1
+        return await asker(q) or ""
+    return _a
+
+
+async def _ladder_fill(page, r: dict, els: list, miss: list, *, ats: str = "", employer: str = "",
+                       facts: str = "", asker=None, step: int = 0, data: dict | None = None) -> int:
+    """Answer every required+empty field the ladder can, BEFORE the model is consulted.
+
+    Returns the number of fields that actually TOOK a value -- read back, never assumed. This file
+    already records three separate incidents where `page.fill` returned without throwing over a box
+    that stayed empty, and one run reported ok=True with the date field blank on screen.
+
+    NOTHING IN HERE MAY ABORT THE RUN. Every rung and every write is guarded: the Alpega crash was a
+    single unguarded call that left the driver entirely, so the panel and the human were never
+    reached and nine filled fields were reported as one cryptic line.
+    """
+    if r.get("_ladder_rounds", 0) >= _LADDER_MAX_ROUNDS:
+        return 0
+    targets = _ladder_targets(els, miss)
+    if not targets:
+        return 0
+    prof, defaults = _profile(data), _defaults()
+    ask_fn = _budget_asker(r, asker if asker is not None
+                           else (ask.ask_human if ask is not None else None))
+    filled = 0
+    for m, el in targets:
+        lab = (m.get("label") or "").strip()
+        # ADDRESS BY THE STABLE SELECTOR FIRST. This pass fills SEVERAL fields between two DOM
+        # reads, and React drops data-jhw-idx on re-render -- the defect that made the date field
+        # time out four times while plainly visible. ENUM_JS's `css` is #id / [name] / [aria-label] /
+        # [placeholder], all of which re-resolve; the index is the fallback, not the handle.
+        sel = el.get("css") or (f"[data-jhw-idx='{el.get('i')}']"
+                                if el.get("i") is not None else "")
+        if not sel:
+            continue
+        opts = [str(o) for o in (el.get("opts") or []) if str(o).strip()]
+        is_select = str(el.get("tag") or "").lower() == "select" or bool(opts)
+        is_arr = bool(el.get("arr"))
+        value, via = "", ""
+        try:
+            if is_select and CH is not None:
+                # A CLOSED LIST. `choose.decide` runs the SAME ladder and its answer is GUARANTEED
+                # to be one of the options we showed it (every layer goes through `_pick`), so a
+                # model cannot invent one -- and it takes the panel away from a self-declaration by
+                # itself. It also asks HIM with the real options numbered, which is a better
+                # question than anything this module could compose.
+                real = [o for o in opts if not re.match(
+                    r"\s*(select an option|select\.\.\.|select$|--|please select|choose)", o, re.I)]
+                got = await CH.decide(lab, real or opts, ats=ats, employer=employer, facts=facts,
+                                      defaults=defaults, asker=ask_fn,
+                                      log=lambda t: print(f"[llm_driver]{t}", flush=True)) or {}
+                value, via = str(got.get("value") or ""), str(got.get("via") or "")
+            else:
+                value, via = _text_answer(lab, ats, employer, prof, defaults)
+                if not value and ES is not None and _model_may_answer(lab):
+                    # RUNG 6. Free text written from HIS OWN documents -- CV + cover letter + the
+                    # job description -- with essay.verify() refusing an invented employer, a year
+                    # his CV does not contain, or a refusal-shaped answer. THIS IS THE ONLY ROUTE TO
+                    # A GENERATED ANSWER IN THIS FUNCTION and it sits under `_model_may_answer`, so
+                    # a self-declaration is structurally incapable of reaching a model here.
+                    if not _JOB_CACHE:
+                        try:
+                            _JOB_CACHE["job"] = ES.load_job() or {}
+                            _JOB_CACHE["cover"] = ES.load_cover() or ""
+                        except Exception:
+                            _JOB_CACHE["job"], _JOB_CACHE["cover"] = {}, ""
+                    got = await ES.write(lab, prof, defaults=defaults,
+                                         job=_JOB_CACHE.get("job") or {},
+                                         cover=_JOB_CACHE.get("cover") or "",
+                                         log=lambda t: print(f"[llm_driver]{t}", flush=True)) or {}
+                    value, via = str(got.get("value") or ""), str(got.get("via") or "")
+                if not value and ask_fn is not None:
+                    # RUNG 7. NOTHING COULD ANSWER IT -> ASK, rather than stall or invent. For a
+                    # self-declaration this is the ONLY rung left, deliberately.
+                    why = ("it is a declaration about you, so I will not answer it for you"
+                           if not _model_may_answer(lab) else "none of my own sources covers it")
+                    rep = await ask_fn(
+                        f"One answer is needed to finish this application ({why}).\n\n"
+                        f"Q: {lab}\n\nReply with the answer in your own words.")
+                    value, via = str(rep or "").strip(), "human"
+        except Exception as e:
+            print(f"[llm_driver] [ladder] {lab[:40]!r}: rung failed ({type(e).__name__}: "
+                  f"{str(e)[:70]}) — leaving this field to the model", flush=True)
+            continue
+        if not value:
+            continue
+        # THE REPEAT-BREAKER APPLIES TO THE LADDER TOO. A deterministic answer the page keeps
+        # rejecting is not more correct for being deterministic. Same dict and same threshold as the
+        # model path, so the PAGE FINGERPRINT that resets the model's counters resets these as well
+        # -- an answer refused on page 1 must not block the same question on page 3.
+        key = f"ladder|{lab}|{value}"
+        r["_seen"][key] = r["_seen"].get(key, 0) + 1
+        if r["_seen"][key] >= 3:
+            print(f"[llm_driver] [ladder] {lab[:40]!r}: {value[:24]!r} was refused "
+                  f"{r['_seen'][key] - 1}x already — handing this field to the model", flush=True)
+            continue
+        ok, shown = False, ""
+        try:
+            if is_arr:
+                # A TYPEAHEAD STORES AN ARRAY: typed text can never satisfy it, at any retry count.
+                res = await _typeahead(page, sel, value, lab) or {}
+                shown = str(res.get("picked") or "")
+                ok = bool(res.get("picked"))
+                if ok:
+                    r["_picked_at"][lab] = step
+                    if lab in r["unresolved"]:
+                        r["unresolved"].remove(lab)
+            elif is_select:
+                res = await page.evaluate(SELECT_JS, {"label": lab, "want": value}) or {}
+                shown = str(res.get("picked") or "")
+                ok = bool(res.get("ok")) and bool(res.get("verified"))
+                if res.get("ok") and not res.get("verified"):
+                    print(f"[llm_driver] [ladder] {lab[:40]!r}: the element did NOT KEEP "
+                          f"{shown[:24]!r} — React reverted it during the change event; leaving it "
+                          f"to the model", flush=True)
+            else:
+                try:
+                    await page.fill(sel, str(value), timeout=6000)
+                except Exception:
+                    res = await page.evaluate(
+                        FILL_JS, {"label": lab, "value": str(value),
+                                  "placeholder": el.get("placeholder", "")}) or {}
+                    if not res.get("ok"):
+                        raise RuntimeError(str(res.get("why") or "fill failed"))
+                if re.search(r"date|dd[-/]mm|mm[-/]dd|yyyy",
+                             lab + " " + str(el.get("placeholder") or ""), re.I):
+                    # THE SAME helpers the model path uses, not a second copy: text first (most ATS
+                    # date boxes are plain inputs), then the CALENDAR, because NTT's is a READ-ONLY
+                    # react-datepicker that no text path can ever fill. Never Escape on a date
+                    # field: it closes the overlay AND reverts the uncommitted value.
+                    shown = await _commit_date(page, sel, str(value), lab) or ""
+                    if not str(shown).strip():
+                        shown = await _pick_date_in_calendar(page, sel, str(value), lab) or ""
+                else:
+                    shown = await page.evaluate(READ_JS, sel) or ""
+                ok = bool(str(shown).strip())
+        except Exception as e:
+            print(f"[llm_driver] [ladder] {lab[:40]!r}: could not enter it ({type(e).__name__}: "
+                  f"{str(e)[:60]}) — the model gets this one", flush=True)
+            ok = False
+        if not ok:
+            print(f"[llm_driver] [ladder] {lab[:40]!r}: had an answer ({via or 'ladder'}) and the "
+                  f"field did NOT keep it — NOT counting it as filled", flush=True)
+            if lab and lab not in r["unresolved"]:
+                r["unresolved"].append(lab)
+            continue
+        filled += 1
+        r["_tried"][lab] = str(value)
+        # `fill:` prefix on purpose: `_submit`'s Review branch and the `done` guard both count
+        # actions starting with "fill" as EVIDENCE that the form was really filled.
+        r["actions"].append(f"fill:{lab[:20]}")
+        r.setdefault("_ladder", []).append(f"{lab[:26]}={via or 'ladder'}")
+        print(f"[llm_driver] [ladder] {lab[:44]!r} = {str(shown or value)[:40]!r}   "
+              f"(via {via or 'ladder'}, NO model call)", flush=True)
+        # LEARN ONLY WHAT A PERSON OR A MODEL PRODUCED, and only through learned.py's own guard
+        # (`is_secret` refuses a credential by SHAPE, and it is the one definition of that rule). A
+        # value that came from knowledge or the profile is already remembered somewhere better.
+        if LN is not None and via in ("human", "documents", "panel", "fact"):
+            try:
+                LN.remember(lab, str(value), employer=employer)
+            except Exception:
+                pass
+        try:
+            await page.wait_for_timeout(250)
+        except Exception:
+            pass
+    if filled:
+        r["_ladder_rounds"] = r.get("_ladder_rounds", 0) + 1
+    return filled
+
+
 async def run(facts: str, resume_path: str = "",
               max_steps: int = int(os.getenv("JHW_STEPS_PER_TRY", "45")),
-              url: str = "") -> dict:
+              url: str = "", data: dict | None = None, asker=None) -> dict:
     r = {"ok": False, "steps": 0, "note": "", "actions": [], "unresolved": [],
          "_tried": {}, "_array_fixed": {}, "_seen": {}, "_picked_at": {}, "_swept": False,
-         "_page": None}
+         "_page": None, "_ladder": [], "_ladder_rounds": 0, "_asked": 0}
     pw = await async_playwright().start(); browser = None
     try:
         browser, ctx, page = await _connect(pw)
@@ -943,6 +1420,12 @@ async def run(facts: str, resume_path: str = "",
             else:
                 r["_thin"] = 0
             miss = list(snap.get("missing") or [])
+            # THE DRIVER ALREADY KNOWS. It printed `still required+empty: [5 fields]` and submitted
+            # anyway. My first guard re-derived the list from ENUM_JS with an ASSUMED return shape,
+            # found nothing, and never fired — the 21st assumed shape in this workstream. Use the
+            # list that is demonstrably right, recorded on the run dict where _submit can see it.
+            r["_missing"] = [m.get("label") for m in miss
+                             if isinstance(m, dict) and m.get("label")]
             errs = snap.get("errors") or []          # now [{msg,label,css,i,arr,val}, ...]
             emsg = [e.get("msg") if isinstance(e, dict) else str(e) for e in errs]
             if snap.get("review"):
@@ -1049,6 +1532,34 @@ async def run(facts: str, resume_path: str = "",
             if miss:
                 print(f"[llm_driver] still required+empty: "
                       f"{[m.get('label') for m in miss][:6]}", flush=True)
+
+            # ─────────────────────────────────────── THE LADDER RUNS BEFORE THE MODEL, EVERY STEP
+            # THE GAP THIS CLOSES, measured on Ashby (jobs.ashbyhq.com/n8n, 2026-08-17): the
+            # operator recorded that exact form, `python jhw.py apply` compiled it to
+            # flows/knowledge/ashby.json, and this driver never opened the file. It asked a MODEL
+            # for 'Notice period / availability details' (recorded: 'one month'), for the expected
+            # salary (recorded: '150000') and for an enterprise-deal story he had already written
+            # out in full -- then filled ONE field of fourteen in 170 seconds and pressed Submit.
+            # A value a human has already typed on this ATS is not a question.
+            _ats = _ats_name(snap.get("url") or url)
+            _emp = _employer(snap.get("url") or url)
+            if r.get("_ats") != _ats:
+                r["_ats"] = _ats
+                _kb = (KB.load(_ats) if KB is not None else {}) or {}
+                print(f"[llm_driver] ATS = {_ats!r}, employer = {_emp!r} — knowledge: "
+                      f"{len(_kb.get('fields') or {})} recorded field(s), "
+                      f"{len(_kb.get('choices') or {})} recorded choice(s)", flush=True)
+            if miss:
+                _got = await _ladder_fill(page, r, els, miss, ats=_ats, employer=_emp,
+                                          facts=facts, asker=asker, step=step, data=data)
+                if _got:
+                    # RE-READ THE PAGE RATHER THAN SPEND A MODEL CALL. Answering a field can reveal
+                    # a new required one, and the fresh snapshot is what the next pass needs anyway.
+                    print(f"[llm_driver] the ladder answered {_got} field(s) with NO model call "
+                          f"({len(r.get('_ladder') or [])} this run) — re-reading the page",
+                          flush=True)
+                    await page.wait_for_timeout(700)
+                    continue
             msg = [{"role": "system", "content": SYS},
                    {"role": "user", "content":
                     f"FACTS:\n{facts}\n\n"
