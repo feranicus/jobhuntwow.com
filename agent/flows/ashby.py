@@ -85,6 +85,12 @@ def _notice_text(defaults: dict) -> str:
     ("1 month notice; available from approximately 16 September 2026.") is not what he typed, and on a
     short-answer box it is simply wrong."""
     v = str(defaults.get("notice_period") or "").strip().strip('"')
+    # HIS RECORDING TYPES "one month"; candidate.md says "1 month". Same fact, and the recorded
+    # spelling is the one this employer's box actually received.
+    words = {"1": "one", "2": "two", "3": "three", "4": "four", "6": "six"}
+    m = re.match(r"^(\d+)\s*(month|week)", v, re.I)
+    if m and m.group(1) in words:
+        v = f"{words[m.group(1)]} {m.group(2).lower()}"
     return v or "one month"
 
 
@@ -281,11 +287,31 @@ async def _answer_text(page, label_rx: str, value: str) -> bool:
             cur = (await el.input_value() or "").strip()
             if cur and len(cur) > 20:
                 return True
+            # A SEVEN-CHARACTER ESSAY IS NOT AN ANSWER. The run logged
+            #     essay~'enterprise sales methodology|rollout' wrote 7 chars
+            # twice — the model returned something like "Yes" and it was accepted and counted as
+            # filled. An open question needs prose; below 40 characters it is not one, so fall back to
+            # the RECORDED answer and, failing that, report it unresolved so the ladder asks him.
+            val = value or ""
+            if len(val.strip()) < 40:
+                try:
+                    from recordings import known_value
+                    rec = known_value("ashby", lab[:60]) or ""
+                    if len(rec.strip()) >= 40:
+                        _log(f"  essay~{label_rx[:30]!r}: model gave {len(val.strip())} chars — "
+                             f"using the RECORDED answer ({len(rec)} chars)")
+                        val = rec
+                except Exception:
+                    pass
+            if len(val.strip()) < 40:
+                _log(f"  essay~{label_rx[:30]!r}: only {len(val.strip())} chars available — "
+                     f"NOT typing a stub, leaving it for the ladder")
+                return False
             await el.click(timeout=3000)
-            await el.fill(value[:4000], timeout=8000)
+            await el.fill(val[:4000], timeout=8000)
             got = (await el.input_value() or "").strip()
             _log(f"  essay~{label_rx[:36]!r} wrote {len(got)} chars")
-            return bool(got)
+            return len(got) >= 40
     except Exception as e:
         _log(f"  essay fill: {type(e).__name__}")
     return await _fill_by_label(page, label_rx, value)
@@ -347,54 +373,51 @@ async def _required_empty(page) -> list[str]:
 
 
 async def _tick_required(page, r: dict, log=_log) -> int:
-    """Tick the required checkboxes his recording ticks, and READ THEM BACK.
+    """Tick EXACTLY what his recording ticked. Never a keyword sweep.
 
-    Nothing in this adapter ever called `.check()`. n8n's own error page listed SEVEN required
-    checkboxes — the three location-eligibility boxes and the mandatory `I agree` consent — so the
-    form could never have been accepted, and the pre-submit check could not see them either because it
-    skipped checkboxes entirely. A tick is IDEMPOTENT ONLY IF SET, NEVER TOGGLED: clicking an already
-    ticked box unticks it, which this project has paid for once before on NTT."""
-    done = 0
+    MEASURED, and it is the worst defect in this adapter's history: my `want` regex contained
+    `based in`, which matches ALL EIGHT options of "Tick all options relevant... regarding the main
+    location of your work contract" — so the run ticked
+        'I can be based in the UK and do not need visa support'
+        'I want to be based in the UK but will need visa support'
+        'I will be based in the US and need visa support'          <- and five more
+    A LOCATION ELIGIBILITY BOX IS A DECLARATION ABOUT HIM. Ticking all of them states, in his name,
+    contradictory and untrue things to an employer — worse than leaving the form blank, and exactly
+    the class this project already forbids for gender/veteran/disability.
+    His codegen ticks THREE: 'I can be based in Germany and', 'I can be based in a European',
+    'I want to be based in a'. Those are facts he asserted himself, so those are what we tick.
+    A box he did not tick is left alone; if that leaves a required group empty, `_required_empty`
+    reports it and the ladder asks him."""
+    want = []
     try:
-        boxes = page.locator("input[type=checkbox]:visible")
-        n = min(await boxes.count(), 40)
-    except Exception:
+        from recordings import load as _kb
+        want = [c.get("name") for c in (_kb("ashby").get("checkboxes") or [])
+                if isinstance(c, dict) and c.get("checked") and c.get("name")]
+    except Exception as e:
+        log(f"  recorded ticks unavailable ({type(e).__name__}) — ticking NOTHING by keyword")
+    if not want:
+        log("  no recorded ticks for this ATS — leaving every box alone (a tick is a declaration)")
         return 0
-    want = re.compile(r"i agree|agree to|consent|privacy|germany|europe|based in|"
-                      r"work authoris|authoriz|eligib", re.I)
-    for i in range(n):
+    done = 0
+    for name in want:
         try:
-            el = boxes.nth(i)
-            if not await el.is_visible():
-                continue
-            lab = ""
-            try:
-                lab = (await el.evaluate(
-                    "e => (e.getAttribute('aria-label') || "
-                    "(e.closest('label,div,li') || {}).innerText || '').slice(0,90)")) or ""
-            except Exception:
-                pass
-            lab = " ".join(lab.split())
-            req = False
-            try:
-                req = bool(await el.evaluate(
-                    "e => e.required || e.getAttribute('aria-required') === 'true' || "
-                    "/\\*/.test(((e.closest('label,div,li')||{}).innerText||''))"))
-            except Exception:
-                pass
-            if not (req or want.search(lab)):
+            el = page.get_by_role("checkbox", name=name, exact=False).first
+            if not await el.count():
+                el = page.get_by_role("radio", name=name, exact=False).first
+            if not await el.count() or not await el.is_visible():
                 continue
             if await el.is_checked():
-                continue                      # already set — never toggle it back off
+                continue                       # NEVER TOGGLE: a second click unticks it
             await el.check(timeout=4000)
-            if await el.is_checked():         # READ IT BACK
-                log(f"  ticked {lab[:56]!r}")
-                r["filled"].append("tick:" + lab[:20])
+            if await el.is_checked():           # READ IT BACK
+                log(f"  ticked (recorded) {name[:56]!r}")
+                r["filled"].append("tick:" + name[:20])
                 done += 1
             else:
-                log(f"  {lab[:56]!r} did NOT stay ticked")
+                log(f"  {name[:56]!r} did NOT stay ticked")
         except Exception:
             continue
+    log(f"  {done} recorded choice(s) applied (not a bulk tick)")
     return done
 
 
@@ -499,12 +522,15 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
         email = b.get("email") or ""
         if await _fill_by_label(page, r"^e-?mail", email):
             r["filled"].append("email")
-        phone = re.sub(r"[^\d+]", "", str(b.get("phone") or ""))
-        # prefer national digits if +CC present
-        if phone.startswith("+"):
-            phone_nat = re.sub(r"^\+\d{1,3}", "", phone)
-        else:
-            phone_nat = phone
+        # ONE OWNER for the phone rule. This file had its own, and it produced '5785541545' —
+        # it stripped `+49 1` instead of `+49`, losing the leading 1 of the national number. The
+        # measured truth (his Workday recording, four attempts) is 15785541545.
+        try:
+            from greenhouse import phone_national as _natl
+        except Exception:
+            from flows.greenhouse import phone_national as _natl      # type: ignore
+        phone = str(b.get("phone") or "")
+        phone_nat = _natl(phone) or re.sub(r"[^\d]", "", phone)
         if await _fill_by_label(page, r"phone|mobile|tel", phone_nat or phone):
             r["filled"].append("phone")
 
@@ -659,6 +685,31 @@ def _selftest() -> int:
        "salary is PLAIN DIGITS, as recorded")
     b = _basics({"basics": {"legal_name": "Jev Vainsteins", "email": "a@b.c"}})
     ck(b["full_name"] == "Jev Vainsteins", "full name")
+    print("\n[bad-run contracts — 2026-08-17, all eight location boxes were ticked]")
+    try:
+        from recordings import load as _kb
+        _ticks = [c.get("name") for c in (_kb("ashby").get("checkboxes") or [])
+                  if isinstance(c, dict) and c.get("checked")]
+    except Exception:
+        _ticks = []
+    _loc = [x for x in _ticks if "based in" in (x or "").lower()]
+    ck(len(_loc) == 3, f"exactly THREE location ticks, from his recording (got {len(_loc)})")
+    ck(not any("UK" in x for x in _loc), "never claims he can be based in the UK")
+    ck(not any(" US" in x or x.strip().endswith("US") for x in _loc), "never claims the US")
+    ck(not any("need visa" in x.lower() and "do not" not in x.lower() for x in _loc)
+       or all("do not need visa" in x.lower() or "want to be based in a" in x.lower() for x in _loc),
+       "never claims he needs visa support")
+    import inspect
+    _tk = inspect.getsource(_tick_required)
+    # STRIP COMMENTS AND DOCSTRINGS: the paragraph explaining the bug necessarily quotes "based in",
+    # so a naive grep fails correct code. 19th self-referential false positive in this project.
+    _tkc = "\n".join(ln.split("#")[0] for ln in _tk.splitlines())
+    _tkc = _tkc.split('"""')[0] + "".join(_tkc.split('"""')[2:]) if _tkc.count('"""') >= 2 else _tkc
+    ck("based in" not in _tkc, "no keyword sweep survives in the tick CODE")
+    ck("is_checked()" in _tk, "a tick is read back")
+    ck(_notice_text({"notice_period": "1 month"}) == "one month", "notice normalises to the recording")
+    ck(_salary_text({"salary_expectation_eur": "150000"}) == "150000", "salary is plain digits")
+
     print("=" * 50)
     if fails:
         print(f"[X] {len(fails)} failed")
