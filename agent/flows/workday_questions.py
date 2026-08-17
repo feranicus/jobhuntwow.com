@@ -36,15 +36,22 @@ def iso_start(defaults=None):
     return (date.today() + timedelta(weeks=notice_weeks(defaults))).isoformat()
 
 def format_for_placeholder(iso, placeholder=""):
+    """Render the date in the ORDER AND SEPARATOR the box advertises.
+
+    MEASURED 2026-08-17: the incoming version matched only `/` and `-`, so a German tenant's
+    `DD.MM.YYYY` fell through to the final return and produced `09/14/2026` — wrong order AND wrong
+    separator, typed into a real employer's form where 09 would be read as the day. The separator has
+    to come from the placeholder too, not be assumed."""
     y, m, d = iso.split("-")
     ph = re.sub(r"\s+", "", (placeholder or "")).lower()
-    if ph.startswith("mm/dd") or ph in ("mm/dd/yyyy", "mm-dd-yyyy") or "mm/dd" in ph:
-        return f"{m}/{d}/{y}"
-    if ph.startswith("dd/mm") or ph.startswith("dd-mm") or "dd/mm" in ph or "dd-mm" in ph:
-        return f"{d}/{m}/{y}"
+    sep = next((c for c in ph if c in "/.-"), "/")
     if ph.startswith("yyyy"):
-        return iso
-    return f"{m}/{d}/{y}"
+        return iso if sep == "-" else sep.join((y, m, d))
+    if re.search(r"dd\s*[/.\-]\s*mm", ph):
+        return sep.join((d, m, y))
+    if re.search(r"mm\s*[/.\-]\s*dd", ph):
+        return sep.join((m, d, y))
+    return f"{m}/{d}/{y}"          # no usable hint -> US order, Workday's default
 
 def salary_text(defaults):
     try:
@@ -56,6 +63,11 @@ def salary_text(defaults):
     for k, v in (defaults or {}).items():
         if re.search(r"salary|compensation", str(k), re.I) and str(v).strip().strip('"'):
             raw = str(v).strip().strip('"')
+            # 'ASK' IS NOT AN ANSWER — and `candidate.md` says exactly that under `logistics`
+            # (`salary_expectation: ASK`). Returning it would type the word ASK into an employer's
+            # salary box. A placeholder means the ladder must ask HIM, so return nothing.
+            if re.fullmatch(r"(ask|tbd|n/?a|unknown|\?+|-+)", raw, re.I):
+                continue
             digits = re.sub(r"[^\d]", "", raw)
             return f"{int(digits):,} EUR gross per annum".replace(",", ".") if digits else raw
     return ""
@@ -180,7 +192,54 @@ async def repair_named_errors(page, data, r, err, log=print):
     n = await fill_page_questions(page, data, r, log=log)
     return n > 0
 
-if __name__ == "__main__":
-    iso = iso_start({"notice_period": "1 month"})
-    print("iso", iso, "mmdd", format_for_placeholder(iso, "MM/DD/YYYY"))
+def _selftest() -> int:
+    import datetime as _dt
+    fails = []
+
+    def ck(name, ok, d=""):
+        print(("  OK   " if ok else "  FAIL ") + name + (f"   :: {d}" if not ok else ""))
+        if not ok:
+            fails.append(name)
+
+    print("[1] the date is rendered in the order AND separator the BOX advertises")
+    iso = "2026-09-16"
+    for ph, want in (("MM/DD/YYYY", "09/16/2026"), ("mm/dd/yyyy", "09/16/2026"),
+                     ("DD.MM.YYYY", "16.09.2026"), ("DD/MM/YYYY", "16/09/2026"),
+                     ("DD-MM-YYYY", "16-09-2026"), ("YYYY-MM-DD", "2026-09-16"),
+                     ("", "09/16/2026")):
+        got = format_for_placeholder(iso, ph)
+        ck(f"{ph or '(no hint)':<12} -> {want}", got == want, got)
+
+    print("\n[2] the start date comes from HIS notice period, and is never in the past")
+    for notice, lo, hi in (("1 month", 25, 35), ("2 months", 55, 65), ("immediately", 0, 20),
+                           ("", 20, 40)):
+        d = _dt.date.fromisoformat(iso_start({"notice_period": notice}))
+        days = (d - _dt.date.today()).days
+        ck(f"notice {(notice or '(unset)'):<12} -> {d} ({days}d)", lo <= days <= hi, days)
+    ck("never a date in the past",
+       _dt.date.fromisoformat(iso_start({"notice_period": "1 month"})) > _dt.date.today())
+
+    print("\n[3] the site's own error names the field, ONCE")
+    real = ("Error: The field What is your desired start date? is required and must have a value. | "
+            "Error-What is your desired start date? The field What is your desired start date? is "
+            "required and must have a value.")
+    n = named_fields_from_error(real)
+    ck("the start-date field is named", any("desired start date" in x.lower() for x in n), n)
+    ck("...and he is asked about it once, not twice", len(n) == 1, n)
+    ck("nothing is invented from a clean page", named_fields_from_error("") == [])
+
+    print("\n[4] the salary answer is HIS written figure, never a model's guess")
+    ck("from his screening defaults", "150" in salary_text({"salary_expectation_eur": "150000"}))
+    ck("and 'ASK' is never typed into a form", "ASK" not in salary_text({"salary_expectation": "ASK"}))
+
+    print("\n" + "=" * 78)
+    if fails:
+        print(f"[X] {len(fails)} WORKDAY-QUESTION CONTRACT(S) BROKEN: {fails}")
+        return 1
     print("ALL WORKDAY QUESTION CONTRACTS HOLD")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(_selftest() if "--logic" in sys.argv else 0)

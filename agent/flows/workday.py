@@ -546,8 +546,16 @@ async def _repair_validation(page, data: dict, err: str, r: dict) -> bool:
     fixed = False
     if any("phone" in n.lower() for n in named) or "phone" in (err or "").lower():
         fixed |= await _phone_block(page, data, r)
+    # ONE OWNER for the questions page, in the repair path too: `_fill_date` stays as the last-ditch
+    # text/calendar attempt, but the module that knows the WHOLE page goes first.
+    try:
+        from workday_questions import repair_named_errors as _rne
+        if await _rne(page, data, r, err, log=_log):
+            fixed = True
+    except Exception as e:
+        _log(f"    questions repair: {type(e).__name__}: {e}")
     for nm in named:
-        if _DATE_RX.search(nm):
+        if not fixed and _DATE_RX.search(nm):
             want = ""
             try:
                 from workday_wd import candidate_answers as _ca
@@ -2849,10 +2857,19 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
             # ran AFTER the careful fill, so it overwrote `15785541545` with the raw international
             # value and put the same string in `Phone Extension` — visible in his screenshot, and the
             # reason the format error survived a fix that was already in the code. Order is the fix.
+            # ONLY ON THE PAGE THAT HAS A PHONE. `phone NOT FOUND on this page` printed on My
+            # Experience, Application Questions and again after every error — ~50s of dead selector
+            # hunting per page, and noise that trains you to read past the log.
+            _stepnm = ""
             try:
-                await _phone_block(page, data, r)
-            except Exception as e:
-                _log(f"    phone block: {type(e).__name__}: {e}")
+                _stepnm = ((await _snapshot(page)).get("step") or "").lower()
+            except Exception:
+                pass
+            if not any(k in _stepnm for k in ("experience", "question", "review", "disclosure")):
+                try:
+                    await _phone_block(page, data, r)
+                except Exception as e:
+                    _log(f"    phone block: {type(e).__name__}: {e}")
             await _check_consent(page)
             try:
                 p = await _answer_prompts(page, data)
@@ -2860,6 +2877,16 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
                     r["filled"].append(f"prompt:{p}")
             except Exception as e:
                 r["note"] += f" prompt:{e};"
+            # THE APPLICATION-QUESTIONS PAGE HAS ITS OWN FIELDS (desired start date, salary, free
+            # text) and nothing filled them proactively — the run only ever discovered them from a
+            # validation error. `workday_questions` is the one owner of that page.
+            try:
+                from workday_questions import fill_page_questions as _fpq
+                _nq = await _fpq(page, data, r, log=_log)
+                if _nq:
+                    _log(f"    application questions wrote {_nq} field(s)")
+            except Exception as e:
+                _log(f"    application questions: {type(e).__name__}: {e}")
             try:
                 a = await _answer_choices(page, data, answer_fn)
                 if a: r["filled"].append(f"answered:{a}")

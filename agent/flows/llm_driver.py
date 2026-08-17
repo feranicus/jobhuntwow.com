@@ -648,11 +648,23 @@ async def _pick_date_in_calendar(page, sel: str, value: str, label: str = "") ->
     has is the calendar - so that is the route we take: open it, set the month/year dropdowns in
     its header, then click the day cell by its aria-label.
     """
+    # THE ORDER IS NOT ALWAYS DD/MM. This function assumed the German order and Workday's intive
+    # tenant advertises `MM/DD/YYYY`, so `09/16/2026` was read as day=9 month=16 -> refused, and the
+    # calendar never opened. Accept ISO too, and when the first number cannot be a month, it is a day.
     m = re.match(r"^\s*(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\s*$", value or "")
-    if not m:
+    iso = re.match(r"^\s*(\d{4})-(\d{2})-(\d{2})\s*$", value or "")
+    year = mon = day = 0
+    if iso:
+        year, mon, day = int(iso.group(1)), int(iso.group(2)), int(iso.group(3))
+    elif m:
+        a, b, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if a > 12:
+            day, mon = a, b          # 17/09/2026 -> unambiguously day-first
+        else:
+            mon, day = a, b          # 09/16/2026 -> MM/DD, which is what this tenant asks for
+    else:
         return ""
-    day, mon, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    if not (1 <= mon <= 12):
+    if not (1 <= mon <= 12 and 1 <= day <= 31):
         return ""
     name = _MONTHS[mon - 1]
     try:
