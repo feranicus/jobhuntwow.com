@@ -645,63 +645,9 @@ async def _tick_required(page, r: dict, log=_log) -> int:
     return done
 
 
-async def _page_text(page) -> str:
-    try:
-        body = await page.evaluate(
-            "() => (document.body && document.body.innerText || '').slice(0, 9000)"
-        ) or ""
-    except Exception:
-        body = ""
-    try:
-        extra = await page.evaluate(r"""() => {
-          const bits = [];
-          document.querySelectorAll(
-            '[role=dialog],[role=alertdialog],[class*="modal"],[class*="toast"],[class*="Toast"],[class*="banner"]'
-          ).forEach(el => {
-            const t = (el.innerText||'').replace(/\s+/g,' ').trim();
-            if (t) bits.push(t.slice(0, 500));
-          });
-          return bits.join(' | ');
-        }""") or ""
-        if extra:
-            body = body + "\n" + extra
-    except Exception:
-        pass
-    return body
-
-
-def _looks_submitted(body: str, url: str, submit_still: bool) -> bool:
-    if re.search(
-        r"thank you|thanks for applying|thanks for your (interest|application)|"
-        r"application (has been )?(submitted|received|sent)|successfully submitted|"
-        r"we (have )?received (your )?application|application received|"
-        r"congratulat|you(r)? application is (in|complete)|form sent|"
-        r"we will (be )?in touch|next steps",
-        body or "", re.I,
-    ):
-        return True
-    if re.search(r"success|confirm|thank|submitted|received", url or "", re.I):
-        return True
-    # Ashby often keeps a similar URL but removes the Submit button and shows short success copy
-    if (not submit_still) and re.search(
-        r"received|submitted|thank|in touch|application", body or "", re.I
-    ):
-        return True
-    return False
-
-
-async def _submit_still_visible(page) -> bool:
-    try:
-        n = await page.get_by_role(
-            "button", name=re.compile(r"^\s*submit application\s*$", re.I)
-        ).count()
-        return n > 0
-    except Exception:
-        return False
-
-
 async def _submit(page, r: dict) -> bool:
-    # A REQUIRED RESUME THAT NEVER ARRIVED IS A BLOCKER, not a detail.
+    # A REQUIRED RESUME THAT NEVER ARRIVED IS A BLOCKER, not a detail. The screenshot showed an
+    # empty Resume* drop zone on a run whose log claimed the upload succeeded.
     if not any(str(x).startswith("upload:") for x in (r.get("filled") or [])):
         try:
             need = await page.locator("input[type=file]").count()
@@ -728,56 +674,27 @@ async def _submit(page, r: dict) -> bool:
         if await btn.count() == 0:
             _log("no Submit Application button found")
             return False
-        await btn.first.scroll_into_view_if_needed(timeout=3000)
         await btn.first.click(timeout=8000)
         _log("clicked Submit Application")
+        await page.wait_for_timeout(3000)
+        body = ""
         try:
-            await page.wait_for_load_state("networkidle", timeout=15000)
+            body = await page.evaluate("() => (document.body && document.body.innerText || '').slice(0,5000)") or ""
         except Exception:
             pass
-        await page.wait_for_timeout(2500)
-
-        body = await _page_text(page)
         url = page.url or ""
-        still = await _submit_still_visible(page)
-
-        if re.search(
-            r"is required|required field|please (complete|fix|fill|provide)|"
-            r"missing (required|entry)|cannot be empty|must (be|have)",
-            body, re.I,
-        ):
-            _log(f"submit blocked by validation: {body[:220]!r}")
-            r["submitted"] = False
-            r["stage"] = "blocked"
-            r["note"] = (r.get("note") or "") + " submit blocked by validation."
-            return False
-
-        ok = _looks_submitted(body, url, still)
-        if not ok:
-            await page.wait_for_timeout(3500)
-            body = await _page_text(page)
-            url = page.url or ""
-            still = await _submit_still_visible(page)
-            ok = _looks_submitted(body, url, still)
-
-        # Last resort: full form filled, Submit gone, no validation noise → likely accepted
-        if not ok and not still:
-            filled_n = len(r.get("filled") or [])
-            if filled_n >= 15 and not re.search(r"error|invalid|required", body[:800], re.I):
-                ok = True
-                _log("SUBMITTED — inferred (Submit gone, no validation, form was complete)")
-
+        ok = bool(re.search(
+            r"thank you|thanks for|application (has been )?(submitted|received|sent)|"
+            r"successfully submitted|we (have )?received|congratulat",
+            body, re.I)) or bool(re.search(r"success|confirm|thank", url, re.I))
         if ok:
             r["submitted"] = True
             r["stage"] = "submitted"
-            _log("SUBMITTED — site confirmed")
+            _log(f"SUBMITTED — site confirmed")
         else:
             r["submitted"] = False
             r["stage"] = "review"
-            _log(
-                f"submit clicked, confirmation unclear. "
-                f"submit_btn_still={still} url={url[:80]} body={body[:160]!r}"
-            )
+            _log(f"submit clicked, confirmation unclear. url={url[:80]}")
         return ok
     except Exception as e:
         _log(f"submit failed: {type(e).__name__}: {e}")
