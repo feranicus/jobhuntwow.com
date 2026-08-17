@@ -3127,8 +3127,12 @@ def _selftest() -> int:
           'get_attribute("placeholder")' in _fd)
     check("the calendar path is the recording's: Calendar -> Next month -> the day",
           "calendar" in _fd.lower() and "next month" in _fd.lower())
+    # MY OWN COMMENT SAYS "Escape reverts", so this matched the prose EXPLAINING the rule and
+    # failed correct code. Strip comments and docstrings first — same defect, same fix, again.
+    _fdc = "\n".join(ln.split("#")[0] for ln in _fd.splitlines()
+                     if not ln.strip().startswith(("#", chr(34) * 3, chr(39) * 3)))
     check("a date is READ BACK, and Escape is never pressed on it (it reverts)",
-          "input_value()" in _fd and "Escape" not in _fd)
+          "input_value()" in _fdc and "Escape" not in _fdc)
 
     print("\n" + "=" * 78)
     if fails:
