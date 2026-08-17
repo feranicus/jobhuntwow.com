@@ -2937,8 +2937,11 @@ def _selftest() -> int:
             check(f"autofill routes {_lbl!r} -> {_want!r}", _k(_lbl) == _want)
         check("autofill sends the NATIONAL number, never '+49 …'",
               _AF.profile_values({"phone": "+49 15785541545"}).get("phone") == "15785541545")
-        check("the phone block runs AFTER the generic autofill, so nothing can overwrite it",
-              _wcode.index("autofill.fill_page") < _wcode.index("await _phone_block(page, data, r)"))
+        _dv = _aw.get_source_segment(src, next(
+            n for n in _aw.walk(_wt)
+            if isinstance(n, _aw.AsyncFunctionDef) and n.name == "drive")) or ""
+        check("the phone block runs AFTER the generic autofill INSIDE drive()",
+              -1 < _dv.find("autofill.fill_page") < _dv.find("await _phone_block(page, data, r)"))
     except Exception as _e:
         check(f"autofill contracts runnable ({type(_e).__name__}: {_e})", False)
 
