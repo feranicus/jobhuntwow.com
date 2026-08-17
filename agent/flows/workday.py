@@ -2968,8 +2968,8 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
                             page, f"the form will not accept: {err[:180]}", r["filled"],
                             facts=_facts_for_panel(data),
                             tried=["the deterministic repair for " + ", ".join(named or ["?"])])
-                        if _esc.get("acted"):
-                            _log(f"    PANEL UNBLOCKED IT: {_esc.get('acted')}")
+                        if _esc.get("moved"):
+                            _log(f"    PANEL UNBLOCKED IT: {_esc.get('act') or 'action'}")
                             last_err = ""
                             continue
                         if _esc.get("asked"):
@@ -3205,6 +3205,18 @@ def _selftest() -> int:
           "ask.ASK_TIMEOUT" in _rv)
     check("...and tells him the format the box expects",
           "placeholder" in _rv)
+
+    # EVERY CALLER MUST READ A KEY THE PANEL ACTUALLY RETURNS. It returns moved/asked/act; a caller
+    # reading anything else silently discards the panel's work, which is exactly what made three
+    # vendors agreeing 3/3 and clicking the right control come out as `stage=blocked`.
+    _esc_fn = next(n for n in _aw.walk(_wt)
+                   if isinstance(n, _aw.AsyncFunctionDef) and n.name == "_escalate")
+    _esc_src = _aw.get_source_segment(src, _esc_fn) or ""
+    _returned = set(re.findall(r'"(\w+)":', _esc_src.split("return")[1] if "return" in _esc_src
+                               else "")) | {"moved", "asked", "act"}
+    _read = set(re.findall(r'(?:esc|_esc)\.get\("(\w+)"', src))
+    check(f"every caller reads only keys the panel returns (reads {sorted(_read)})",
+          _read <= _returned, sorted(_read - _returned))
 
     print("\n" + "=" * 78)
     if fails:
