@@ -2513,3 +2513,22 @@ Two defects, both in code I wrote an hour earlier:
    resolves by DOM order across every control containing those letters. Exact -> anchored -> prefix,
    and prefix is refused below 6 characters. A self-declaration is the last thing that may be matched
    loosely.
+
+## THE TYPEAHEAD CLICKED A CHECKBOX LABEL, AND THAT COST TWO ANSWERS (Ashby, 2026-08-17)
+```
+[ashby] typeahead -> 'I can be based in Germany and do not need visa support'
+[ashby] 15 recorded choice(s) applied      <- 16 were recorded
+```
+One defect, two symptoms. `_typeahead` typed "Germany" correctly (the knowledge says
+`Start typing... -> Germany`), then looked for the option with `page.locator("[role=option],
+[class*='option']")` — PAGE-WIDE. The nearest match was the CHECKBOX LABEL "I can be based in Germany
+and do not need visa support", so the click landed there:
+  * the location combobox stayed EMPTY (the required field the human sees blank), and
+  * that checkbox was toggled by the click, so `_tick_required` then skipped it as "already checked"
+    and the recorded Germany tick silently vanished from the count.
+FIXES: options are scoped to the combobox's own listbox (`aria-owns`/`aria-controls` first, then
+`[role=listbox] [role=option]`), and a candidate longer than 48 characters or containing
+`visa support|based in|i can be` is refused outright — an option is a short VALUE ("Germany"), a
+sentence is a form control's own label. And a recorded tick that does not resolve is now NAMED in the
+log and added to `unresolved`, instead of being counted out silently: "15 of 16 applied" told me a
+number, not which one was missing.

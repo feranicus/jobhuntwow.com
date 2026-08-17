@@ -234,18 +234,36 @@ async def _typeahead(page, query: str, pick_contains: str = "") -> bool:
         await el.fill("")
         await el.type(query, delay=40)
         await page.wait_for_timeout(900)
-        opt = page.get_by_role("option")
+        # SCOPE THE OPTIONS TO THE DROPDOWN, NEVER THE WHOLE PAGE.
+        # MEASURED: it typed "Germany" and then matched `[class*='option']` across the document,
+        # landing on the CHECKBOX label "I can be based in Germany and do not need visa support" —
+        # so the location box stayed EMPTY, that checkbox got toggled by the click, and the recorded
+        # Germany tick was then skipped as "already checked" (15 ticks instead of 16).
+        # A suggestion list lives in a listbox owned by the combobox; a page-wide selector is a bet.
+        opt = page.locator("[role=listbox] [role=option], [role=option]")
+        try:
+            owns = await el.get_attribute("aria-owns") or await el.get_attribute("aria-controls") or ""
+        except Exception:
+            owns = ""
+        if owns:
+            scoped = page.locator(f"#{owns} [role=option], #{owns} li")
+            if await scoped.count():
+                opt = scoped
         if await opt.count() == 0:
-            # listbox items
-            opt = page.locator("[role=option], [class*='option']")
+            opt = page.locator("[role=listbox] li, [class*='menu'] [class*='option']")
         if await opt.count() == 0:
             await page.keyboard.press("Enter")
             _log(f"  typeahead typed {query!r} (no option list)")
             return True
         target = pick_contains or query
+        # AN OPTION IS A SHORT VALUE, NOT A SENTENCE. "I can be based in Germany and do not need visa
+        # support" is a checkbox label; a country option is "Germany" or "Germany (Berlin)".
+        _sane = re.compile(r"visa support|i (can|will|want) be|based in|need visa", re.I)
         chosen = None
         for i in range(min(await opt.count(), 12)):
             t = (await opt.nth(i).inner_text() or "").strip()
+            if _sane.search(t) or len(t) > 48:
+                continue                       # not an option: that is a form control's own label
             if re.search(re.escape(target), t, re.I) or (i == 0 and t):
                 chosen = opt.nth(i)
                 label = t
@@ -469,6 +487,11 @@ async def _tick_required(page, r: dict, log=_log) -> int:
                 log(f"  {name[:56]!r} did NOT stay ticked")
         except Exception:
             continue
+    missed = [n for n in want if not any(n[:20] in f for f in (r.get("filled") or []))]
+    if missed:
+        log(f"  {len(missed)} recorded choice(s) did NOT resolve on this page: "
+            f"{[m[:34] for m in missed]}")
+        r["unresolved"] = list(dict.fromkeys((r.get("unresolved") or []) + missed))
     log(f"  {done} recorded choice(s) applied (not a bulk tick)")
     return done
 
@@ -744,6 +767,29 @@ def _selftest() -> int:
        "salary is PLAIN DIGITS, as recorded")
     b = _basics({"basics": {"legal_name": "Jev Vainsteins", "email": "a@b.c"}})
     ck(b["full_name"] == "Jev Vainsteins", "full name")
+    print("\n[typeahead contracts — it clicked a CHECKBOX LABEL instead of a dropdown option]")
+    import inspect as _insp
+    import re as _re2
+    _sane = _re2.compile(_re2.search(r'_sane = re\.compile\(r"(.*?)", re\.I\)',
+                                     _insp.getsource(_typeahead)).group(1), _re2.I)
+
+    def _usable_opt(t):
+        return not (_sane.search(t) or len(t) > 48)
+
+    for bad in ("I can be based in Germany and do not need visa support",
+                "I will be based in the US and need visa support",
+                "I want to be based in a European country other than Germany or the UK"):
+        ck(not _usable_opt(bad), f"a checkbox label is never picked as an option: {bad[:34]!r}")
+    for good in ("Germany", "Germany (Berlin)", "Austria", "Netherlands"):
+        ck(_usable_opt(good), f"a real country IS pickable: {good!r}")
+    _ta = _insp.getsource(_typeahead)
+    ck("[role=listbox] [role=option]" in _ta, "options are scoped to the dropdown, not the page")
+    ck("class*='option'\"" not in _ta or "role=listbox" in _ta,
+       "no page-wide option selector survives")
+    _tk3 = _insp.getsource(_tick_required)
+    ck("did NOT resolve on this page" in _tk3,
+       "a recorded tick that does not resolve is NAMED, not silently counted out")
+
     print("\n[stub contracts — 'UNKNOWN' was typed into the n8n motivation box]")
     for bad in ("UNKNOWN", "ASK", "TBD", "No", "yes", "?", "n/a", "  none "):
         ck(not usable_essay(bad), f"{bad!r} is never typed as an essay")
@@ -751,7 +797,6 @@ def _selftest() -> int:
        "real prose is accepted")
     ck(bool(recorded_essay("What about n8n and the role caught your attention")),
        "his RECORDED n8n answer is available and tried first")
-    import inspect as _insp
     _tk2 = _insp.getsource(_tick_required)
     ck("exact=True" in _tk2 and "len(name) < 6" in _tk2,
        "a short declaration ('Man') is matched EXACTLY, never by prefix")
