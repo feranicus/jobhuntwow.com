@@ -438,6 +438,98 @@ async def _phone_block(page, data: dict, r: dict) -> bool:
     return did
 
 
+_DATE_RX = re.compile(r"date\b", re.I)
+
+
+async def _fill_date(page, label: str, value: str) -> bool:
+    """A Workday date box: TEXT in the format the box itself advertises, else the CALENDAR.
+
+    HIS RECORDING IS THE GROUND TRUTH, and it uses the calendar:
+        button("Calendar").click() -> button("Next month").click() -> button("Thursday 17 September")
+    Text is tried first because most Workday date boxes accept it, and the FORMAT COMES FROM THE
+    PLACEHOLDER (`MM/DD/YYYY` on this tenant — a German-shaped `DD.MM.YYYY` would be silently wrong).
+    Then it is READ BACK: this project has paid twice for a date that looked filled and was not."""
+    import datetime as _dt
+    try:
+        d = _dt.date.fromisoformat(value) if value else (_dt.date.today() + _dt.timedelta(days=30))
+    except Exception:
+        d = _dt.date.today() + _dt.timedelta(days=30)
+    box = None
+    for rx in (rf"^{re.escape(label)}$", re.escape(label[:28]), r"date"):
+        try:
+            el = page.get_by_role("textbox", name=re.compile(rx, re.I)).first
+            if await el.count() and await el.is_visible():
+                box = el
+                break
+        except Exception:
+            continue
+    if box is not None:
+        ph = ""
+        try:
+            ph = (await box.get_attribute("placeholder")) or ""
+        except Exception:
+            pass
+        order = ("%d.%m.%Y" if ph.upper().startswith("DD") else
+                 "%Y-%m-%d" if ph.upper().startswith("YYYY") else "%m/%d/%Y")
+        txt = d.strftime(order)
+        try:
+            await box.fill(txt, timeout=ACTION_TIMEOUT)
+            await page.keyboard.press("Tab")            # BLUR commits; Escape reverts (measured)
+            await page.wait_for_timeout(500)
+            back = (await box.input_value()) or ""
+            _log(f"    date         = {txt!r} (placeholder {ph or '?'}) reads {back!r}")
+            if back.strip():
+                return True
+        except Exception as e:
+            _log(f"    date text fill: {type(e).__name__}")
+    # THE CALENDAR, the way he did it.
+    try:
+        cal = page.get_by_role("button", name=re.compile(r"calendar", re.I)).first
+        if not await cal.count():
+            _log("    date         no Calendar button on this page")
+            return False
+        await cal.click(timeout=ACTION_TIMEOUT)
+        await page.wait_for_timeout(700)
+        for _ in range(14):                             # walk forward a month at a time
+            want = d.strftime("%B %Y")
+            body = ""
+            try:
+                body = (await page.inner_text("body"))[:6000]
+            except Exception:
+                pass
+            if d.strftime("%B") in body and str(d.year) in body:
+                break
+            nxt = page.get_by_role("button", name=re.compile(r"next month", re.I)).first
+            if not await nxt.count():
+                break
+            await nxt.click(timeout=ACTION_TIMEOUT)
+            await page.wait_for_timeout(350)
+            _ = want
+        # his recording clicks 'Thursday 17 September'
+        for pat in (d.strftime("%A %-d %B") if os.name != "nt" else d.strftime("%A %d %B"),
+                    d.strftime("%A %d %B"), d.strftime("%A, %B %d, %Y"), str(d.day)):
+            try:
+                cell = page.get_by_role("button", name=re.compile(
+                    rf"^{re.escape(pat)}$", re.I)).first
+                if await cell.count() and await cell.is_visible():
+                    await cell.click(timeout=ACTION_TIMEOUT)
+                    await page.wait_for_timeout(500)
+                    back = ""
+                    if box is not None:
+                        try:
+                            back = (await box.input_value()) or ""
+                        except Exception:
+                            pass
+                    _log(f"    date         picked {pat!r} in the calendar (reads {back!r})")
+                    return True
+            except Exception:
+                continue
+        _log("    date         the calendar opened but the day cell was not found")
+    except Exception as e:
+        _log(f"    date calendar: {type(e).__name__}: {e}")
+    return False
+
+
 async def _repair_validation(page, data: dict, err: str, r: dict) -> bool:
     """The site named the broken fields. Fix THOSE, then let the loop press Next again."""
     named = error_fields(err)
@@ -445,6 +537,17 @@ async def _repair_validation(page, data: dict, err: str, r: dict) -> bool:
     fixed = False
     if any("phone" in n.lower() for n in named) or "phone" in (err or "").lower():
         fixed |= await _phone_block(page, data, r)
+    for nm in named:
+        if _DATE_RX.search(nm):
+            want = ""
+            try:
+                from workday_wd import candidate_answers as _ca
+                want = (_ca() or {}).get("available_start_date", "")
+            except Exception:
+                pass
+            if await _fill_date(page, nm, want):
+                fixed = True
+                r["filled"].append("start_date")
     if named:
         try:
             fixed |= bool(await _answer_prompts(page, data, only=named))
@@ -2787,6 +2890,7 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
                     # halt was correct given what had been TRIED, and what had been tried was
                     # incomplete — the site NAMED the two broken fields and nothing read the names.
                     # One repair attempt per distinct error, then the old behaviour exactly.
+                    named = error_fields(err)
                     if err not in _repaired:
                         _repaired.add(err)
                         try:
@@ -2796,6 +2900,25 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
                                 continue
                         except Exception as e:
                             _log(f"    repair raised {type(e).__name__}: {e} — halting as before")
+                    # HIS QUESTION, ASKED FOUR TIMES: *"why our consensus with 3 LLMs is not FUCKING
+                    # WORKING"*. Because it was never called here. MEASURED: all four `_escalate` call
+                    # sites are in the sign-in gate path, so a FORM-FIELD stall — the thing that has
+                    # blocked every intive run — could not reach the panel. Deterministic repair
+                    # first, then the three models, then him. That is the ladder as designed.
+                    try:
+                        _esc = await _escalate(
+                            page, f"the form will not accept: {err[:180]}", r["filled"],
+                            facts=_facts_for_panel(data),
+                            tried=["the deterministic repair for " + ", ".join(named or ["?"])])
+                        if _esc.get("acted"):
+                            _log(f"    PANEL UNBLOCKED IT: {_esc.get('acted')}")
+                            last_err = ""
+                            continue
+                        if _esc.get("asked"):
+                            last_err = ""
+                            continue
+                    except Exception as _e:
+                        _log(f"    panel unavailable ({type(_e).__name__}: {_e})")
                     r["stage"] = "blocked"
                     r["note"] = f"Workday validation error we cannot resolve: '{err}'. Stopped for the human."
                     await _notify(r["note"])
@@ -2979,6 +3102,33 @@ def _selftest() -> int:
         _af = _fh.read()
     check("autofill's national-number fallback cannot return the international form",
           "return raw or \"\"" not in _af)
+
+    # THE PANEL MUST BE REACHABLE FROM A FORM STALL, not only from the sign-in gate. All four
+    # `_escalate` call sites were in the gate path, so on every intive run the three models were never
+    # consulted about the thing that was actually blocking. Scoped to the validation branch, because
+    # drive() contains the gate's escalate too — measuring the whole function found that one and
+    # reported the wrong answer.
+    _dv2 = _aw.get_source_segment(src, next(
+        n for n in _aw.walk(_wt) if isinstance(n, _aw.AsyncFunctionDef) and n.name == "drive")) or ""
+    _vb = _dv2[_dv2.find("if err == last_err:"):] if "if err == last_err:" in _dv2 else ""
+    check("the 3-model panel is reachable when the FORM refuses", "_escalate(" in _vb)
+    check("...and the deterministic repair is tried BEFORE the models",
+          -1 < _vb.find("_repair_validation") < _vb.find("_escalate("))
+    check("...and the human is still the last rung",
+          _vb.find("_escalate(") < _vb.find('r["stage"] = "blocked"'))
+    _rv = _aw.get_source_segment(src, next(
+        n for n in _aw.walk(_wt)
+        if isinstance(n, _aw.AsyncFunctionDef) and n.name == "_repair_validation")) or ""
+    check("a date field the site names is filled by the calendar path", "_fill_date(" in _rv)
+    _fd = _aw.get_source_segment(src, next(
+        n for n in _aw.walk(_wt)
+        if isinstance(n, _aw.AsyncFunctionDef) and n.name == "_fill_date")) or ""
+    check("the date format comes from the box's own placeholder, never assumed",
+          'get_attribute("placeholder")' in _fd)
+    check("the calendar path is the recording's: Calendar -> Next month -> the day",
+          "calendar" in _fd.lower() and "next month" in _fd.lower())
+    check("a date is READ BACK, and Escape is never pressed on it (it reverts)",
+          "input_value()" in _fd and "Escape" not in _fd)
 
     print("\n" + "=" * 78)
     if fails:
