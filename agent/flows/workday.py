@@ -355,7 +355,16 @@ def error_fields(err: str) -> list:
                       nm, flags=re.I)[0].strip(" .:*-")
         if 2 < len(nm) <= 44 and nm.lower() not in [o.lower() for o in out]:
             out.append(nm)
-    return out
+    # ONE QUESTION PER FIELD. The `Error-<Field>` shape yields a longer, prose-contaminated copy of a
+    # name the first shape already gave cleanly, so he was asked TWICE for the same box (measured:
+    # 'What is your desired start date?' and 'What is your desired start date? The fie'). Keep the
+    # shortest of any pair where one is a prefix of the other.
+    out.sort(key=len)
+    keep = []
+    for nm in out:
+        if not any(nm.lower().startswith(k.lower()) for k in keep):
+            keep.append(nm)
+    return keep
 
 
 async def _phone_block(page, data: dict, r: dict) -> bool:
@@ -567,12 +576,34 @@ async def _repair_validation(page, data: dict, err: str, r: dict) -> bool:
                     cur = (await el.input_value()) or ""
             except Exception:
                 pass
+            hint = ""
+            try:
+                el = page.get_by_role("textbox", name=nm, exact=False).first
+                if await el.count():
+                    hint = (await el.get_attribute("placeholder")) or ""
+            except Exception:
+                pass
             reply = await _ask(
                 f"Workday ({_host(page.url)}) rejects this value for *{nm}*:\n\n"
-                f"`{cur or '(empty)'}`\n\nIts message: {(err or '')[:120]}\n\n"
+                f"`{cur or '(empty)'}`\n\n"
+                + (f"The box expects the format `{hint}`.\n\n" if hint else "")
+                + f"Its message: {(err or '')[:120]}\n\n"
                 f"Reply with EXACTLY what I should type into that box.",
                 scope=f"format:{nm.lower()}")
             reply = (reply or "").strip()
+            if not reply:
+                # HE ANSWERED TWICE AND NEITHER WAS USED: the run declared "stopped for the human"
+                # about 60 seconds after asking, and both replies arrived after it had exited. A
+                # question asked and then abandoned is worse than not asking. Wait the full window.
+                _log(f"    waiting for your answer about {nm!r} (up to 10 min)…")
+                try:
+                    if ask:
+                        reply = ((await ask.ask_human(
+                            f"Still waiting: what exactly should I type into *{nm}* on "
+                            f"{_host(page.url)}?" + (f" (format {hint})" if hint else ""),
+                            timeout=ask.ASK_TIMEOUT)) or "").strip()
+                except Exception as _e:
+                    _log(f"    still could not reach you ({type(_e).__name__})")
             if not reply:
                 continue
             try:
@@ -3133,6 +3164,20 @@ def _selftest() -> int:
                      if not ln.strip().startswith(("#", chr(34) * 3, chr(39) * 3)))
     check("a date is READ BACK, and Escape is never pressed on it (it reverts)",
           "input_value()" in _fdc and "Escape" not in _fdc)
+    # HE ANSWERED TWICE AND NEITHER REPLY WAS USED. Two properties, both measured from his Telegram
+    # transcript: ONE question per field (the `Error-<Field>` shape produced a second, prose-polluted
+    # copy of the same name), and the run must WAIT for the answer instead of reporting "stopped for
+    # the human" sixty seconds later, which is what threw both of his replies away.
+    _dupe = error_fields(
+        "Error: The field What is your desired start date? is required and must have a value. | "
+        "Error-What is your desired start date? The field What is your desired start date? is "
+        "required and must have a value.")
+    check("one question per field, never two for the same box",
+          _dupe == ["What is your desired start date?"])
+    check("the repair WAITS for his answer with the full deadline",
+          "ask.ASK_TIMEOUT" in _rv)
+    check("...and tells him the format the box expects",
+          "placeholder" in _rv)
 
     print("\n" + "=" * 78)
     if fails:
