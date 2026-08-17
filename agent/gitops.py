@@ -50,18 +50,29 @@ ROOT = os.path.dirname(HERE)                                            # repo r
 PUBLIC_REMOTES = re.compile(r"jobhuntwow\.com|github\.io|\.github\.io", re.I)
 
 # WHAT MUST NEVER BE COMMITTED, anywhere. Ordered so the reason is obvious from the pattern.
+# WHAT MUST NEVER BE COMMITTED. His instruction, 2026-08-17, verbatim: *"i need that this will be on
+# git for now i dont care that my resume is seen to the internet but the passwords shouldn't be .env
+# file"*. So the policy is now HIS policy, and the line is drawn at CREDENTIALS, not at personal data:
+#   BLOCKED  - .env, ATS credentials, auth/session state, codegen recordings (they contain his typed
+#              password in cleartext), and the databases (they churn every run and hold his answers).
+#   ALLOWED  - candidate.md, the CVs, cover letters. He has decided that trade himself; my job is to
+#              tell him what it means (they are world-readable on a public repo, forever, and search
+#              engines index raw.githubusercontent.com), not to override him.
+# A SESSION COOKIE IS A CREDENTIAL. `workday_auth6.json` holds live PLAY_SESSION / CALYPSO_SESSION
+# cookies for a Workday tenant — anyone with that file is logged in as him until it expires.
 PRIVATE = [
     (r"(^|/)\.env$|(^|/)\.env\.[^/]*$", "runtime secrets"),
-    (r"(^|/)out/", "run artefacts: CVs, cover letters, credentials, the learning database"),
     (r"credentials?\.json$|ats_accounts\.json$", "ATS credentials"),
-    (r"\.sqlite$|\.sqlite3$|\.db$", "databases (memory, learned answers)"),
-    (r"learned_answers\.json$", "learned answers — the candidate's own words"),
     (r"(^|/)recordings/", "codegen recordings contain typed PASSWORDS in cleartext"),
-    (r"candidate.*\.md$|CANDIDATE_.*\.md$", "candidate PII: address, phone, EEO self-disclosures"),
-    (r"(?i)(resume|cv|cover_?letter|profile)[^/]*\.(pdf|docx?|html)$", "the candidate's CV"),
-    (r"(?i)jevpre|jev[a-z]*\d{4}", "the candidate's CV, by filename"),
+    (r"auth\d*\.json$|storage_?state.*\.json$|_auth\.json$", "a live browser SESSION is a credential"),
+    (r"\.sqlite$|\.sqlite3$|\.db$", "databases: they churn every run and hold his own answers"),
+    (r"learned_answers\.json$", "learned answers, superseded by the database"),
+    (r"(^|/)out/", "run artefacts: tailored documents, credentials, the learning database"),
 ]
 # ...except the templates and examples, which are the point of the repo.
+# ...and the CANDIDATE'S OWN DATA is allowed by his explicit decision (see above). `out/` stays
+# blocked because it also holds credentials and the database, so the CV lives in the repo through
+# `agent/userdata/` and `Profile.pdf`, not through the run directory.
 ALLOW = re.compile(r"(^|/)templates/|\.example$|/example|(^|/)\.gitignore$", re.I)
 
 # A blob that LOOKS like a secret, whatever it is called. Same shape rule as learned.is_secret:
@@ -237,19 +248,18 @@ def staged_secrets(max_bytes: int = 400_000) -> list:
 
 
 def ignore_rules() -> list:
+    """Only credentials and churn. His CV and profile are deliberately NOT here."""
     return [
-        "# --- added by gitops.py: these must never reach a remote -------------------",
+        "# --- added by gitops.py: credentials and churn, never the candidate's own data ------",
         "agent/out/",
         "agent/recordings/",
-        "agent/userdata/candidate*.md",
-        "hermes-context/",
-        "agent/CANDIDATE_PIPELINE.md",
-        "Profile*.pdf",
         "*.sqlite",
         "*.sqlite3",
         "learned_answers.json",
         "**/credentials.json",
         "**/ats_accounts.json",
+        "**/*_auth.json",
+        "**/workday_auth*.json",
         "dist/",
     ]
 
@@ -462,14 +472,19 @@ def _selftest() -> int:
             fails.append(name)
 
     print("[1] what must never be committed — the exposure this file was written for")
-    for p in ("agent/userdata/candidate.md", "agent/out/resume.pdf", "agent/out/jevpreDE2025.pdf",
-              "agent/out/cover_letter.html", "agent/.env", "agent/.env.local",
-              "agent/out/ats_accounts.json", "agent/out/memory.sqlite",
+    for p in ("agent/.env", "agent/.env.local", "agent/out/ats_accounts.json",
+              "agent/out/credentials.json", "agent/out/memory.sqlite",
               "agent/out/learned_answers.json", "agent/recordings/accenture.py",
-              "hermes-context/CANDIDATE_PROFILE.md", "agent/out/Profile (2).pdf"):
+              "agent/recordings/workday_auth6.json", "agent/recordings/gevernova_auth.json",
+              "agent/out/resume.pdf"):
         ck(f"refused: {p}", bool(why_private(p)), why_private(p))
 
-    print("\n[2] ...and the repo must still be usable — templates and examples are the point")
+    print("\n[2] HIS OWN DATA IS ALLOWED — his decision, stated plainly (2026-08-17)")
+    for p in ("agent/userdata/candidate.md", "agent/userdata/candidate_profile.md",
+              "hermes-context/CANDIDATE_PROFILE.md", "Profile.pdf", "agent/CANDIDATE_PIPELINE.md"):
+        ck(f"allowed: {p}", not why_private(p), why_private(p))
+
+    print("\n[2b] ...and the repo must still be usable — templates and examples are the point")
     for p in ("agent/templates/resume.html", "agent/templates/cover_letter.html",
               "agent/.env.example", ".env.example", "agent/flows/greenhouse.py", "jhw.py",
               "CLAUDE.md", "agent/userdata/skills/ats-workday/SKILL.md"):

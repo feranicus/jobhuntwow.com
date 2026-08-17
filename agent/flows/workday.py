@@ -321,6 +321,100 @@ async def _leave_idp(page, r: dict) -> bool:
 AUTOSUBMIT = os.getenv("JHW_AUTOSUBMIT", "1").lower() not in ("0", "false", "no")
 
 
+# A WORKDAY PROMPT IS A BUTTON WHOSE NAME CARRIES ITS CURRENT VALUE.
+# From his intive recording, verbatim:
+#     button("How Did You Hear About Us?").click()  ->  get_by_text("LinkedIn corporate page").click()
+#     button("Country Georgia Required").click()    ->  get_by_text("Germany").click()
+# So the handle is not a label beside a field: it IS the button, and after it is answered its name
+# CHANGES to the answer ("Georgia" -> "Germany"). That is also the read-back this project insists on:
+# a write is not done until it has been read back.
+# MEASURED, intive 2026-08-17: the run left BOTH of these empty and the site said so —
+#   "The field How Did You Hear About Us? is required and must have a value."
+# and the log showed the buttons plainly: ['Select One', 'Georgia', 'Mobile', 'Next'].
+_NAV = re.compile(r"^\s*(next|back|previous|zur[uü]ck|weiter|continue|save and continue|submit|"
+                  r"absenden|apply|accept cookies|select file|close|delete|calendar|next month|"
+                  r"sign in|create account|autofill|errors? found|error-)", re.I)
+_PROMPT_RX = re.compile(r"select one|required$|^select\b", re.I)
+
+
+async def _answer_prompts(page, data: dict) -> int:
+    """Answer every unanswered Workday PROMPT from the recorded human choice. Returns how many.
+
+    THE ANSWER COMES FROM HIS OWN RECORDING FIRST, and that matters here more than anywhere: the
+    profile says `how_did_you_hear: LinkedIn`, and on this tenant there IS NO option called
+    "LinkedIn" — the row reads "LinkedIn corporate page". A value from the profile could never have
+    been clicked. Only what a human actually chose on this vendor's form is usable."""
+    try:
+        from recordings import known_choice
+    except Exception:
+        try:
+            from flows.recordings import known_choice          # type: ignore
+        except Exception:
+            return 0
+    done = 0
+    try:
+        btns = page.get_by_role("button")
+        n = min(await btns.count(), 60)
+    except Exception:
+        return 0
+    for i in range(n):
+        try:
+            b = btns.nth(i)
+            if not await b.is_visible():
+                continue
+            nm = ((await b.get_attribute("aria-label")) or (await b.inner_text()) or "").strip()
+            nm = " ".join(nm.split())[:80]
+            if not nm or _NAV.search(nm) or not _PROMPT_RX.search(nm):
+                continue
+            want = known_choice("workday", nm)
+            if not want:
+                # The country prompt's name carries the CURRENT value ("Country Georgia Required"),
+                # so an exact key will not match another tenant. Fall back to the QUESTION word.
+                for probe in ("How Did You Hear About Us?", "Country"):
+                    if probe.split()[0].lower() in nm.lower():
+                        want = known_choice("workday", probe) or want
+                        if want:
+                            break
+            if not want:
+                _log(f"    prompt {nm[:44]!r}: no recorded human choice — leaving it to the ladder")
+                continue
+            await b.click(timeout=ACTION_TIMEOUT)
+            await page.wait_for_timeout(600)
+            picked = False
+            for how in ("option", "text"):
+                try:
+                    row = (page.get_by_role("option", name=want, exact=False).first if how == "option"
+                           else page.get_by_text(want, exact=True).first)
+                    if await row.count() and await row.is_visible():
+                        await row.click(timeout=ACTION_TIMEOUT)
+                        picked = True
+                        break
+                except Exception:
+                    continue
+            await page.wait_for_timeout(500)
+            # READ IT BACK: the button's own name becomes the answer.
+            now = ""
+            try:
+                now = " ".join((((await b.get_attribute("aria-label")) or
+                                 (await b.inner_text()) or "").strip()).split())[:80]
+            except Exception:
+                pass
+            if picked and want.lower() in now.lower():
+                _log(f"    prompt {nm[:40]!r} <- {want!r}  (RECORDED human choice, read back)")
+                done += 1
+            elif picked:
+                _log(f"    prompt {nm[:40]!r} <- clicked {want!r} but it now reads {now[:40]!r}")
+            else:
+                _log(f"    prompt {nm[:40]!r}: {want!r} was not on the list this tenant offers")
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+        except Exception:
+            continue
+    return done
+
+
 async def _submit_now(page, r: dict) -> bool:
     """Click Submit and PROVE it went through.
 
@@ -2430,8 +2524,19 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
             # My Information (only if this tenant shows it)
             if await _has(page, "first_name", 3000):
                 _log("My Information detected — filling from candidate.md")
+                # THE PHONE MUST BE THE NATIONAL NUMBER, DIGITS ONLY — and his intive recording is
+                # him discovering that the hard way: `+49 157 8551545`, then `+49 1578551545`, then
+                # `1578551545`, each REJECTED, until `15785541545` was accepted. We sent
+                # `+49 15785541545` and the site answered "Enter a valid format for Phone Number."
+                # This is the IDENTICAL fact already measured on Greenhouse, and `phone_national()`
+                # already existed there — the Workday path simply never called it. One rule, one home.
+                try:
+                    from greenhouse import phone_national as _natl
+                except Exception:
+                    from flows.greenhouse import phone_national as _natl   # type: ignore
+                _phone = _natl(b.get("phone", "")) or b.get("phone", "")
                 for _key, _val in (("first_name", first), ("last_name", last), ("addr1", line1),
-                                   ("city", city), ("postal", postal), ("phone", b.get("phone", ""))):
+                                   ("city", city), ("postal", postal), ("phone", _phone)):
                     if not _val:
                         _log(f"    {_key:<11} SKIP (no value in the profile)"); continue
                     if await _fill(page, _key, _val):
@@ -2451,6 +2556,12 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
                 except Exception as e:
                     r["note"] += f" autofill:{e};"
             await _check_consent(page)
+            try:
+                p = await _answer_prompts(page, data)
+                if p:
+                    r["filled"].append(f"prompt:{p}")
+            except Exception as e:
+                r["note"] += f" prompt:{e};"
             try:
                 a = await _answer_choices(page, data, answer_fn)
                 if a: r["filled"].append(f"answered:{a}")

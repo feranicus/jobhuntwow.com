@@ -168,6 +168,19 @@ def parse(src: str) -> dict:
 _NOISE_ACTS = {"press", "dblclick", "type"}
 
 
+# A BUTTON THAT MOVES THE FORM is not a question. Anchored, because `Next` must never become a label
+# and `Country Georgia Required` must never be excluded for containing a word like "Select".
+# A short yes/no/self-declaration token is an ANSWER a human clicked, never the question.
+_IS_ANSWER = re.compile(r"^\s*(yes|no|ja|nein|oui|non|male|female|other|"
+                        r"prefer not to (say|answer)|i (do not|don't) wish to answer)\b[\s.,!]*$", re.I)
+
+_NAV_BUTTON = re.compile(
+    r"^\s*(next|back|previous|zur[uü]ck|weiter|continue|save and continue|submit|absenden|apply|"
+    r"jetzt bewerben|accept cookies|select file|close|delete|calendar|next month|previous month|"
+    r"sign in( with .*)?|create account|autofill with resume|apply manually|"
+    r"use my last application|add|remove|upload|attach|skip)\b", re.I)
+
+
 def compile_choices(rec: dict) -> dict:
     """label -> the OPTION the human actually clicked. NOT what he typed to find it.
 
@@ -184,7 +197,13 @@ def compile_choices(rec: dict) -> dict:
     out, pending = {}, ""
     for st in rec.get("steps") or []:
         nm, act, role, how = st["name"], st["act"], st["role"], st["how"]
-        if role == "option" and act == "click":
+        # AN OPTION-SHAPED STEP. `role=option` is the polite case; Workday renders its prompt rows as
+        # PLAIN TEXT (`get_by_text("LinkedIn corporate page")`), and a listbox row is a third shape.
+        # ORDER MATTERS: while a question is pending, a text click is the ANSWER. With nothing pending
+        # it is a question — which is the Greenhouse shape and stays untouched.
+        is_option = (role in ("option", "listbox")
+                     or (bool(pending) and how == "text" and act == "click"))
+        if is_option and act == "click":
             if pending:
                 out[pending] = st["value"] or nm      # the option's NAME is the answer
                 pending = ""
@@ -196,10 +215,29 @@ def compile_choices(rec: dict) -> dict:
         #     option("Germany +").click()
         # and the naive version paired `Email -> Germany +`. Only a COMBOBOX (whose fill is a search
         # query) or a bare LABEL/TEXT click can be the question an option answers.
-        if role == "combobox" or how in ("text", "label"):
+        if (role == "combobox" or how in ("text", "label")) and not _IS_ANSWER.search(nm or ""):
+            # A BARE 'No' IS AN ANSWER, NOT A QUESTION. Letting it become pending produced
+            # `'No' -> 'Yes, I agree.'` — a radio he ticked, paired with the next unrelated row.
             pending = nm
-        elif act == "fill":
-            pending = ""                              # answered in place; it awaits no option
+        elif role == "button" and act == "click" and not _NAV_BUTTON.search(nm or ""):
+            # WORKDAY'S PROMPT IS A BUTTON, and that shape was excluded, so the intive run learned
+            # nothing from a recording that contains the answer:
+            #     button("How Did You Hear About Us?").click()
+            #     get_by_text("LinkedIn corporate page").click()
+            #     button("Country Georgia Required").click()   <- the CURRENT VALUE is in the name
+            #     get_by_text("Germany").click()
+            # The run then failed with the site's own words: "The field How Did You Hear About Us? is
+            # required and must have a value." A pairing rule written from ONE vendor's widget is a
+            # rule that only works on that vendor.
+            # NAVIGATION IS EXCLUDED, or `Next` followed by any text click would invent a pair.
+            pending = nm
+        elif act in ("fill", "check", "uncheck", "set_input_files"):
+            # A TICK IS AN ANSWER IN PLACE. Leaving it pending produced the nonsense pair
+            # `'No' -> 'Yes, I agree.'` in the compiled knowledge — a radio he checked, paired with
+            # the next unrelated text click. A wrong answer learned once is repeated at every employer.
+            pending = ""
+        elif act == "click" and role in ("button", "link"):
+            pending = ""                              # two navigations in a row: nothing is pending
     return out
 
 

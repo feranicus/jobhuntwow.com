@@ -33,3 +33,15 @@ learned_answers.json
 **/credentials.json
 **/ats_accounts.json
 dist/
+
+# --- added by gitops.py: credentials and churn, never the candidate's own data ------
+agent/out/
+agent/recordings/
+*.sqlite
+*.sqlite3
+learned_answers.json
+**/credentials.json
+**/ats_accounts.json
+**/*_auth.json
+**/workday_auth*.json
+dist/
