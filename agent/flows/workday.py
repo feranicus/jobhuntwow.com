@@ -406,6 +406,23 @@ async def _phone_block(page, data: dict, r: dict) -> bool:
         except Exception as e:
             _log(f"    {key:<12} {type(e).__name__}")
     if natl:
+        # BY ROLE AND NAME, WHICH IS WHAT THE RECORDING USES.
+        #     page.get_by_role("textbox", name="Phone Number").fill("15785541545")
+        # `_fill` only walks the CSS `data-automation-id` chain, and this tenant matches none of it —
+        # the log said so plainly: `phone NOT FOUND on this page`. I had the handle in front of me in
+        # his codegen and kept reaching for a selector map. Role first, CSS as the fallback.
+        for _rx in (r"^phone number$", r"phone number"):
+            try:
+                el = page.get_by_role("textbox", name=re.compile(_rx, re.I)).first
+                if await el.count() and await el.is_visible():
+                    await el.fill(natl, timeout=ACTION_TIMEOUT)
+                    back = (await el.input_value()) or ""
+                    _log(f"    phone        = {natl!r} by role/name (reads {back!r})")
+                    if back.strip() == natl:
+                        r["filled"].append("phone")
+                        return True
+            except Exception:
+                continue
         if await _fill(page, "phone", natl):
             back = ""
             try:
@@ -2944,6 +2961,23 @@ def _selftest() -> int:
               -1 < _dv.find("autofill.fill_page") < _dv.find("await _phone_block(page, data, r)"))
     except Exception as _e:
         check(f"autofill contracts runnable ({type(_e).__name__}: {_e})", False)
+
+    # THE HANDLE IS THE ACCESSIBLE NAME, NOT A data-automation-id. His codegen says
+    # `get_by_role("textbox", name="Phone Number").fill("15785541545")`; the CSS chain matched nothing
+    # on this tenant and the log said `phone NOT FOUND on this page` while I kept editing the selector
+    # map. A recording IS the handle — use it before any selector I invented.
+    _pb = _aw.get_source_segment(src, next(
+        n for n in _aw.walk(_wt)
+        if isinstance(n, _aw.AsyncFunctionDef) and n.name == "_phone_block")) or ""
+    check("the phone field is found by ROLE+NAME, the way the recording does it",
+          'get_by_role("textbox", name=re.compile(_rx' in _pb)
+    check("...and role is tried BEFORE the css selector chain",
+          -1 < _pb.find("get_by_role(\"textbox\"") < _pb.find('_fill(page, "phone", natl)'))
+    check("a phone value is READ BACK before it counts as filled", "input_value()" in _pb)
+    _af = io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "autofill.py"),
+                  encoding="utf-8").read()
+    check("autofill's national-number fallback cannot return the international form",
+          "return raw or \"\"" not in _af)
 
     print("\n" + "=" * 78)
     if fails:

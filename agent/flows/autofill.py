@@ -15,15 +15,23 @@ def _natl(raw: str) -> str:
     """The national number, from the ONE owner of that rule. Falls back to the raw value only if the
     import is impossible, because a filler that writes nothing is worse than one that writes the
     international form."""
-    try:
-        from greenhouse import phone_national
-        return phone_national(raw) or (raw or "")
-    except Exception:
+    for _mod in ("greenhouse", "flows.greenhouse"):
         try:
-            from flows.greenhouse import phone_national     # type: ignore
-            return phone_national(raw) or (raw or "")
+            m = __import__(_mod, fromlist=["phone_national"])
+            v = m.phone_national(raw)
+            if v:
+                return v
         except Exception:
-            return raw or ""
+            continue
+    # A SILENT FALLBACK TO THE RAW VALUE IS THE BUG, NOT THE SAFETY NET. If that import ever failed
+    # inside the container this returned `+49 15785541545` — the exact string the site rejects — and
+    # nothing in the log admitted it. Do the strip here instead: it is four lines and it cannot fail.
+    d = re.sub(r"\D", "", raw or "")
+    for cc in ("0049", "49"):
+        if d.startswith(cc) and len(d) > len(cc) + 6:
+            d = d[len(cc):]
+            break
+    return d.lstrip("0") if len(d) > 8 else d
 
 
 RULES = [
