@@ -2532,3 +2532,19 @@ FIXES: options are scoped to the combobox's own listbox (`aria-owns`/`aria-contr
 sentence is a form control's own label. And a recorded tick that does not resolve is now NAMED in the
 log and added to `unresolved`, instead of being counted out silently: "15 of 16 applied" told me a
 number, not which one was missing.
+
+## THE PARSER PUT A COMMENT IN AN EMPLOYER'S FORM — a second time, in a second parser (2026-08-17)
+```
+[ashby] label~'Notice period / availabil' = '2026-08-20"       # ALWAYS one month from the appl'
+```
+`candidate.md` is written for a HUMAN, so its lines carry inline comments:
+    - available_start_date: "2026-08-20"   # ALWAYS one month from the application date
+`ashby._defaults()` kept the value verbatim, so a real employer's Notice-period box received a date,
+a stray quote and a comment. **CLAUDE.md already records this exact defect** for the Workday screening
+parser — and this is a SECOND parser reading the SAME file that never learned it. One file, two
+readers, one of them wrong: the disease this project keeps paying for. Now split at `\s+#`, strip
+quotes, and four contracts assert that no comment or quote survives for ANY key.
+ALSO: a codegen name is TRUNCATED (`-49` for the age radio `40-49`), so exact/anchored/prefix all
+missed and the log said `1 recorded choice(s) did NOT resolve: ['-49']` — which is the diagnostic
+working as intended. A contains-match is now the last try, and only when it identifies exactly ONE
+control, so a 3-character fragment can never resolve to the wrong declaration.
