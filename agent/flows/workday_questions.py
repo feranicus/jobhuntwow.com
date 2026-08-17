@@ -53,11 +53,21 @@ def format_for_placeholder(iso, placeholder=""):
         return sep.join((m, d, y))
     return f"{m}/{d}/{y}"          # no usable hint -> US order, Workday's default
 
+_PLACEHOLDER = re.compile(r"^\s*(ask|tbd|n/?a|none|unknown|\?+|-+)\s*$", re.I)
+
+
 def salary_text(defaults):
+    """His written figure, or '' so the ladder asks him. A PLACEHOLDER IS NOT AN ANSWER.
+
+    `candidate.md` really does say `salary_expectation: ASK` under logistics, and the first cut of
+    this function returned that string — which would have typed the word ASK into an employer's
+    salary box. The guard has to sit on the RESULT: I first put it on one branch only, and the
+    `essay.deterministic` path walked straight past it."""
     try:
         import essay as ES
         v = ES.deterministic("What is your desired Salary?", defaults or {}, None)
-        if v: return v
+        if v and not _PLACEHOLDER.match(str(v)):
+            return v
     except Exception:
         pass
     for k, v in (defaults or {}).items():
