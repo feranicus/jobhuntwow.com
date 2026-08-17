@@ -255,9 +255,20 @@ async def _typeahead(page, query: str, pick_contains: str = "") -> bool:
         except Exception:
             owns = ""
         if owns:
-            scoped = page.locator(f"#{owns} [role=option], #{owns} li")
-            if await scoped.count():
-                opt = scoped
+            # `aria-owns` MAY HOLD SEVERAL SPACE-SEPARATED IDS, and an id may begin with a digit or
+            # contain ':' — so `f"#{owns} ..."` is not a valid CSS selector and Playwright threw,
+            # which is the bare `typeahead failed: Error` in the log. Use the ATTRIBUTE form, which
+            # needs no escaping, and take one id at a time. A selector built from page data must be
+            # quoted, never interpolated.
+            for _id in (owns.split() or [])[:3]:
+                try:
+                    scoped = page.locator(
+                        f'[id="{_id}"] [role=option], [id="{_id}"] li')
+                    if await scoped.count():
+                        opt = scoped
+                        break
+                except Exception as _e:
+                    _log(f"  typeahead: aria-owns {_id!r} is not usable ({type(_e).__name__})")
         if await opt.count() == 0:
             opt = page.locator("[role=listbox] li, [class*='menu'] [class*='option']")
         if await opt.count() == 0:
@@ -285,7 +296,9 @@ async def _typeahead(page, query: str, pick_contains: str = "") -> bool:
         _log(f"  typeahead -> {label[:60]!r}")
         return True
     except Exception as e:
-        _log(f"  typeahead failed: {type(e).__name__}")
+        # NAME WHAT WENT WRONG. `typeahead failed: Error` cost a whole run to diagnose: Playwright's
+        # exception class is just `Error`, so the class name alone says nothing. The message does.
+        _log(f"  typeahead failed: {type(e).__name__}: {str(e).splitlines()[0][:120]}")
         return False
 
 
@@ -790,6 +803,17 @@ def _selftest() -> int:
        "salary is PLAIN DIGITS, as recorded")
     b = _basics({"basics": {"legal_name": "Jev Vainsteins", "email": "a@b.c"}})
     ck(b["full_name"] == "Jev Vainsteins", "full name")
+    print("\n[the typeahead crashed on its own selector — 'typeahead failed: Error']")
+    import inspect as _i2
+    _ta2 = _i2.getsource(_typeahead)
+    # STRIP COMMENTS: the paragraph explaining the crash necessarily quotes the bad selector.
+    # 20th self-referential false positive in this project; the fix is always the same.
+    _ta2c = "\n".join(ln.split("#")[0] for ln in _ta2.splitlines())
+    ck("{owns}" not in _ta2c, "no CSS id is interpolated from page data")
+    ck('[id="' in _ta2, "the attribute form is used, which needs no escaping")
+    ck("owns.split()" in _ta2, "aria-owns may list SEVERAL ids — each is tried separately")
+    ck("str(e).splitlines()" in _ta2, "the failure names the MESSAGE, not just 'Error'")
+
     print("\n[candidate.md is written for a HUMAN — a comment must never reach a form]")
     _d = _defaults({})
     ck(not any("#" in str(v) for v in _d.values()), "no inline comment survives the parser")

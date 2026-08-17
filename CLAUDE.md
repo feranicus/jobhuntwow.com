@@ -2548,3 +2548,14 @@ ALSO: a codegen name is TRUNCATED (`-49` for the age radio `40-49`), so exact/an
 missed and the log said `1 recorded choice(s) did NOT resolve: ['-49']` — which is the diagnostic
 working as intended. A contains-match is now the last try, and only when it identifies exactly ONE
 control, so a 3-character fragment can never resolve to the wrong declaration.
+
+## THE TYPEAHEAD CRASHED ON A SELECTOR IT BUILT ITSELF (Ashby, 2026-08-17)
+`[ashby] typeahead failed: Error` — and that line is two defects.
+1. My listbox scoping did `page.locator(f"#{owns} [role=option]")` from the combobox's `aria-owns`.
+   **That attribute MAY LIST SEVERAL SPACE-SEPARATED IDS**, and an id may start with a digit or contain
+   `:` — none of which is a valid CSS `#id`. Playwright threw, the whole typeahead was skipped, and the
+   required "preferred main location" box stayed empty. A selector built from page data must be QUOTED
+   (`[id="..."]`), never interpolated, and each id tried separately.
+2. **`type(e).__name__` IS 'Error' FOR EVERY PLAYWRIGHT FAILURE**, so the log said nothing at all. It
+   now prints the first line of the message. This project's oldest logging rule — name what happened —
+   and I broke it in the same function.
