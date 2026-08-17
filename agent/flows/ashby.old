@@ -306,113 +306,77 @@ async def _upload_files(page, resume_path: str, cover_path: str = "") -> list:
 
 
 async def _typeahead(page, query: str, pick_contains: str = "") -> bool:
-    """Ashby preferred location — recording path, then verify the BOX is not still placeholder.
-
-    Measured failure mode: function returned True after keyboard Enter while the UI still
-    showed 'Start typing...'. A typeahead is only success when the combobox value changes.
-    """
-    query = (query or pick_contains or "Germany").strip() or "Germany"
-    target = (pick_contains or query).strip() or "Germany"
-
-    async def _box_value(el) -> str:
-        try:
-            v = await el.input_value()
-            if v:
-                return v.strip()
-        except Exception:
-            pass
-        try:
-            return (await el.inner_text() or "").strip()
-        except Exception:
-            return ""
-
-    async def _still_placeholder(el) -> bool:
-        v = (await _box_value(el)).lower()
-        return (not v) or ("start typing" in v) or v in ("select…", "select...", "search")
-
+    """Ashby location: combobox 'Start typing...' then pick an option."""
+    if not query:
+        return False
     try:
-        box = page.get_by_role("combobox", name="Start typing...")
-        if await box.count() == 0:
-            box = page.get_by_role("combobox", name=re.compile(r"start typing", re.I))
+        box = page.get_by_role("combobox", name=re.compile(r"start typing|location|city", re.I))
         if await box.count() == 0:
             box = page.get_by_placeholder(re.compile(r"start typing", re.I))
         if await box.count() == 0:
-            box = page.locator("[role=combobox]").filter(
-                has=page.locator("xpath=ancestor::*[contains(., 'preferred main location')]")
-            )
-        if await box.count() == 0:
-            _log("  typeahead: no combobox found")
             return False
-
         el = box.first
-        await el.scroll_into_view_if_needed(timeout=4000)
-        await el.click(timeout=5000)
+        await el.click(timeout=4000)
+        await el.fill("")
+        await el.type(query, delay=40)
+        await page.wait_for_timeout(900)
+        # SCOPE THE OPTIONS TO THE DROPDOWN, NEVER THE WHOLE PAGE.
+        # MEASURED: it typed "Germany" and then matched `[class*='option']` across the document,
+        # landing on the CHECKBOX label "I can be based in Germany and do not need visa support" —
+        # so the location box stayed EMPTY, that checkbox got toggled by the click, and the recorded
+        # Germany tick was then skipped as "already checked" (15 ticks instead of 16).
+        # A suggestion list lives in a listbox owned by the combobox; a page-wide selector is a bet.
+        opt = page.locator("[role=listbox] [role=option], [role=option]")
         try:
-            await el.fill("")
+            owns = await el.get_attribute("aria-owns") or await el.get_attribute("aria-controls") or ""
         except Exception:
-            pass
-        await el.fill(query, timeout=5000)
-        await page.wait_for_timeout(800)
-
-        # Prefer exact short option (never a long visa-support checkbox label)
-        picked = False
-        label = ""
-        _sane = re.compile(r"visa support|i (can|will|want) be|based in|need visa", re.I)
-        for name in (target, query, "Germany"):
-            opt = page.get_by_role("option", name=name, exact=True)
-            if await opt.count() == 0:
-                opt = page.get_by_role("option", name=re.compile(rf"^{re.escape(name)}\b", re.I))
-            for i in range(min(await opt.count(), 8)):
-                o = opt.nth(i)
+            owns = ""
+        if owns:
+            # `aria-owns` MAY HOLD SEVERAL SPACE-SEPARATED IDS, and an id may begin with a digit or
+            # contain ':' — so `f"#{owns} ..."` is not a valid CSS selector and Playwright threw,
+            # which is the bare `typeahead failed: Error` in the log. Use the ATTRIBUTE form, which
+            # needs no escaping, and take one id at a time. A selector built from page data must be
+            # quoted, never interpolated.
+            for _id in (owns.split() or [])[:3]:
                 try:
-                    txt = (await o.inner_text() or "").strip()
-                except Exception:
-                    txt = name
-                if len(txt) > 48 or _sane.search(txt):
-                    continue
-                await o.click(timeout=4000)
-                label = txt or name
-                picked = True
-                break
-            if picked:
-                break
-
-        if not picked:
-            # scoped listbox options
-            opt = page.locator("[role=listbox] [role=option], [role=listbox] li")
-            for i in range(min(await opt.count(), 12)):
-                o = opt.nth(i)
-                try:
-                    txt = (await o.inner_text() or "").strip()
-                except Exception:
-                    continue
-                if len(txt) > 48 or _sane.search(txt):
-                    continue
-                if re.search(re.escape(target), txt, re.I) or i == 0:
-                    await o.click(timeout=4000)
-                    label = txt
-                    picked = True
-                    break
-
-        if not picked:
-            await page.keyboard.press("ArrowDown")
-            await page.wait_for_timeout(200)
+                    scoped = page.locator(
+                        f'[id="{_id}"] [role=option], [id="{_id}"] li')
+                    if await scoped.count():
+                        opt = scoped
+                        break
+                except Exception as _e:
+                    _log(f"  typeahead: aria-owns {_id!r} is not usable ({type(_e).__name__})")
+        if await opt.count() == 0:
+            opt = page.locator("[role=listbox] li, [class*='menu'] [class*='option']")
+        if await opt.count() == 0:
             await page.keyboard.press("Enter")
-            await page.wait_for_timeout(400)
-            label = await _box_value(el) or query
-
-        await page.wait_for_timeout(300)
-        # CRITICAL: only success if the placeholder is gone
-        if await _still_placeholder(el):
-            _log(f"  typeahead still placeholder after pick ({label!r}) — FAILED")
-            return False
-        got = await _box_value(el) or label
-        _log(f"  typeahead -> {got[:60]!r}")
+            _log(f"  typeahead typed {query!r} (no option list)")
+            return True
+        target = pick_contains or query
+        # AN OPTION IS A SHORT VALUE, NOT A SENTENCE. "I can be based in Germany and do not need visa
+        # support" is a checkbox label; a country option is "Germany" or "Germany (Berlin)".
+        _sane = re.compile(r"visa support|i (can|will|want) be|based in|need visa", re.I)
+        chosen = None
+        for i in range(min(await opt.count(), 12)):
+            t = (await opt.nth(i).inner_text() or "").strip()
+            if _sane.search(t) or len(t) > 48:
+                continue                       # not an option: that is a form control's own label
+            if re.search(re.escape(target), t, re.I) or (i == 0 and t):
+                chosen = opt.nth(i)
+                label = t
+                if re.search(re.escape(target), t, re.I):
+                    break
+        if chosen is None:
+            chosen = opt.first
+            label = (await chosen.inner_text() or "").strip()
+        await chosen.click(timeout=4000)
+        _log(f"  typeahead -> {label[:60]!r}")
         return True
     except Exception as e:
+        # NAME WHAT WENT WRONG. `typeahead failed: Error` cost a whole run to diagnose: Playwright's
+        # exception class is just `Error`, so the class name alone says nothing. The message does.
         _log(f"  typeahead failed: {type(e).__name__}: {str(e).splitlines()[0][:120]}")
         return False
-
 
 
 _STUB = re.compile(r"^\s*(unknown|ask|tbd|n/?a|none|null|todo|\?+|-+|yes|no)\s*[.!]?\s*$", re.I)
@@ -759,7 +723,7 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
             r["filled"].append("email")
         # ONE OWNER for the phone rule. This file had its own, and it produced '5785541545' —
         # it stripped `+49 1` instead of `+49`, losing the leading 1 of the national number. The
-        # measured truth (his Workday recording, four attempts) is 1700000000.
+        # measured truth (his Workday recording, four attempts) is 15785541545.
         try:
             from greenhouse import phone_national as _natl
         except Exception:
@@ -772,7 +736,7 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
         # ---- location typeahead
         loc = b.get("location") or b.get("city") or ""
         # THE RECORDED ANSWER IS THE COUNTRY. His codegen types "Germany" into `Start typing...` and
-        # clicks the `Germany` option; `loc.split(",")[0]` yields the CITY (Exampletown), which is not an
+        # clicks the `Germany` option; `loc.split(",")[0]` yields the CITY (Friedberg), which is not an
         # option in that list at all. Prefer the recorded choice, then the profile's country.
         city = ""
         try:
@@ -781,19 +745,9 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
         except Exception:
             pass
         city = city or str((data.get("basics") or {}).get("country") or "").strip() \
-            or (loc.split(",")[-1].strip() if loc else "") or "Germany"
-        if not re.search(r"germany|deutschland", city, re.I):
-            city = "Germany"
-        if await _typeahead(page, city, "Germany"):
+            or (loc.split(",")[-1].strip() if loc else "")
+        if city and await _typeahead(page, city, city):
             r["filled"].append("location")
-        else:
-            # second attempt after scrolling the preferred-location heading into view
-            try:
-                await page.get_by_text(re.compile(r"preferred main location", re.I)).first.scroll_into_view_if_needed(timeout=2500)
-            except Exception:
-                pass
-            if await _typeahead(page, "Germany", "Germany"):
-                r["filled"].append("location")
 
         # ---- salary / notice (from candidate.md — never invent)
         sal = _salary_text(defaults)
@@ -848,22 +802,6 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
         for lab in list(blank):
             if re.search(r"name|email|phone|resume|cv|upload", lab, re.I):
                 continue
-            if re.search(r"start typing|preferred main location|location for your contract", lab, re.I):
-                if await _typeahead(page, "Germany", "Germany"):
-                    r["filled"].append("location")
-                continue
-            if re.search(r"notice period|availability details", lab, re.I):
-                val = _notice_text(defaults) or "one month"
-                if await _fill_role(page, "textbox", r"Notice period", val) or \
-                   await _fill_by_label(page, r"notice period", val):
-                    r["filled"].append("notice")
-                continue
-            if re.search(r"expected yearly|salary", lab, re.I):
-                val = _salary_text(defaults) or "150000"
-                if await _fill_role(page, "textbox", r"salary|expected yearly", val) or \
-                   await _fill_by_label(page, r"expected yearly|salary", val):
-                    r["filled"].append("salary")
-                continue
             # HIS OWN RECORDED ANSWER FIRST, then the ladder. `UNKNOWN` reached this box because the
             # essay guard sat on one path and this one typed the stub anyway.
             # A SHORT-ANSWER FIELD IS NOT AN ESSAY. `Notice period / availability details` wants
@@ -910,56 +848,6 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                 if val:
                     await _fill_by_label(page, re.escape(lab[:40]), val)
                     r["filled"].append(f"asked:{lab[:20]}")
-
-        
-        # ---- one escalate.panel round for still-required (runtime self-heal, not a code redeploy)
-        blank = await _required_empty(page)
-        if blank:
-            try:
-                import escalate as ESC
-                controls = []
-                for lab in blank[:6]:
-                    controls.append({"name": lab, "role": "textbox", "required": True})
-                act = await ESC.next_action(
-                    reason=("Ashby required fields still empty after deterministic pass: "
-                            + ", ".join(blank[:6])),
-                    controls=controls,
-                )
-                _log(f"  escalate: {act.get('verb')} why={str(act.get('why') or '')[:80]}")
-                verb = (act.get("verb") or "").lower()
-                if verb in ("type", "fill", "set") and act.get("value"):
-                    lab = str(act.get("name") or act.get("target") or blank[0])
-                    val = str(act.get("value"))
-                    if re.search(r"location|start typing", lab, re.I):
-                        if await _typeahead(page, val if len(val) < 40 else "Germany", "Germany"):
-                            r["filled"].append("location")
-                    elif re.search(r"notice", lab, re.I):
-                        val = _notice_text(defaults) or "one month"
-                        if await _fill_by_label(page, r"notice period", val):
-                            r["filled"].append("notice")
-                    elif re.search(r"salary", lab, re.I):
-                        val = _salary_text(defaults) or "150000"
-                        if await _fill_by_label(page, r"salary|expected yearly", val):
-                            r["filled"].append("salary")
-                    else:
-                        if await _fill_by_label(page, re.escape(lab[:40]), val):
-                            r["filled"].append(f"esc:{lab[:20]}")
-                elif verb in ("click", "select") and act.get("name"):
-                    try:
-                        nm = str(act.get("name"))
-                        loc = page.get_by_role("option", name=re.compile(re.escape(nm), re.I))
-                        if await loc.count():
-                            await loc.first.click(timeout=4000)
-                            r["filled"].append(f"esc-click:{nm[:20]}")
-                    except Exception as e:
-                        _log(f"  escalate click failed: {type(e).__name__}")
-                # location-specific hard retry always if still empty and location is the gap
-                if any(re.search(r"location|start typing", x, re.I) for x in blank):
-                    if await _typeahead(page, "Germany", "Germany"):
-                        r["filled"].append("location")
-            except Exception as e:
-                _log(f"  escalate panel skipped: {type(e).__name__}: {str(e).splitlines()[0][:80]}")
-
 
         blank = await _required_empty(page)
         r["unresolved"] = blank
