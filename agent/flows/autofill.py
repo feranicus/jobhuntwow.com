@@ -11,19 +11,40 @@ from __future__ import annotations
 import re
 
 # (regex over a field's combined text signals, profile key). Order = priority (first match wins).
+def _natl(raw: str) -> str:
+    """The national number, from the ONE owner of that rule. Falls back to the raw value only if the
+    import is impossible, because a filler that writes nothing is worse than one that writes the
+    international form."""
+    try:
+        from greenhouse import phone_national
+        return phone_national(raw) or (raw or "")
+    except Exception:
+        try:
+            from flows.greenhouse import phone_national     # type: ignore
+            return phone_national(raw) or (raw or "")
+        except Exception:
+            return raw or ""
+
+
 RULES = [
     (r"first[\s_-]*name|given[\s_-]*name|\bfname\b|legalname.*first",            "first_name"),
     (r"last[\s_-]*name|surname|family[\s_-]*name|\blname\b|legalname.*last",     "last_name"),
     (r"pre(ferred|ferred)?[\s_-]*name",                                          "first_name"),
     (r"e-?mail",                                                                 "email"),
     (r"confirm.*e-?mail|verify.*e-?mail",                                        "email"),
-    (r"phone|mobile|\btel(ephone)?\b|contact.*number",                          "phone"),
+    # AN EXTENSION IS NOT A PHONE NUMBER, and this regex put the whole number in it.
+    # MEASURED on intive 2026-08-17 from his screenshot: `Phone Number` AND `Phone Extension` both
+    # read `+49 157 85541545`. `Phone Extension` contains the word "Phone", so a generic matcher
+    # claims it — and a wrong extension is silently accepted by the site, unlike the number, so this
+    # class of bug ships an application with garbage in it.
+    (r"(?!.*(extension|\bext\b|country|code|device|type))"
+     r"(phone|mobile|\btel(ephone)?\b|contact.*number)",                          "phone"),
     (r"address.*line.?1|addressline1|street[\s_-]*address|\bstreet\b|\baddress1\b", "addr1"),
     (r"address.*line.?2|\baddress2\b|apt|suite|\bunit\b",                        "addr2"),
     (r"\bcity\b|town|locality|municipal",                                        "city"),
     (r"post(al)?[\s_-]*code|\bzip\b|\bpostcode\b",                               "postal"),
     (r"\bstate\b|province|\bregion\b|county",                                    "region"),
-    (r"\bcountry\b",                                                             "country"),
+    (r"(?!.*(phone|code|dial))\bcountry\b",                                      "country"),
     (r"linked-?in",                                                              "linkedin"),
     (r"web[\s_-]*site|portfolio|personal.*(site|url)|\bhomepage\b",              "website"),
     (r"full[\s_-]*name|(^|[^a-z])name([^a-z]|$)|your[\s_-]*name",                "full_name"),
@@ -49,7 +70,11 @@ def profile_values(basics: dict) -> dict:
         city = re.sub(r"\(.*?\)", "", rest.replace(postal, "")).strip()
     return {
         "first_name": first, "last_name": last, "full_name": basics.get("name", ""),
-        "email": basics.get("email", ""), "phone": basics.get("phone", ""),
+        # THE NATIONAL NUMBER, ALWAYS. The international form is what the ATS rejects
+        # ("Enter a valid format for Phone Number"), and this generic filler runs AFTER the adapter's
+        # own careful fill — so sending the raw value here silently undid the fix. One rule, one home:
+        # `greenhouse.phone_national`, which was measured against his own recording.
+        "email": basics.get("email", ""), "phone": _natl(basics.get("phone", "")),
         "addr1": line1, "addr2": "", "city": city, "postal": postal,
         "region": "Hessen", "country": "Germany",
         "linkedin": basics.get("linkedin", ""),

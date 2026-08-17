@@ -433,6 +433,38 @@ async def _repair_validation(page, data: dict, err: str, r: dict) -> bool:
             fixed |= bool(await _answer_prompts(page, data, only=named))
         except Exception as e:
             _log(f"    prompt repair: {type(e).__name__}: {e}")
+    if not fixed:
+        # HIS QUESTION, VERBATIM: *"why our system didn't ask me something like: Can you please put
+        # proper phone number?"*. Because nothing asked — the loop only ever halted. A FORMAT error is
+        # the most answerable question there is: the site has told us the field, we can read back what
+        # is in it, and he knows what it should be. So ask, type the reply verbatim, and REMEMBER it,
+        # so the next tenant never asks again.
+        for nm in named:
+            cur = ""
+            try:
+                el = page.get_by_role("textbox", name=nm, exact=False).first
+                if await el.count():
+                    cur = (await el.input_value()) or ""
+            except Exception:
+                pass
+            reply = await _ask(
+                f"Workday ({_host(page.url)}) rejects this value for *{nm}*:\n\n"
+                f"`{cur or '(empty)'}`\n\nIts message: {(err or '')[:120]}\n\n"
+                f"Reply with EXACTLY what I should type into that box.",
+                scope=f"format:{nm.lower()}")
+            reply = (reply or "").strip()
+            if not reply:
+                continue
+            try:
+                el = page.get_by_role("textbox", name=nm, exact=False).first
+                if await el.count():
+                    await el.fill(reply, timeout=ACTION_TIMEOUT)
+                    back = (await el.input_value()) or ""
+                    _log(f"    {nm}: your answer {reply!r} typed (reads {back!r})")
+                    fixed |= back.strip() == reply
+                    r["filled"].append(f"asked:{nm[:18]}")
+            except Exception as e:
+                _log(f"    could not type your answer into {nm!r}: {type(e).__name__}")
     return fixed
 
 
@@ -2662,6 +2694,14 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
                     r["filled"] += (await autofill.fill_page(page, data))["filled"]
                 except Exception as e:
                     r["note"] += f" autofill:{e};"
+            # THE PHONE BLOCK RUNS LAST, DELIBERATELY. The generic autofill above fills by label and
+            # ran AFTER the careful fill, so it overwrote `15785541545` with the raw international
+            # value and put the same string in `Phone Extension` — visible in his screenshot, and the
+            # reason the format error survived a fix that was already in the code. Order is the fix.
+            try:
+                await _phone_block(page, data, r)
+            except Exception as e:
+                _log(f"    phone block: {type(e).__name__}: {e}")
             await _check_consent(page)
             try:
                 p = await _answer_prompts(page, data)
@@ -2874,6 +2914,33 @@ def _selftest() -> int:
           error_fields("") == [] and error_fields("everything is fine") == [])
     check("the phone block sets the COUNTRY before the number",
           _wcode.index('"phone_code"') < _wcode.index('await _fill(page, "phone", natl)'))
+
+    # THE GENERIC FILLER RAN AFTER THE CAREFUL FILL AND UNDID IT (intive, from his screenshot:
+    # `Phone Number` AND `Phone Extension` both reading '+49 157 85541545'). Two properties, pinned:
+    # a label matcher may not claim a phone-adjacent control, and the value it sends is the NATIONAL
+    # number. Both are in autofill.py, which every ATS path uses, so they are asserted here where the
+    # suite actually runs.
+    try:
+        import re as _re
+        import autofill as _AF
+        _rules = [(_re.compile(rx, _re.I), k) for rx, k in _AF.RULES]
+
+        def _k(lbl):
+            for rx, k in _rules:
+                if rx.search(lbl):
+                    return k
+            return ""
+
+        for _lbl, _want in (("Phone Number*", "phone"), ("Mobile Phone", "phone"),
+                            ("Phone Extension", ""), ("Phone Ext", ""),
+                            ("Country Phone Code*", ""), ("Phone Device Type*", "")):
+            check(f"autofill routes {_lbl!r} -> {_want!r}", _k(_lbl) == _want)
+        check("autofill sends the NATIONAL number, never '+49 …'",
+              _AF.profile_values({"phone": "+49 15785541545"}).get("phone") == "15785541545")
+        check("the phone block runs AFTER the generic autofill, so nothing can overwrite it",
+              _wcode.index("autofill.fill_page") < _wcode.index("await _phone_block(page, data, r)"))
+    except Exception as _e:
+        check(f"autofill contracts runnable ({type(_e).__name__}: {_e})", False)
 
     print("\n" + "=" * 78)
     if fails:
