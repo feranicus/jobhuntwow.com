@@ -286,6 +286,25 @@ def _label_matches(expected: str, actual: str) -> bool:
 
 
 
+_DATEISH = re.compile(r"^\s*(\d{4}-\d{2}-\d{2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{4}|"
+                     r"as soon as possible|asap|immediately)\s*$", re.I)
+
+
+def _our_date() -> str:
+    """OUR start date, from his notice period. Never a model's invention, never in the past."""
+    try:
+        from workday_questions import iso_start, screening_defaults
+        return iso_start(screening_defaults())
+    except Exception:
+        import datetime as _d
+        return (_d.date.today() + _d.timedelta(days=30)).isoformat()
+
+
+def _looks_like_date(v: str) -> bool:
+    """Is this value a date (or a hand-wave meaning 'a date')? PURE."""
+    return bool(_DATEISH.match(str(v or "")))
+
+
 def _key(act: dict) -> str:
     """The identity of a proposed action, for vote counting.
 
@@ -299,6 +318,18 @@ def _key(act: dict) -> str:
         return verb
     tgt = str(act.get("target") or "")
     val = re.sub(r"\s+", " ", str(act.get("value") or "")).strip().lower()
+    # A DATE IS A FACT WE OWN, SO ITS VALUE IS NOT PART OF THE IDENTITY.
+    # MEASURED, intive 2026-08-17, four rounds in a row:
+    #     jhw-answer  -> fill[0] '2024-12-01'
+    #     jhw-answer2 -> fill[0] '2024-06-01'
+    #     jhw-answer3 -> fill[0] '2024-09-20'
+    #     NO QUORUM (no majority (fill[0]x1, fill[0]x1, fill[0]x1))
+    # All three agreed on the VERB and the FIELD and differed only in a date they invented — every one
+    # of them in the PAST, which the form rejects anyway. Keying on the value made a unanimous 3/3
+    # agreement about WHICH FIELD read as total disagreement, and woke the human four times.
+    # The models decide the field; deterministic code supplies the value (see `_date_value`).
+    if verb == "fill" and _looks_like_date(val):
+        return f"{verb}|{tgt}|<date>"
     return f"{verb}|{tgt}|{val}" if verb in ("fill", "select") else f"{verb}|{tgt}"
 
 
@@ -324,6 +355,9 @@ def quorum(props: list, need: int = 2) -> dict:
                            for v in votes.values())
         return {"agreed": False, "votes": best["n"], "why": f"no majority ({spread})"}
     act = dict(best["act"])
+    if str(act.get("verb")).lower() == "fill" and _looks_like_date(act.get("value")):
+        act["value"] = _our_date()
+        act["value_from"] = "candidate.md notice period (the models only chose the field)"
     act["votes"] = best["n"]
     act["models"] = best["models"]
     return {"agreed": True, "votes": best["n"], "act": act, "why": "quorum"}

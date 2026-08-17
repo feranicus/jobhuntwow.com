@@ -198,7 +198,11 @@ async def repair_named_errors(page, data, r, err, log=print):
     if any(_START_RX.search(n) or "date" in n.lower() for n in names) or _START_RX.search(err or ""):
         n = await fill_page_questions(page, data, r, log=log)
         log(f"    repair wrote {n} field(s) after start-date error")
-        return True
+        # IT RETURNED TRUE HAVING WRITTEN NOTHING. `repair wrote 0 field(s)` and then `True`, so the
+        # caller believed the field was fixed, SKIPPED its own calendar attempt, and pressed Next
+        # again — nine times. A function that reports success for work it did not do is worse than one
+        # that fails: it disables every fallback behind it.
+        return n > 0
     n = await fill_page_questions(page, data, r, log=log)
     return n > 0
 

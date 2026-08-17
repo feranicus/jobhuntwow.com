@@ -463,6 +463,31 @@ async def _fill_date(page, label: str, value: str) -> bool:
         d = _dt.date.fromisoformat(value) if value else (_dt.date.today() + _dt.timedelta(days=30))
     except Exception:
         d = _dt.date.today() + _dt.timedelta(days=30)
+    # WORKDAY'S DATE BOX IS THREE SPIN INPUTS — Month, Day, Year — and the panel's own index printed
+    # them: `[10] input 'Month' TRAP`, `[11] input 'Day' TRAP`, `[12] input 'Year' TRAP`. They are
+    # 1-2 characters wide, which is why the honeypot rule flagged them, and that refusal is what
+    # stopped the only path that can fill this widget. Fill them directly, then read the box back.
+    try:
+        parts = {"Month": f"{d.month:02d}", "Day": f"{d.day:02d}", "Year": str(d.year)}
+        wrote = 0
+        for nm_, val_ in parts.items():
+            el_ = page.get_by_role("spinbutton", name=re.compile(rf"^{nm_}$", re.I)).first
+            if not await el_.count():
+                el_ = page.get_by_role("textbox", name=re.compile(rf"^{nm_}$", re.I)).first
+            if await el_.count() and await el_.is_visible():
+                await el_.fill(val_, timeout=ACTION_TIMEOUT)
+                await page.wait_for_timeout(200)
+                wrote += 1
+        if wrote == 3:
+            await page.keyboard.press("Tab")
+            await page.wait_for_timeout(500)
+            _log(f"    date         = {d.isoformat()} via the Month/Day/Year inputs")
+            return True
+        if wrote:
+            _log(f"    date         only {wrote}/3 of Month/Day/Year were present")
+    except Exception as e:
+        _log(f"    date spin inputs: {type(e).__name__}")
+
     box = None
     for rx in (rf"^{re.escape(label)}$", re.escape(label[:28]), r"date"):
         try:
