@@ -737,6 +737,30 @@ async def _answer_prompts(page, data: dict, only=None) -> int:
     return done
 
 
+# MEASURED ON THE FIRST WORKDAY SUCCESS, intive 2026-08-17 — and we reported it as a failure.
+# The site showed a MODAL ("Congratulations! / Form Sent Succesfully. Thank you for applying!") while
+# the text we read was the search page BEHIND it, and the URL carried Workday's own proof:
+#     url=...?Job_Application_ID=3f4da97f345
+# THREE THINGS THAT RUN TEACHES:
+#  1. `Job_Application_ID=` IS the confirmation. Workday mints it only once the application exists,
+#     which makes it stronger evidence than any wording on any page.
+#  2. NOTE THE SITE'S OWN TYPO — "Succesfully", one 's'. A pattern demanding correct spelling misses a
+#     real confirmation, so match `succes+fully` and the phrases with no spelling risk at all.
+#  3. THE COST IS NOT COSMETIC: `memory.finish()` promotes answers to LEARNED only when
+#     `stage == "submitted"`, so calling a real submission "review" means the run teaches the system
+#     NOTHING — the exact thing the store exists for. A missed confirmation is a missed lesson.
+_CONFIRM_BODY = re.compile(r"thank you|thanks for (your )?appl|congratulations|form sent|"
+                           r"application (has been )?(submitted|received|sent)|"
+                           r"succes+fully (submitted|sent)|vielen dank|"
+                           r"bewerbung .{0,20}(eingegangen|übermittelt)", re.I)
+_CONFIRM_URL = re.compile(r"job_application_id=|/applications?/|confirm|thank|success|complete", re.I)
+
+
+def submitted_from(body: str, url: str) -> bool:
+    """Did the SITE confirm the application? PURE, so his run is a permanent test case."""
+    return bool(_CONFIRM_BODY.search(body or "")) or bool(_CONFIRM_URL.search(url or ""))
+
+
 async def _submit_now(page, r: dict) -> bool:
     """Click Submit and PROVE it went through.
 
@@ -805,14 +829,13 @@ async def _submit_now(page, r: dict) -> bool:
         body = await page.evaluate(CONFIRM_JS) or ""
     except Exception:
         pass
-    ok = bool(re.search(r"thank you|thanks for (your )?appl|application (has been )?"
-                        r"(submitted|received|sent)|successfully submitted|vielen dank|"
-                        r"bewerbung .{0,20}(eingegangen|übermittelt)", body, re.I)) \
-         or bool(re.search(r"confirm|thank|success|complete", url, re.I))
+    ok = submitted_from(body, url)
     snip = " ".join(body.split())[:150]
     if ok:
         r["submitted"] = True
-        _log(f"SUBMITTED — the site says: {snip!r}")
+        why = ("the site's confirmation" if "job_application_id" not in url.lower()
+               else f"Workday minted an application id ({url.split('Job_Application_ID=')[-1][:16]})")
+        _log(f"SUBMITTED — {why}: {snip!r}")
     else:
         r["submitted"] = False
         _log(f"submit clicked but NO confirmation found. url={url[:80]} | page says: {snip!r}")
@@ -3242,6 +3265,21 @@ def _selftest() -> int:
     _read = set(re.findall(r'(?:esc|_esc)\.get\("(\w+)"', src))
     check(f"every caller reads only keys the panel returns (reads {sorted(_read)})",
           _read <= _returned, sorted(_read - _returned))
+
+    # THE FIRST WORKDAY SUBMISSION, AND WE CALLED IT UNCONFIRMED (intive, 2026-08-17). These three
+    # strings are verbatim from that run; if they stop resolving, a real success is silently recorded
+    # as `review` and `memory.finish()` learns nothing from it.
+    _behind = ("Skip to main content We love what we do. Join our team of passionate game-changers "
+               "and make a difference. English Sign In intive home Search for Jobs")
+    _modal = "Congratulations! Form Sent Succesfully. Thank you for applying!"
+    _url_ok = "https://intive.wd3.myworkdayjobs.com/en-US/Intive?Job_Application_ID=3f4da97f345"
+    _url_form = "https://intive.wd3.myworkdayjobs.com/en-US/Intive/job/Remote-Germany/Chief-Comm"
+    check("an application id in the URL IS the confirmation", submitted_from(_behind, _url_ok))
+    check("the modal text counts even with the site's own typo ('Succesfully')",
+          submitted_from(_modal, _url_form))
+    check("...and the form page before submitting is NOT a confirmation",
+          not submitted_from(_behind, _url_form))
+    check("an empty read is never a confirmation", not submitted_from("", ""))
 
     print("\n" + "=" * 78)
     if fails:

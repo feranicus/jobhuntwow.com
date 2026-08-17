@@ -2431,3 +2431,48 @@ plain `https://github.com/...` url with no embedded token and no credential help
 `.git-credentials` exists. His pushes work because Windows Credential Manager holds the token, and
 that is an OS keystore rather than a file, so a Linux sandbox cannot read it. `python jhw.py git`
 pushes from his machine, where the credential lives.
+
+## THE FIRST WORKDAY SUBMISSION — and we reported it as a failure (intive, 2026-08-17)
+It worked. The site's own modal: **"Congratulations! Form Sent Succesfully. Thank you for applying!"**
+The engine said `stage=review, submission NOT confirmed`. Everything in that run is worth keeping:
+```
+phone        = '15785541545' by role/name (reads '15785541545')
+prompt 'How Did You Hear About Us?' <- 'LinkedIn corporate page'  (RECORDED human choice, read back)
+prompt 'Country Georgia Required'  <- 'Germany'                  (RECORDED human choice, read back)
+date         = 2026-08-20 via the Month/Day/Year inputs
+REVIEW reached. filled=[... 'start_date']
+[presubmit] ALLOW submit | 2 reviewer(s), 0 concerned
+```
+WHY THE CONFIRMATION WAS MISSED, and it is three separate lessons:
+1. **THE CONFIRMATION WAS IN A MODAL** and the text we read was the job-search page BEHIND it. The
+   URL, however, carried Workday's own proof: `?Job_Application_ID=3f4da97f345`. **An application id
+   IS the confirmation** — Workday mints it only once the application exists, which makes it stronger
+   evidence than any wording on any page.
+2. **THE SITE'S OWN TYPO: "Succesfully", one 's'.** A pattern demanding the correct spelling cannot
+   match a real confirmation. Match `succes+fully`, plus phrases that carry no spelling risk at all
+   ("congratulations", "form sent", "thank you for applying").
+3. **THE COST IS NOT COSMETIC.** `memory.finish()` promotes answers to LEARNED only when
+   `stage == "submitted"`. So calling a real submission "review" means the run teaches the system
+   NOTHING — the single thing the learning store exists to do. A missed confirmation is a missed
+   lesson, and it would have been missed at every Workday tenant after this one.
+`submitted_from(body, url)` is now PURE and the three strings from this run are permanent contracts.
+
+## WHAT MADE THIS RUN WORK, IN ORDER (the Workday recipe, measured)
+* **The phone is THREE controls** — Country Phone Code first (several tenants re-format the number when
+  the country changes), then device type, then the NATIONAL digits, each read back.
+* **The phone field is found by ROLE+NAME**, the way the recording addresses it, before any
+  `data-automation-id` chain. The CSS map matched nothing on this tenant.
+* **Workday asks with a BUTTON whose name carries its current value** (`Country Georgia Required` ->
+  `Germany` once answered), so the read-back is free — and the answer comes from HIS RECORDING, because
+  the profile's `LinkedIn` does not exist on a tenant whose row reads `LinkedIn corporate page`.
+* **The date box is three spin inputs** (Month/Day/Year). They are 1-2 characters wide, so the honeypot
+  rule had flagged them `TRAP` and the guard refused the only path that can fill the widget.
+* **The generic autofill must not run after the careful fill** — it overwrote the national number with
+  the international form and put the same string in `Phone Extension`.
+* **A repair that wrote nothing must not return True.** `repair wrote 0 field(s)` followed by `True`
+  disabled the calendar fallback behind it and pressed Next nine times.
+* **A date value is not part of a panel proposal's identity.** Three vendors agreed on the FIELD and
+  differed only in a date each invented (all in 2024, all in the past); keying on the value turned a
+  unanimous 3/3 into `NO QUORUM` four times. Models choose the field; code supplies the date.
+* **`_escalate` returns `moved`, not `acted`.** Reading the wrong key discarded a successful panel
+  action — 3/3 agreement, the right control clicked, the page moved — and reported `blocked`.
