@@ -727,7 +727,37 @@ AUTOSUBMIT = os.getenv("JHW_AUTOSUBMIT", "1").lower() not in ("0", "false", "no"
 
 
 async def _submit(page, r: dict) -> bool:
-    """Click Submit and PROVE it went through. Never called while anything is unresolved."""
+    """Click Submit and PROVE it went through — and REFUSE while a required field is empty.
+
+    MEASURED on Ashby (n8n, 2026-08-17). The driver printed the answer itself and submitted anyway:
+        still required+empty: ['First and last name', 'Email', 'Notice period / availability details',
+                               'What about n8n and the role caught your attention...', ...]
+        step 1/45 fill i=5 'First and last name' = 'Jev Vainsteins'
+        clicking 'Submit Application' ...
+    One field filled out of fourteen, then Submit — and the site answered with a wall of
+    "Missing entry for required field". A HALF-EMPTY APPLICATION SENT TO A REAL EMPLOYER IS WORSE THAN
+    NO APPLICATION: it cannot be retracted and it is the candidate's name on it.
+    The Workday path has had this guard since `presubmit.py` was written; this driver never got it.
+    The docstring already claimed "never called while anything is unresolved" — a comment is not a
+    guard."""
+    try:
+        idx = await page.evaluate(ENUM_JS) or {}
+        blank = [e.get("label") for e in (idx.get("elements") or idx.get("controls") or [])
+                 if isinstance(e, dict) and e.get("required")
+                 and not str(e.get("val") or e.get("value") or "").strip()
+                 and not e.get("checked") and not e.get("trap")]
+        blank = [b for b in blank if b][:8]
+        if blank:
+            print(f"[llm_driver] REFUSING to submit: {len(blank)} required field(s) are still "
+                  f"empty -> {blank}", flush=True)
+            r["note"] = (r.get("note") or "") + \
+                f" refused to submit: required+empty {blank}."
+            r["unresolved"] = list(dict.fromkeys((r.get("unresolved") or []) + blank))
+            return False
+    except Exception as e:
+        # FAIL OPEN, LOUDLY. A broken read must not block a complete application, but it must say so.
+        print(f"[llm_driver] pre-submit check unavailable ({type(e).__name__}: {e}) — submitting",
+              flush=True)
     if not AUTOSUBMIT:
         print("[llm_driver] auto-submit disabled (JHW_AUTOSUBMIT=0) - stopping at Review",
               flush=True)

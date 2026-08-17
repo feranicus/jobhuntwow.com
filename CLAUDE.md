@@ -2476,3 +2476,25 @@ WHY THE CONFIRMATION WAS MISSED, and it is three separate lessons:
   unanimous 3/3 into `NO QUORUM` four times. Models choose the field; code supplies the date.
 * **`_escalate` returns `moved`, not `acted`.** Reading the wrong key discarded a successful panel
   action — 3/3 agreement, the right control clicked, the page moved — and reported `blocked`.
+
+## ASHBY: THE DRIVER SUBMITTED ONE FIELD OUT OF FOURTEEN (n8n, 2026-08-17)
+```
+still required+empty: ['First and last name', 'Email', 'Notice period / availability details',
+                      'What about n8n and the role caught your attention...', ...]
+step  1/45 fill i=5 'First and last name' = 'Jev Vainsteins'
+clicking 'Submit Application' ...
+```
+It printed the list of empty required fields and then pressed Submit. The site answered with a wall of
+*"Missing entry for required field"* — fourteen of them. **A half-empty application sent to a real
+employer cannot be retracted and it carries the candidate's name.** The Workday path has had this
+guard since `presubmit.py`; `llm_driver` never got it, and its `_submit()` docstring even claimed
+"never called while anything is unresolved" — A COMMENT IS NOT A GUARD. It now enumerates the page and
+refuses while any required field is empty (bot traps excluded, fails open loudly on a broken read).
+ALSO MINE, SHIPPED TEN MINUTES EARLIER: `_DIALOG_TEXT_JS = """() => {` — a JS blob containing `\s` in
+a NON-RAW string, so every run printed `SyntaxWarning: invalid escape sequence '\s'`. This file already
+records that exact class from the last time I did it. Raw string, and the module is now imported under
+`-W error::SyntaxWarning` in the check.
+THE REAL ANSWER FOR A NEW ATS IS THE RECORDING, and it worked first time: his codegen of the n8n form
+compiled to `flows/knowledge/ashby.json` (32 steps -> 4 fields, 1 recorded choice, 3 buttons, 1 upload)
+including `Notice period / availability -> 'one month'` and the expected-salary figure. Stagehand's
+500 on the unknown-ATS path cost ~40s and produced nothing; the recording produces facts.

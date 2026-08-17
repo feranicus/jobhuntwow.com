@@ -756,7 +756,7 @@ _CONFIRM_BODY = re.compile(r"thank you|thanks for (your )?appl|congratulations|f
 _CONFIRM_URL = re.compile(r"job_application_id=|/applications?/|confirm|thank|success|complete", re.I)
 
 
-_DIALOG_TEXT_JS = """() => {
+_DIALOG_TEXT_JS = r"""() => {
   const bits = [];
   document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal="true"],' +
     '[class*="modal"],[class*="Modal"],[data-automation-id*="dialog"],' +
