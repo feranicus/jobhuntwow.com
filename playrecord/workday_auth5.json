@@ -1,0 +1,52 @@
+{
+  "cookies": [
+    {
+      "name": "_GRECAPTCHA",
+      "value": "09AKhCRwgy3GaVQw5TuY8lGLJiH3MxYqjXtk5JLs8HAo68g6vGZMXoVpCBZCAhGDxjqIuMAioQGcZJEm5GeQUpDvQ",
+      "domain": "www.recaptcha.net",
+      "path": "/recaptcha",
+      "expires": 1802515058.661016,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "AWSALBCORS",
+      "value": "CtfMIlRuMCO4lD9nTBzdW2KbPkDYu+BnryLQXK+okgGENnqQ7GgLON9n2cUAfB9C9Rpg8MCY8DQpvTTrKBECKOPf/Cq3J05v+J9eRfAkNgauEdufVWlTler2rEvp",
+      "domain": "jsv3.recruitics.com",
+      "path": "/",
+      "expires": 1787567859.922565,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://job-boards.greenhouse.io",
+      "localStorage": [
+        {
+          "name": "_grecaptcha",
+          "value": "09AKhCRwjPP1Pz2QnIaPkrNMyx1MNQWXgQIZ4gT1pRvmXhDVdVg_jWuLtOoh9YKK_dWMOJOXnL-ZG1EjYqdNrDgPhzBuLfaEPJ7gy9kYlhgSNBczghyovIOhgJFOuVi3fe"
+        },
+        {
+          "name": "snowplowOutQueue_job-board-renderer-tracker",
+          "value": "[]"
+        }
+      ]
+    },
+    {
+      "origin": "https://www.recaptcha.net",
+      "localStorage": [
+        {
+          "name": "rc::a",
+          "value": "aXN2YjFuMWMzMjF5aQ=="
+        },
+        {
+          "name": "rc::f",
+          "value": "0aAJb5711X3Oou_ek-WoV9SVcQ3G50RFqKi29kiAnZLI2GVEJADSrRp7nA6jUVtsln8h7hMXE"
+        }
+      ]
+    }
+  ]
+}

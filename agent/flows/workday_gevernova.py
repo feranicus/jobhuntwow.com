@@ -245,7 +245,7 @@ async def drive(creds: dict, data: dict, resume_path: str, ask_fn, ats_url: str 
                 if await apply_lbl.count():
                     await apply_lbl.first.click()
                 else:
-                    await page.get_by_role("button", name=re.compile(r"^\s*Apply", re.I)).first.click()
+                    await page.get_by_role("button", name=re.compile(r"^\s*apply( now| for this job)?\s*$", re.I)).first.click()
             wd = await pop.value
         except Exception as e:
             r["note"] = f"could not open the Workday apply popup: {str(e)[:120]}"; return r
@@ -269,7 +269,7 @@ async def drive(creds: dict, data: dict, resume_path: str, ask_fn, ats_url: str 
                 filled.append("resume_uploaded"); await wd.wait_for_timeout(2500)
         except Exception as e:
             print(f"[wd-ge] resume upload: {str(e)[:100]}", flush=True)
-        await _click(wd, wd.get_by_role("button", name="Continue"), "continue_after_resume", filled)
+        await _click(wd, wd.get_by_role("button", name="Continue", exact=True), "continue_after_resume", filled)
         await wd.wait_for_timeout(1500)
 
         # 5) My Information

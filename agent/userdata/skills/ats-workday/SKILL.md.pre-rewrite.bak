@@ -1,0 +1,6 @@
+DEAD FILE - DELETE ME.  `del SKILL.md.pre-rewrite.bak`
+
+I created this while rewriting SKILL.md and this filesystem mount would not let me unlink it.
+Git history is the backup, so nothing is lost. It is emptied here on purpose: a stale copy of a
+superseded skill doc sitting next to the live one is a second source of truth, which is the exact
+defect this repo keeps paying for. The live doc is SKILL.md.

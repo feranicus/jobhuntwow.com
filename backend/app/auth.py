@@ -214,9 +214,37 @@ def send_otp(email: str, code: str) -> bool:
             return True
         log(evt="otp_send", result="error", email=email, status=r.status_code, err=r.text[:200])
         return False
-    except Exception as e:
-        log(evt="otp_send", result="error", email=email, err=repr(e)[:200])
+    except ImportError as e:
+        # A MISSING DEPENDENCY is an operator bug, not a Google refusal. It used to be
+        # swallowed into a generic "error" and the user just saw "could not send the email".
+        log(evt="otp_send", result="missing_dependency", email=email, err=repr(e)[:300],
+            hint="google.auth.transport.requests needs the 'requests' package")
         return False
+    except Exception as e:
+        log(evt="otp_send", result="error", email=email, err=repr(e)[:300])
+        return False
+
+
+def mailer_selfcheck() -> dict:
+    """Emitted once at startup: can this process actually send an OTP?
+
+    Catches the class of failure that produced 'Could not send the verification email.' for
+    every signup: google-auth was installed but its requests-transport dependency was not, so
+    creds.refresh() raised ImportError. A boot-time event makes that visible in the logs and
+    in Grafana immediately, instead of only when a user tries to register.
+    """
+    st = {"evt": "mailer_selfcheck", "sender": GMAIL_SENDER or None,
+          "configured": mailer_configured()}
+    try:
+        import google.auth.transport.requests  # noqa: F401
+        from google.oauth2 import service_account  # noqa: F401
+        st["deps"] = "ok"
+    except Exception as e:
+        st["deps"] = "MISSING"
+        st["err"] = repr(e)[:300]
+    st["result"] = "ok" if (st["configured"] and st["deps"] == "ok") else "degraded"
+    log(**st)
+    return st
 
 
 # ------------------------------------------------ signed session tokens
@@ -370,7 +398,16 @@ def signup(email: str, password: str) -> dict:
     return _deliver(e, "signup")
 
 
-def login(email: str, password: str) -> dict:
+def _alert(fn: str, *a, **k):
+    """Feed the security rules. Detection must NEVER break authentication, so failures are eaten."""
+    try:
+        from . import alerts
+        getattr(alerts, fn)(*a, **k)
+    except Exception:
+        pass
+
+
+def login(email: str, password: str, ip: str = "", ua: str = "") -> dict:
     """Password check, then a fresh OTP - 2FA on EVERY login."""
     e = users.norm_email(email)
     lk = locked_for(e)
@@ -379,11 +416,12 @@ def login(email: str, password: str) -> dict:
     if not users.verify_login(e, password):
         _fail(e)
         log(evt="auth", action="login", result="bad_password", email=e)
+        _alert("observe_login_failure", e, ip, "bad_password", ua)
         raise HTTPException(status_code=401, detail=GENERIC_LOGIN_ERR)
     return _deliver(e, "login")
 
 
-def verify(email: str, code: str) -> str:
+def verify(email: str, code: str, ip: str = "", ua: str = "") -> str:
     """Second factor. Returns the email on success; raises HTTPException otherwise."""
     e = users.norm_email(email)
     lk = locked_for(e)
@@ -392,11 +430,13 @@ def verify(email: str, code: str) -> str:
     ok, msg, purpose = check_otp(e, code)
     if not ok:
         log(evt="auth", action="verify", result="bad_code", email=e)
+        _alert("observe_otp_failure", e, ip)
         raise HTTPException(status_code=401, detail=msg)
     users.mark_verified(e)
     users.touch_login(e)
     _clear_fails(e)
     log(evt="auth", action="verify", result="ok", email=e, purpose=purpose)
+    _alert("observe_login_success", e, ip, ua)      # fires new_ip_login (INFO) on an unseen IP
     return e
 
 
@@ -419,6 +459,16 @@ class VerifyReq(BaseModel):
     code: str
 
 
+def _who(request: Request):
+    """Caller IP + UA for the security rules. Behind one proxy (Caddy), so the FIRST
+    X-Forwarded-For entry is the client - never the last, which the proxy controls."""
+    try:
+        from . import telemetry
+        return telemetry.client_ip(request), request.headers.get("user-agent", "")
+    except Exception:
+        return (getattr(getattr(request, "client", None), "host", "") or ""), ""
+
+
 @router.post("/auth/signup")
 def api_signup(req: SignupReq):
     """Open self-signup. Creates an unverified account and emails a 6-digit code."""
@@ -426,15 +476,17 @@ def api_signup(req: SignupReq):
 
 
 @router.post("/auth/login")
-def api_login(req: LoginReq):
+def api_login(req: LoginReq, request: Request):
     """Password factor. On success emails a 6-digit code; no session yet."""
-    return login(req.email, req.password)
+    ip, ua = _who(request)
+    return login(req.email, req.password, ip=ip, ua=ua)
 
 
 @router.post("/auth/verify")
 def api_verify(req: VerifyReq, request: Request, response: Response):
     """Second factor. On success the session cookie is set."""
-    email = verify(req.email, req.code)
+    ip, ua = _who(request)
+    email = verify(req.email, req.code, ip=ip, ua=ua)
     set_session_cookie(response, request, email)
     return {"ok": True, "email": email, "user": users.public_user(email)}
 

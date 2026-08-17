@@ -3,7 +3,8 @@ const items = [
   ["/", "🏠 Dashboard", true],
   ["/scout", "🔎 Job Scout"],
   ["/pipeline", "📋 Pipeline"],
-  ["/hermes", "🪽 Hermes"],
+  ["/electronic", "🪽 Electronic"],
+  ["/tailor", "📄 Tailor"],
   ["/connections", "🔌 Connections"],
 ];
 export default function Sidebar() {

@@ -33,14 +33,14 @@ export default function Connections() {
         </div>
 
         <div className="card">
-          <h3>🪽 Hermes <Pill k="hermes" /></h3>
+          <h3>🪽 Electronic <Pill k="hermes" /></h3>
           <p>The orchestration agent that runs your search end-to-end.</p>
-          <div style={{marginTop:10}}><button className="btn sm" onClick={() => save("hermes", { connected: !on("hermes") })}>{on("hermes") ? "Turn off" : "Enable Hermes"}</button></div>
+          <div style={{marginTop:10}}><button className="btn sm" onClick={() => save("hermes", { connected: !on("hermes") })}>{on("hermes") ? "Turn off" : "Enable Electronic"}</button></div>
         </div>
 
         <div className="card">
           <h3>💬 Telegram <Pill k="telegram" /></h3>
-          <p>Paste a bot token from @BotFather to talk to Hermes from Telegram.</p>
+          <p>Paste a bot token from @BotFather to talk to Electronic from Telegram.</p>
           <div className="label">Bot token</div>
           <input className="input" type="password" placeholder="123456:ABC…" value={tg} onChange={e => setTg(e.target.value)} />
           <div style={{marginTop:10}}><button className="btn sm" onClick={() => save("telegram", { bot_token: tg })} disabled={!tg}>Connect Telegram</button></div>

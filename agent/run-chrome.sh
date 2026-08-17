@@ -33,7 +33,9 @@ exec /usr/bin/google-chrome-stable \
   --disable-gpu \
   --disable-dev-shm-usage \
   --disable-software-rasterizer \
-  --disable-features=VizDisplayCompositor \
+  --disable-features=VizDisplayCompositor,AutofillServerCommunication,AutofillEnableAccountWalletStorage \
+  --disable-autofill-keyboard-accessory-view \
+  --disable-save-password-bubble \
   --no-first-run \
   --start-maximized \
   --user-data-dir="$HOME/chrome-data" \

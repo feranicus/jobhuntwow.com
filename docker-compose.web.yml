@@ -1,6 +1,6 @@
 # JobHuntWOW web app (jhw-web) — PRODUCTION.
-# The image is BUILT IN CI and pushed to GHCR; it is NEVER built on the droplet.
-# Deployed by .github/workflows/web-deploy.yml into project 'jobhuntwow' at /opt/jobhuntwow.
+# The image is BUILT ON THE DROPLET from source shipped by `python jhw.py deploy` (deploy_direct.py).
+# NO GitHub, NO GHCR, NO CI in the deploy path. Project 'jobhuntwow' at /opt/jobhuntwow.
 #
 # It joins the EXISTING external network that the droplet's shared Caddy is already on, so
 # Caddy reaches it as http://jhw-web:8000. VideoDead / Amnezia / colt-stack are never touched.
@@ -13,7 +13,12 @@
 #   * Least privilege + resource limits + healthcheck + bounded logs.
 services:
   jhw-web:
-    image: ghcr.io/${GHCR_OWNER:-feranicus}/jhw-web:${WEB_TAG:-latest}
+    # Built DIRECTLY ON THE DROPLET from the source deploy_direct.py ships (no GitHub, no GHCR).
+    # `image:` is only the local tag we build to.
+    image: jhw-web:local
+    build:
+      context: .
+      dockerfile: Dockerfile.web
     container_name: jhw-web
     env_file:
       - .env                      # runtime secrets on the droplet (DO_INFERENCE_KEY, AGENT_PROXY_TOKEN, ...)
@@ -21,10 +26,16 @@ services:
       - DATA_DIR=/data
       - FRONTEND_DIST=/app/frontend_dist
       - SERVICE=jhw-web
-      - EVENTS_LOG=/var/log/jhw/events.jsonl
+      # Write app events into the SAME shared events.log colt-web writes to and colt-promtail
+      # ALREADY tails (-> Loki -> Grafana). This is the 1:1 cybergod pattern: every service
+      # appends to /var/log/colt/events.log; the `service` field (jhw-web) separates us in
+      # Grafana ({container=~".*assess-bot.*"} | json | service=`jhw-web`). A separate
+      # jhw-web.log was the bug — nothing tailed it, so Loki had zero of our lines.
+      - EVENTS_LOG=/var/log/colt/events.log
     volumes:
       - jhw_data:/data
       - jhw_events:/var/log/jhw
+      - colt_events:/var/log/colt
     networks:
       - appnet
     restart: unless-stopped
@@ -49,6 +60,9 @@ services:
 volumes:
   jhw_data: {}
   jhw_events: {}
+  colt_events:
+    external: true
+    name: ${JHW_EVENTS_VOLUME:-colt-stack_colt_events}   # already tailed by colt-promtail
 
 networks:
   appnet:

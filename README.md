@@ -61,6 +61,22 @@ cd frontend && npm install && npm run dev                     # :5173, proxies /
 | `DATA_DIR` | backend data dir (default `/data`, a Docker volume) |
 | `CORS_ORIGINS` | allowed origins (`*` in dev; lock down in prod) |
 
+## Release  (`python ship.py`)
+
+**ONE command releases the app.** It runs the test gates, pushes to GitHub, validates the change on a
+staging droplet that it **reboots**, deploys, verifies the code actually inside the running container,
+and tags a rollback point:
+
+```
+python ship.py                  # the whole release
+python ship.py --test           # gates only
+python ship.py --rollback       # back to last-known-good, redeployed
+```
+
+`jhw.py deploy` is still the deploy verb and `ship.py` calls it — nothing is reimplemented. The check
+inventory, the four-model review panel, the governance rules and how to enable the staging droplet
+(one variable: `JHW_STAGING_HOST`) are documented in **[docs/CICD.md](docs/CICD.md)**.
+
 ## Deploy
 
 Runs as Docker on the droplet behind the shared Caddy at **`app.jobhuntwow.com`**.

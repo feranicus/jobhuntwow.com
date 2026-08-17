@@ -225,6 +225,180 @@ def _handle(text: str) -> None:
     _send(reply)
 
 
+ASK_DIR = os.getenv("JHW_ASK_DIR", "/agent/out/asks")
+
+
+def _asks():
+    """Pending questions dropped by the apply engine (ask.py bridge mode), oldest first."""
+    try:
+        out = []
+        for f in sorted(os.listdir(ASK_DIR)):
+            # `_`-prefixed files are the bot's OWN state, not questions. _volunteered.json used to
+            # be read as an ask, and because it holds a LIST the `.get()` below raised
+            # AttributeError -- swallowed by the outer except into `return []`, which silently
+            # stopped EVERY apply question from being relayed. One bad file must not blind the
+            # bridge, so the loop is also per-file fault-tolerant now.
+            if not f.endswith(".json") or f.startswith("_"):
+                continue
+            p = os.path.join(ASK_DIR, f)
+            try:
+                d = json.load(open(p, encoding="utf-8"))
+                if not isinstance(d, dict):
+                    continue
+                if not d.get("answered"):
+                    out.append((p, d))
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def _pump_asks() -> None:
+    """Relay unsent apply-engine questions into Telegram.
+
+    THE BOT IS THE ONLY PROCESS THAT MAY POLL getUpdates. Telegram allows a single consumer per
+    token: when the agent polled getUpdates itself (JHW_ASK_CHANNEL=auto -> 'telegram') the two
+    pollers stole each other's messages, which is why replies went missing. The agent now only
+    writes a question file and waits; this relays it and writes the answer back.
+    """
+    for path, d in _asks():
+        if not d.get("sent"):
+            _send("🤖 APPLY ▸ " + str(d.get("q", ""))[:3500] +
+                  "\n\nReply to this message and I'll pass it straight to the apply engine. "
+                  "(/cancel to drop it)")
+            print(f"[bot] relayed apply question {os.path.basename(path)} to Telegram", flush=True)
+            d["sent"] = True
+            try:
+                json.dump(d, open(path, "w", encoding="utf-8"))
+            except Exception:
+                pass
+            # He may have ALREADY sent this (an answer arriving in pieces). Use it rather than
+            # making him type it twice -- the whole point of a 24/7 agent.
+            vol = _vol_take(str(d.get("q") or ""))
+            if vol:
+                d["answer"], d["answered"] = vol["text"], True
+                try:
+                    json.dump(d, open(path, "w", encoding="utf-8"))
+                except Exception:
+                    pass
+                shown = _redact(vol["text"]) if vol.get("secret") else vol["text"][:60]
+                _send(f"↩ Used what you already sent: {shown}")
+                print(f"[bot] auto-answered from the volunteered store ({'secret' if vol.get('secret') else 'plain'})",
+                      flush=True)
+
+
+# ---------------------------------------------------------------------------------------------
+# VOLUNTEERED ANSWERS + THE CREDENTIAL GUARD
+#
+# MEASURED 2026-08-16, from the candidate's own Telegram transcript. The apply engine asked for the
+# Workday password. He answered in THREE messages:
+#     "Use google sso"                  -> consumed correctly, "Passed to the apply engine"
+#     "Username : feranicus@s4biz.io"   -> fell through to the CHAT model
+#     "Password : @Q4sD9i..."           -> fell through to the CHAT model
+# The ask was already closed by the first reply, so messages 2 and 3 hit _handle() and the assistant
+# replied with chit-chat about profile e-mails and "please don't paste passwords here" — while the
+# apply engine sat at the gate and then gave up. Two defects in one exchange:
+#   1. AN ANSWER ARRIVING IN PIECES IS STILL AN ANSWER. A follow-up window keeps the next lines for
+#      the engine instead of handing them to a chatbot.
+#   2. A CREDENTIAL MUST NEVER REACH THE CHAT MODEL. It is a third-party inference endpoint and the
+#      reply is logged in the chat. It is now refused before _handle() is ever called.
+_VOL = os.path.join(ASK_DIR, "_volunteered.json")
+_FOLLOWUP_S = int(os.environ.get("JHW_FOLLOWUP_WINDOW", "600"))
+_LAST_ANSWER = [0.0]
+
+_SECRETISH = re.compile(
+    r"\bpass\s*word\b|\bpasswort\b|\bpwd\b|\bsecret\b|\btoken\b|\bapi[\s_-]?key\b|"
+    r"\bcredential", re.I)
+
+
+def _looks_secret(t: str) -> bool:
+    """Is this message carrying a credential? Conservative on BOTH sides: a false positive only
+       costs a chat reply, a false negative ships a password to an inference endpoint."""
+    if _SECRETISH.search(t or ""):
+        return True
+    # A bare high-entropy string with no spaces is almost certainly a generated password.
+    # BUT A URL AND AN E-MAIL FIT THAT DESCRIPTION TOO, and he pastes job links constantly -- my own
+    # test caught this classifying a myworkdayjobs.com URL as a credential, which would have refused
+    # to chat about every job he ever sends. Exclude them by SHAPE before measuring entropy.
+    x = (t or "").strip()
+    if re.match(r"^[a-z][a-z0-9+.-]*://", x, re.I) or x.lower().startswith("www."):
+        return False                                        # a URL
+    if re.match(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", x, re.I):
+        return False                                        # an e-mail address
+    if re.match(r"^[\w.-]+\.[a-z]{2,24}(/\S*)?$", x, re.I):
+        return False                                        # a bare host / path
+    return (12 <= len(x) <= 120 and " " not in x
+            and bool(re.search(r"[A-Z]", x)) and bool(re.search(r"[a-z]", x))
+            and bool(re.search(r"\d", x)) and bool(re.search(r"[^A-Za-z0-9]", x)))
+
+
+def _redact(t: str) -> str:
+    return re.sub(r"\S", "*", (t or ""))[:12] + " (redacted)"
+
+
+def _vol_load() -> list:
+    try:
+        return json.load(open(_VOL, encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _vol_add(text: str) -> None:
+    """Park a line the candidate volunteered while the engine was mid-question."""
+    v = [x for x in _vol_load() if time.time() - x.get("ts", 0) < 1800][-8:]
+    v.append({"text": text, "ts": int(time.time()), "secret": _looks_secret(text), "used": False})
+    try:
+        os.makedirs(ASK_DIR, exist_ok=True)
+        json.dump(v, open(_VOL, "w", encoding="utf-8"))
+    except Exception:
+        pass
+
+
+def _vol_take(question: str):
+    """A volunteered line that ANSWERS this question, or None.
+
+    The match is deliberately crude and one-dimensional: does the question want a SECRET, and is
+    this line one? Anything cleverer would silently type the wrong thing into a real employer's
+    form, and a wrong guess here is worse than asking again."""
+    wants_secret = bool(_SECRETISH.search(question or ""))
+    for x in sorted(_vol_load(), key=lambda y: -y.get("ts", 0)):
+        if x.get("used") or time.time() - x.get("ts", 0) > 1800:
+            continue
+        if bool(x.get("secret")) != wants_secret:
+            continue
+        v = _vol_load()
+        for y in v:
+            if y.get("ts") == x.get("ts") and y.get("text") == x.get("text"):
+                y["used"] = True
+        try:
+            json.dump(v, open(_VOL, "w", encoding="utf-8"))
+        except Exception:
+            pass
+        return x
+    return None
+
+
+def _answer_ask(text: str) -> bool:
+    """True if this message was consumed as the answer to a pending apply question."""
+    pend = [(p, d) for p, d in _asks() if d.get("sent")]
+    if not pend:
+        return False
+    # NEWEST first. A question left unanswered by an earlier run stays pending forever, and
+    # answering the OLDEST sent your reply to that ghost instead of the question on screen.
+    pend.sort(key=lambda x: int(x[1].get("ts") or 0), reverse=True)
+    path, d = pend[0]
+    d["answer"], d["answered"] = text, True
+    try:
+        json.dump(d, open(path, "w", encoding="utf-8"))
+    except Exception:
+        return False
+    _LAST_ANSWER[0] = time.time()
+    _send("✅ Passed to the apply engine. Anything else you send in the next "
+          f"{_FOLLOWUP_S // 60} min goes to the application too, not to chat.")
+    return True
+
+
 def main() -> None:
     if not TOKEN or not CHAT:
         print("[bot] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — idle.", flush=True); return
@@ -237,11 +411,32 @@ def main() -> None:
                 offset = max(offset, u["update_id"] + 1)
     except Exception:
         pass
-    _send("👋 Candidate agent online. /help for what I do.")
+    # Announce "online" at most once per JHW_BOT_ONLINE_THROTTLE seconds (default 6h). The bot
+    # is recreated on every `jhw.py local`/`apply` rebuild; without this throttle it spammed
+    # the chat with "Candidate agent online" on each restart. The marker lives on the shared
+    # OUT volume so it survives restarts.
+    _mk = os.path.join(OUT, ".bot_online_ts")
+    _throttle = int(os.environ.get("JHW_BOT_ONLINE_THROTTLE", "21600"))
+    try:
+        _last = os.path.getmtime(_mk)
+    except Exception:
+        _last = 0.0
+    if time.time() - _last > _throttle:
+        _send("👋 Candidate agent online. /help for what I do.")
+        try:
+            open(_mk, "w").close()
+        except Exception:
+            pass
+    else:
+        print("[bot] online banner throttled (last sent %ds ago)" % int(time.time() - _last),
+              flush=True)
     while True:
         try:
-            with httpx.Client(timeout=40) as c:
-                rr = c.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 25}).json()
+            _pump_asks()                 # relay apply-engine questions before waiting for input
+            # 25s of long-polling meant a question written just after a pump waited up to 25s
+            # before reaching the phone, which reads as "the bot never asked me".
+            with httpx.Client(timeout=25) as c:
+                rr = c.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 10}).json()
         except Exception:
             time.sleep(2); continue
         for u in rr.get("result", []):
@@ -253,11 +448,120 @@ def main() -> None:
             if not txt:
                 continue
             try:
+                t = txt.strip()
+                if t == "/cancel":
+                    for p_, d_ in _asks():
+                        d_["answered"], d_["answer"] = True, ""
+                        json.dump(d_, open(p_, "w", encoding="utf-8"))
+                    _send("Dropped any pending apply questions.")
+                    continue
+                # An open apply question owns the next reply — no magic word needed.
+                if not t.startswith("/") and _answer_ask(t):
+                    continue
+                # THE FOLLOW-UP WINDOW. An answer that arrives in pieces is still an answer: it
+                # belongs to the apply engine, never to the chat model.
+                if not t.startswith("/") and time.time() - _LAST_ANSWER[0] < _FOLLOWUP_S:
+                    _vol_add(t)
+                    _send("✅ Noted for the application"
+                          + (" (credential — kept out of chat, never sent to a model)."
+                             if _looks_secret(t) else "."))
+                    continue
+                # A CREDENTIAL NEVER REACHES THE CHAT MODEL. That endpoint is a third party and its
+                # reply is logged in this chat; the transcript already shows the assistant
+                # discussing a pasted password back at him.
+                if not t.startswith("/") and _looks_secret(t):
+                    _vol_add(t)
+                    print(f"[bot] refused to chat about a credential-shaped message "
+                          f"({_redact(t)})", flush=True)
+                    _send("🔒 That looks like a credential, so I have NOT sent it to any model.\n"
+                          "I have kept it for the next thing the apply engine asks. To store it "
+                          "permanently in the vault instead:\n"
+                          "python jhw.py atspw <host> '<password>' <login-email>")
+                    continue
                 _handle(txt)
             except Exception:
                 print("[bot] handler error:\n" + traceback.format_exc(), flush=True)
                 _send("⚠ internal error — logged.")
 
 
+def _selftest() -> int:
+    """Contracts for the Telegram side, provable with no Telegram and no models.
+
+    Every case below is a line from the candidate's real 2026-08-16 transcript."""
+    import tempfile
+    global ASK_DIR, _VOL
+    ASK_DIR = tempfile.mkdtemp()
+    _VOL = os.path.join(ASK_DIR, "_volunteered.json")
+    fails = []
+
+    def check(n, c, extra=""):
+        print(("  OK   " if c else "  FAIL ") + n + (f"   {extra}" if extra and not c else ""))
+        if not c:
+            fails.append(n)
+
+    print("\n[1] the credential guard (the message that was chatted about)")
+    check("his real generated password is recognised",
+          _looks_secret("@Q4sD9igY!mzW5u@TNtv7Ib@U0fZP6icN3"))
+    check("a labelled password line is recognised",
+          _looks_secret("Password : hunter2"))
+    check("'Passwort' (German) is recognised", _looks_secret("Passwort: abc"))
+    check("an api key is recognised", _looks_secret("api_key sk-abc123"))
+    check("'Use google sso' is NOT a credential", not _looks_secret("Use google sso"))
+    check("a plain username is NOT a credential", not _looks_secret("Username : feranicus@s4biz.io"))
+    check("ordinary chat is NOT a credential",
+          not _looks_secret("what should I apply for next?"))
+    check("a job URL is NOT a credential",
+          not _looks_secret("https://accenture.wd103.myworkdayjobs.com/AccentureCareers"))
+    print("\n[2] redaction never leaks the value")
+    r = _redact("@Q4sD9igY!mzW5u")
+    check("no original character survives", not any(c in r for c in "Q4sD9igY"), r)
+    check("and it says it is redacted", "redacted" in r, r)
+
+    print("\n[3] a volunteered line is matched by KIND, not by guesswork")
+    _vol_add("Username : feranicus@s4biz.io")
+    _vol_add("@Q4sD9igY!mzW5u@TNtv7Ib")
+    got = _vol_take("Reply with its PASSWORD (or reset via 'Forgot your password?')")
+    check("a password question takes the SECRET line",
+          got and got["secret"] is True, str(got))
+    got2 = _vol_take("Which e-mail do you use for this employer?")
+    check("a non-secret question takes the PLAIN line",
+          got2 and got2["secret"] is False and "feranicus" in got2["text"], str(got2))
+    check("a consumed line is not handed out twice", _vol_take("password?") is None)
+
+    print("\n[4] a stale volunteered line is never used")
+    json.dump([{"text": "old", "ts": int(time.time()) - 4000, "secret": False, "used": False}],
+              open(_VOL, "w"))
+    check("older than 30 min is ignored", _vol_take("what is your city?") is None)
+
+    print("\n[5] an ask answered in pieces reaches the engine")
+    os.makedirs(ASK_DIR, exist_ok=True)
+    qp = os.path.join(ASK_DIR, "1.json")
+    json.dump({"q": "Reply with its PASSWORD", "ts": int(time.time()), "sent": True,
+               "answered": False}, open(qp, "w"))
+    sent = []
+    global _send
+    _real_send, _send = _send, lambda t: sent.append(t)
+    try:
+        consumed = _answer_ask("Use google sso")
+        d = json.load(open(qp))
+        check("the first reply is passed to the engine",
+              consumed and d.get("answered") and d["answer"] == "Use google sso", str(d))
+        check("and he is told the follow-up window is open",
+              any("goes to the application" in x for x in sent), str(sent))
+        check("the window is actually open now", time.time() - _LAST_ANSWER[0] < 5)
+    finally:
+        _send = _real_send
+
+    print("\n" + "=" * 78)
+    if fails:
+        print(f"[X] {len(fails)} BOT CONTRACT(S) BROKEN: {fails}")
+        return 1
+    print("ALL BOT CONTRACTS HOLD")
+    return 0
+
+
 if __name__ == "__main__":
+    import sys
+    if "--logic" in sys.argv:
+        sys.exit(_selftest())
     main()

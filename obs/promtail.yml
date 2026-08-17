@@ -1,14 +1,29 @@
-server: { http_listen_port: 9080, grpc_listen_port: 0, log_level: warn }
-positions: { filename: /tmp/positions.yaml }
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+positions:
+  filename: /tmp/promtail/positions.yaml
 clients:
-  - url: http://loki:3100/loki/api/v1/push
+  - url: ${LOKI_URL}          # e.g. http://loki:3100/loki/api/v1/push  (start promtail with -config.expand-env=true)
 scrape_configs:
-  - job_name: jhw-events
+  - job_name: app
     static_configs:
-      - targets: [ localhost ]
-        labels: { job: jhw, __path__: /events/**/events.jsonl }
+      - targets: [localhost]
+        labels:
+          service: jhw-web    # matches CFG.service set via observability.configure()
+          job: jobhuntwow
+          __path__: /logs/events.log     # jhw-web's EVENTS_LOG is mounted here
     pipeline_stages:
       - json:
-          expressions: { ts: ts, service: service, evt: evt, job_id: job, stage: stage }
-      - labels: { service: "", evt: "" }
-      - timestamp: { source: ts, format: RFC3339 }
+          expressions:
+            evt: evt
+            service: service
+            status: status
+            rule: rule
+            severity: severity
+            user: user
+      - labels:
+          evt:
+          service:
+          severity:

@@ -21,14 +21,49 @@ const PORT = Number(process.env.PORT ?? 8081);
 let sh: any = null;
 async function stage() {
   if (sh) return sh;
-  sh = new Stagehand({
+  // A custom OpenAI-COMPATIBLE endpoint needs the PROVIDER-PREFIXED name ("openai/<model>"):
+  // Stagehand maps the prefix to a provider and only then honours baseURL. A bare "jhw-fast"
+  // cannot be mapped, which is what produced the opaque 500 on /goto.
+  // Chrome's CDP WebSocket is NOT at the root: it is ws://host:9222/devtools/browser/<uuid>, and
+  // the uuid changes on every Chrome start. Handing over "http://127.0.0.1:9222" makes the ws
+  // client upgrade "/" -> Chrome answers 404 ("Unexpected server response: 404"). Ask
+  // /json/version for the real endpoint first.
+  let cdpTarget = CDP;
+  try {
+    const vr = await fetch(CDP.replace(/\/$/, "") + "/json/version");
+    const vj: any = await vr.json();
+    if (vj?.webSocketDebuggerUrl) {
+      cdpTarget = vj.webSocketDebuggerUrl;
+      console.log("[stagehand-svc] cdp ws resolved: %s (%s)", cdpTarget, vj.Browser || "?");
+    } else {
+      console.warn("[stagehand-svc] /json/version had no webSocketDebuggerUrl:", JSON.stringify(vj).slice(0, 200));
+    }
+  } catch (e: any) {
+    console.error("[stagehand-svc] cannot reach CDP at %s : %s", CDP, e?.message || e);
+    throw new Error(`CDP unreachable at ${CDP}: ${e?.message || e}`);
+  }
+
+  const qualified = MODEL.includes("/") ? MODEL : `openai/${MODEL}`;
+  const cfg: any = {
     env: "LOCAL",
-    localBrowserLaunchOptions: { cdpUrl: CDP },   // attach to the ALREADY-RUNNING Chrome
-    modelName: MODEL,
+    localBrowserLaunchOptions: { cdpUrl: cdpTarget },   // resolved ws://.../devtools/browser/<uuid>
+    // v3 shape:
+    model: { modelName: qualified, apiKey: KEY, baseURL: BASE },
+    // v2 shape (harmless on v3, required on v2):
+    modelName: qualified,
     modelClientOptions: { baseURL: BASE, apiKey: KEY },
-    verbose: 1,
-  } as any);
-  await sh.init();
+    verbose: 2,
+  };
+  console.log("[stagehand-svc] init model=%s base=%s cdp=%s", qualified, BASE, cdpTarget);
+  sh = new Stagehand(cfg);
+  try {
+    await sh.init();
+  } catch (e: any) {
+    sh = null;                                    // never cache a half-built instance
+    console.error("[stagehand-svc] INIT FAILED:", e?.message || e, "\n", e?.stack || "");
+    throw e;
+  }
+  console.log("[stagehand-svc] init OK");
   return sh;
 }
 
@@ -44,34 +79,50 @@ async function withPage(fn: (page: any) => Promise<any>) {
   }
 }
 
+// Stagehand v3 does NOT expose `stagehand.page` (that is the v2 API). The docs show:
+//     const page = stagehand.context.pages()[0]
+// Using s.page on v3.7 gives "Cannot read properties of undefined (reading 'goto')".
+// Try v3 first, then v2, then open a tab if the context has none.
+async function pageOf(s: any) {
+  const ctx = s?.context;
+  if (ctx?.pages) {
+    const ps = ctx.pages();
+    if (ps?.length) return ps[0];
+    if (ctx.newPage) return await ctx.newPage();
+  }
+  if (s?.page) return s.page;                      // v2 fallback
+  throw new Error("no page: stagehand.context.pages() empty and stagehand.page undefined");
+}
+
 const routes: Record<string, (b: any) => Promise<any>> = {
   "/health": async () => ({ ok: true, cdp: CDP, model: MODEL }),
 
   "/goto": async (b) => {
     const s = await stage();
-    await s.page.goto(b.url);
+    const page = await pageOf(s);
+    await page.goto(b.url, { waitUntil: "domcontentloaded" });
     return { ok: true, url: b.url };
   },
 
   // Find candidate actions without acting -> Python can cache the returned selector.
   "/observe": async (b) => {
     const s = await stage();
-    const actions = await s.page.observe(b.instruction);
+    const actions = await (await pageOf(s)).observe(b.instruction);
     return { ok: true, actions };
   },
 
   // Act from natural language OR replay a previously observed action object (no re-inference).
   "/act": async (b) => {
     const s = await stage();
-    const r = await s.page.act(b.action ?? b.instruction);
+    const r = await (await pageOf(s)).act(b.action ?? b.instruction);
     return { ok: true, result: r };
   },
 
   "/extract": async (b) => {
     const s = await stage();
     const r = b.schema
-      ? await s.page.extract(b.instruction, b.schema)
-      : await s.page.extract(b.instruction);
+      ? await (await pageOf(s)).extract(b.instruction, b.schema)
+      : await (await pageOf(s)).extract(b.instruction);
     return { ok: true, result: r };
   },
 
@@ -98,12 +149,24 @@ http.createServer((req, res) => {
     const fn = routes[(req.url ?? "").split("?")[0]];
     res.setHeader("Content-Type", "application/json");
     if (!fn) { res.statusCode = 404; return res.end(JSON.stringify({ ok: false, error: "no route" })); }
+    // OBSERVABILITY: one structured line per call (route, ms, ok) + the FULL stack on failure.
+    // A bare `{"error": "..."}` 500 told the caller nothing about WHY, which cost a whole cycle.
+    const t0 = Date.now();
+    const path = (req.url ?? "").split("?")[0];
     try {
       const out = await fn(body ? JSON.parse(body) : {});
+      console.log(JSON.stringify({ evt: "stagehand_call", route: path, ok: true,
+                                   ms: Date.now() - t0, service: "jhw-stagehand" }));
       res.end(JSON.stringify(out));
     } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      console.error(JSON.stringify({ evt: "stagehand_call", route: path, ok: false,
+                                     ms: Date.now() - t0, err: msg.slice(0, 400),
+                                     service: "jhw-stagehand" }));
+      console.error("[stagehand-svc] STACK for " + path + ":\n" + (e?.stack || "(none)"));
       res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, error: String(e?.message ?? e) }));
+      res.end(JSON.stringify({ ok: false, route: path, error: msg,
+                              stack: String(e?.stack || "").split("\n").slice(0, 6).join(" | ") }));
     }
   });
 }).listen(PORT, "0.0.0.0", () => console.log(`[stagehand-svc] listening :${PORT} cdp=${CDP} model=${MODEL}`));

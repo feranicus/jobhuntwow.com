@@ -11,7 +11,7 @@ export async function postJSON(path, body) {
   });
   return r.json();
 }
-// stream Hermes chat: onChunk(text) called as tokens arrive
+// stream Electronic chat: onChunk(text) called as tokens arrive
 export async function chatStream(messages, model, onChunk) {
   const r = await fetch("/api/chat", {
     method: "POST",

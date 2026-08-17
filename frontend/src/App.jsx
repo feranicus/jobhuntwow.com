@@ -5,7 +5,8 @@ import Dashboard from "./pages/Dashboard.jsx";
 import Connections from "./pages/Connections.jsx";
 import Scout from "./pages/Scout.jsx";
 import Pipeline from "./pages/Pipeline.jsx";
-import Hermes from "./pages/Hermes.jsx";
+import Electronic from "./pages/Electronic.jsx";
+import Tailor from "./pages/Tailor.jsx";
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
 import { me as fetchMe, logout as apiLogout } from "./api.js";
@@ -69,7 +70,10 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/scout" element={<Scout />} />
           <Route path="/pipeline" element={<Pipeline />} />
-          <Route path="/hermes" element={<Hermes />} />
+          <Route path="/electronic" element={<Electronic />} />
+          <Route path="/tailor" element={<Tailor />} />
+          {/* the agent was renamed Hermes -> Electronic; keep old links working */}
+          <Route path="/hermes" element={<Navigate to="/electronic" replace />} />
           <Route path="/connections" element={<Connections />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

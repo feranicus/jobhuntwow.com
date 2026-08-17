@@ -291,7 +291,7 @@
     .menu.open{display:flex}
     .menu a{padding:13px 2px;border-bottom:1px solid var(--line);font-size:14px;width:100%}
     .burger{display:grid}
-    .jumpbtn{display:none}
+    .jumpbtn{display:inline-flex}
   }
   @media(max-width:640px){
     .sec{padding:54px 0}.wrap{padding:0 15px}
@@ -330,7 +330,7 @@
   .langsel{max-width:150px}
   html[dir=rtl] .menu{right:auto;left:14px}
   @media(max-width:560px){
-    .jumpbtn{display:none}
+    .jumpbtn{display:inline-flex}
     h1{font-size:clamp(26px,7.6vw,42px)}
     .menu{top:56px}.nav{height:56px}
     .langsel{max-width:118px;font-size:11.5px}
@@ -380,7 +380,7 @@
 <header id="hd"><div class="wrap nav">
   <div class="brand"><span class="dotb"></span>JobHunt<b>WOW</b><span class="dotcom">.com</span></div>
   <nav class="menu" id="menu">
-    <a href="#what">What</a><a href="#why">Why</a><a href="#hermes">Hermes</a><a href="#comms">Comms</a><a href="#crm">CRM</a><a href="#arch">Architecture</a>
+    <a href="#what">What</a><a href="#why">Why</a><a href="#hermes">Electronic</a><a href="#comms">Comms</a><a href="#crm">CRM</a><a href="#arch">Architecture</a><a href="/login" style="font-weight:700">Sign in / Create account &rarr;</a>
     <a href="#agents">Agents</a><a href="#docs">Docs</a><a href="#playbooks">Playbooks</a><a href="#layers">Layers</a><a href="#flows">Flows</a><a href="#decisions">Decisions</a>
     <a href="#automation">Automation</a><a href="#repo">Repo</a><a href="#deploy">Deploy</a><a href="#obs">Observability</a><a href="#sec">Security</a><a href="#reuse">Reuse</a><a href="#visio">LLD map</a><a href="#road">Roadmap</a>
   </nav>
@@ -393,7 +393,7 @@
       <option value="es">ES · Español</option>
       <option value="ar">AR · العربية</option>
     </select>
-    <a href="/login" class="btn jumpbtn" style="padding:9px 16px;font-size:12.5px">Jump in →</a>
+    <a href="/login" id="jumpin" class="btn jumpbtn" style="padding:9px 16px;font-size:12.5px">Jump in →</a>
     <button id="burger" class="burger" aria-label="menu">&#9776;</button>
   </div>
 </div></header>
@@ -408,9 +408,9 @@
       <span class="ln"><span>a job" to <span class="grad">interview</span></span></span>
       <span class="ln"><span>— <span class="stroke">one agent.</span></span></span>
     </h1>
-    <p class="lead" id="heroLead">You talk to <b>Hermes</b> in plain language. It sources roles, writes truth-checked resumes and cover letters, drives the <b>real</b> Apply flow on Workday, Taleo, SuccessFactors, Personio and HiBob, then handles the recruiter emails and screening questions all the way to the interview invite. Multi-agent, serverless on DigitalOcean, guardrailed against prompt injection and model poisoning, and observable end-to-end. This page is the HLD <i>and</i> the LLD.</p>
+    <p class="lead" id="heroLead">You talk to <b>Electronic</b> in plain language. It sources roles, writes truth-checked resumes and cover letters, drives the <b>real</b> Apply flow on Workday, Taleo, SuccessFactors, Personio and HiBob, then handles the recruiter emails and screening questions all the way to the interview invite. Multi-agent, serverless on DigitalOcean, guardrailed against prompt injection and model poisoning, and observable end-to-end. This page is the HLD <i>and</i> the LLD.</p>
     <div class="hero-cta">
-      <a href="#hermes" class="btn" id="heroCta1">Meet Hermes →</a>
+      <a href="#hermes" class="btn" id="heroCta1">Meet Electronic →</a>
       <a href="#arch" class="btn ghost" id="heroCta2">See the full architecture</a>
     </div>
     <div class="herostats" id="heroStats">
@@ -446,16 +446,16 @@
 <section class="sec wrap" id="hermes"><span class="anchor"></span>
   <div class="reveal">
     <div class="sec-tag">/ One conversation</div>
-    <h2 class="sec-title">You talk. <em>Hermes does.</em></h2>
-    <p class="sec-desc">The whole journey through a single chat — Telegram, WhatsApp, or the web app. Hermes narrates what it's doing and stops for your approval at every irreversible step.</p>
+    <h2 class="sec-title">You talk. <em>Electronic does.</em></h2>
+    <p class="sec-desc">The whole journey through a single chat — Telegram, WhatsApp, or the web app. Electronic narrates what it's doing and stops for your approval at every irreversible step.</p>
     <div class="tgwrap">
       <div class="phone"><div class="scr">
-        <div class="tgtop"><div class="tgav">🪽</div><div><div class="nm">Hermes</div><div class="on">your job-search agent · online</div></div></div>
+        <div class="tgtop"><div class="tgav">🪽</div><div><div class="nm">Electronic</div><div class="on">your job-search agent · online</div></div></div>
         <div class="tgbody" id="tgbody"></div>
       </div></div>
       <div class="tgcap">
         <h3>The agent narrates every move — and never submits without your "Confirm".</h3>
-        <p>Sourcing, tailoring, truth-checking, applying, answering recruiters, scheduling interviews. Hermes keeps the whole loop in one thread so you always know what's happening and stay in control.</p>
+        <p>Sourcing, tailoring, truth-checking, applying, answering recruiters, scheduling interviews. Electronic keeps the whole loop in one thread so you always know what's happening and stay in control.</p>
         <div class="mini"><span>🔎 Sourcing</span><span>📝 Truth-checked docs</span><span>🕹️ Real Apply flow</span><span>📩 Recruiter replies</span><span>📅 Interview scheduling</span><span>✋ Human gates</span></div>
       </div>
     </div>
@@ -1054,7 +1054,7 @@ document.getElementById('costcards').innerHTML=[
 
 /* ---------- ROADMAP ---------- */
 const RM=[
- ['PHASE 0 · now','Prove the primitive',['Page-Agent + Qwen driving ONE ATS end-to-end','Truth Gate on a single resume','Docker Compose stack on ONE droplet + thin Terraform','Hermes chat + human-gated submit + audit log']],
+ ['PHASE 0 · now','Prove the primitive',['Page-Agent + Qwen driving ONE ATS end-to-end','Truth Gate on a single resume','Docker Compose stack on ONE droplet + thin Terraform','Electronic chat + human-gated submit + audit log']],
  ['PHASE 1','Breadth, comms & converge',['Adapters for all 5 ATS','Comms Agent: recruiter email → interview invite','Fold Compose+configs into Terraform cloud-init','CI: build → push DOCR → terraform apply']],
  ['PHASE 2','Hardening & full auto',['OWASP-LLM guardrails + security review','CD on merge · throttle-as-code · blue/green','Observability dashboards + cost caps + DR']],
  ['PHASE 3','Open source',['terraform apply from zero → full stack + configs','Published truth + fit rubric','Community ATS adapters']],
@@ -1492,11 +1492,11 @@ window.PILLL={ru:"ожидает одобрения",zh:"等待批准",hi:"स�
 
 /* ---------- i18n + mobile menu ---------- */
 const I18N={
- ru:{nav:{"#what":"Кратко","#why":"Зачем","#hermes":"Hermes","#comms":"Переписка","#crm":"CRM","#arch":"Архитектура","#agents":"Агенты","#docs":"Документы","#playbooks":"Сценарии","#layers":"Слои","#flows":"Потоки","#decisions":"Решения","#automation":"Автоматизация","#repo":"Репозиторий","#deploy":"Развёртывание","#obs":"Наблюдаемость","#sec":"Безопасность","#reuse":"Переиспользование","#visio":"LLD-схема","#road":"Дорожная карта"},
-  hero:{eb:"JobHuntWOW.com · Высокоуровневый и низкоуровневый дизайн · POC · v2",h1:'От «найди мне работу» до <span class="grad">собеседования</span> — <span class="stroke">один агент.</span>',lead:"Вы говорите с <b>Hermes</b> простым языком. Он ищет вакансии, пишет проверенные на правду резюме и сопроводительные письма, проходит <b>настоящую</b> подачу заявки на Workday, Taleo, SuccessFactors, Personio и HiBob, а затем ведёт переписку с рекрутёрами вплоть до приглашения на собеседование. Мультиагентная система, serverless на DigitalOcean, защита от инъекций промптов, полная наблюдаемость. Эта страница — и HLD, и LLD.",c1:"Познакомиться с Hermes →",c2:"Смотреть всю архитектуру",st:["специализированных агентов","ATS-платформы","OWASP Top-10","на DO serverless","без лжи"]},
+ ru:{nav:{"#what":"Кратко","#why":"Зачем","#hermes":"Electronic","#comms":"Переписка","#crm":"CRM","#arch":"Архитектура","#agents":"Агенты","#docs":"Документы","#playbooks":"Сценарии","#layers":"Слои","#flows":"Потоки","#decisions":"Решения","#automation":"Автоматизация","#repo":"Репозиторий","#deploy":"Развёртывание","#obs":"Наблюдаемость","#sec":"Безопасность","#reuse":"Переиспользование","#visio":"LLD-схема","#road":"Дорожная карта"},
+  hero:{eb:"JobHuntWOW.com · Высокоуровневый и низкоуровневый дизайн · POC · v2",h1:'От «найди мне работу» до <span class="grad">собеседования</span> — <span class="stroke">один агент.</span>',lead:"Вы говорите с <b>Electronic</b> простым языком. Он ищет вакансии, пишет проверенные на правду резюме и сопроводительные письма, проходит <b>настоящую</b> подачу заявки на Workday, Taleo, SuccessFactors, Personio и HiBob, а затем ведёт переписку с рекрутёрами вплоть до приглашения на собеседование. Мультиагентная система, serverless на DigitalOcean, защита от инъекций промптов, полная наблюдаемость. Эта страница — и HLD, и LLD.",c1:"Познакомиться с Electronic →",c2:"Смотреть всю архитектуру",st:["специализированных агентов","ATS-платформы","OWASP Top-10","на DO serverless","без лжи"]},
   foot:["Мультиагентная система · Page-Agent + Qwen 3.x на DigitalOcean · проверка на правду · человек в контуре · защита OWASP-LLM · открытый исходный код","HLD + LLD v2 · Proof of Concept · jobhuntwow.com · 2026 — источники: Alibaba Page-Agent, santifer/career-ops, AWS serverless-AI, OWASP LLM Top 10 (2025)"],
   sec:{what:["/ Простыми словами","Что это, за <em>60 секунд</em>"],visio:["/ LLD · живая схема","Вся система в <em>движении</em>"],why:["/ Проблема",'«Easy Apply» — это <em>огороженный сад</em>',"Серьёзные вакансии живут в корпоративных ATS-порталах, где нет API для подачи заявки кандидатом — форму заполняют в браузере. Этот дизайн решает и охват, и качество."],
-   hermes:["/ Один разговор","Вы говорите. <em>Hermes делает.</em>","Весь путь в одном чате — Telegram, WhatsApp или веб-приложение. Hermes рассказывает, что делает, и ждёт вашего подтверждения перед каждым необратимым шагом."],
+   hermes:["/ Один разговор","Вы говорите. <em>Electronic делает.</em>","Весь путь в одном чате — Telegram, WhatsApp или веб-приложение. Electronic рассказывает, что делает, и ждёт вашего подтверждения перед каждым необратимым шагом."],
    comms:["/ После подачи — то, о чём все забывают","Письма рекрутёров и <em>отборочные вопросы</em>","Подача — половина дела. Агент переписки следит за почтой, пишет честные обоснованные ответы, отмечает непроверяемое и ждёт вашего одобрения — вплоть до приглашения на собеседование."],
    crm:["/ витрина · ваш CRM JobHuntWOW","Воронка, которую вы <em>реально видите</em>","Агенты подают заявки и отвечают рекрутёрам в фоне — а здесь вы за этим наблюдаете. Kanban-CRM (ваш дашборд JobHuntWOW), где каждая вакансия — карточка, которую агенты двигают по воронке, с аналитикой и напоминаниями."],
    arch:["/ HLD · контекст системы","Вся машина на <em>одной доске</em>","Мультиагентная, событийная, serverless-система на DigitalOcean. Нажмите блок, чтобы перейти к деталям."],
@@ -1518,11 +1518,11 @@ const I18N={
    ethics:["/ Проверка реальностью","Законно, этично и <em>честно</em>","Автоматизация подачи заявок — серая зона. Дизайн держится защитимой стороны и честен там, где гарантий нет."],
    road:["/ От POC к open source","<em>Путь</em>","Путь от прототипа до открытого кода."]}},
 
- zh:{nav:{"#why":"为什么","#hermes":"Hermes","#comms":"沟通","#crm":"CRM","#arch":"架构","#agents":"智能体","#docs":"文档","#playbooks":"操作手册","#layers":"分层","#flows":"流程","#decisions":"决策","#automation":"自动化","#repo":"代码库","#deploy":"部署","#obs":"可观测性","#sec":"安全","#reuse":"复用","#road":"路线图"},
-  hero:{eb:"JobHuntWOW.com · 高层 + 底层设计 · POC · v2",h1:'从"帮我找工作"到<span class="grad">面试</span> — <span class="stroke">一个智能体。</span>',lead:"你用自然语言与 <b>Hermes</b> 对话。它搜寻职位，撰写经过真实性核验的简历与求职信，在 Workday、Taleo、SuccessFactors、Personio 和 HiBob 上完成<b>真实的</b>投递流程，随后处理招聘者邮件与筛选问题，直到面试邀请。多智能体、DigitalOcean 上的 serverless、抵御提示注入、端到端可观测。本页既是 HLD 也是 LLD。",c1:"认识 Hermes →",c2:"查看完整架构",st:["专职智能体","ATS 平台","OWASP 前十","DO serverless","零谎言"]},
+ zh:{nav:{"#why":"为什么","#hermes":"Electronic","#comms":"沟通","#crm":"CRM","#arch":"架构","#agents":"智能体","#docs":"文档","#playbooks":"操作手册","#layers":"分层","#flows":"流程","#decisions":"决策","#automation":"自动化","#repo":"代码库","#deploy":"部署","#obs":"可观测性","#sec":"安全","#reuse":"复用","#road":"路线图"},
+  hero:{eb:"JobHuntWOW.com · 高层 + 底层设计 · POC · v2",h1:'从"帮我找工作"到<span class="grad">面试</span> — <span class="stroke">一个智能体。</span>',lead:"你用自然语言与 <b>Electronic</b> 对话。它搜寻职位，撰写经过真实性核验的简历与求职信，在 Workday、Taleo、SuccessFactors、Personio 和 HiBob 上完成<b>真实的</b>投递流程，随后处理招聘者邮件与筛选问题，直到面试邀请。多智能体、DigitalOcean 上的 serverless、抵御提示注入、端到端可观测。本页既是 HLD 也是 LLD。",c1:"认识 Electronic →",c2:"查看完整架构",st:["专职智能体","ATS 平台","OWASP 前十","DO serverless","零谎言"]},
   foot:["多智能体 · DigitalOcean 上的 Page-Agent + Qwen 3.x · 真实性核验 · 人在回路 · OWASP-LLM 防护 · 面向开源","HLD + LLD v2 · Proof of Concept · jobhuntwow.com · 2026 — 参考：Alibaba Page-Agent、santifer/career-ops、AWS serverless-AI、OWASP LLM Top 10 (2025)"],
   sec:{why:["/ 问题","“Easy Apply”是一座<em>围墙花园</em>","真正的好职位藏在企业 ATS 门户后，没有面向候选人的投递 API——申请表就是浏览器表单。本设计同时解决覆盖面与质量。"],
-   hermes:["/ 一次对话","你说，<em>Hermes 做。</em>","整个流程都在一个聊天里——Telegram、WhatsApp 或网页应用。Hermes 会讲述它在做什么，并在每个不可逆步骤前等待你的确认。"],
+   hermes:["/ 一次对话","你说，<em>Electronic 做。</em>","整个流程都在一个聊天里——Telegram、WhatsApp 或网页应用。Electronic 会讲述它在做什么，并在每个不可逆步骤前等待你的确认。"],
    comms:["/ 投递之后——大家都忽略的部分","招聘者邮件与<em>筛选问题</em>","投递只是一半。沟通智能体监看邮箱，撰写诚实且有依据的回答，标记无法核实之处，并等待你的批准——直到面试邀请。"],
    crm:["/ 前台 · 你的 JobHuntWOW CRM","你<em>真正看得见</em>的漏斗","智能体在后台投递并回复招聘者——而你在这里观看。一个看板式 CRM（你的 JobHuntWOW 仪表盘），每个职位都是一张卡片，由智能体沿漏斗推进，并配有分析与提醒。"],
    arch:["/ HLD · 系统语境","整台机器，<em>一块看板</em>","一个多智能体、事件驱动、serverless 的 DigitalOcean 系统。点击方块跳转到细节。"],
@@ -1544,11 +1544,11 @@ const I18N={
    ethics:["/ 现实审视","合法、合乎伦理且<em>诚实</em>","自动化投递确属灰色地带。本设计站在可辩护的一侧，并在无法保证之处保持透明。"],
    road:["/ 从 POC 到开源","<em>路线</em>","从原型到开源的路径。"]}},
 
- hi:{nav:{"#why":"क्यों","#hermes":"Hermes","#comms":"संवाद","#crm":"CRM","#arch":"आर्किटेक्चर","#agents":"एजेंट","#docs":"दस्तावेज़","#playbooks":"प्लेबुक","#layers":"परतें","#flows":"प्रवाह","#decisions":"निर्णय","#automation":"स्वचालन","#repo":"रेपो","#deploy":"तैनाती","#obs":"ऑब्ज़र्वेबिलिटी","#sec":"सुरक्षा","#reuse":"पुनःउपयोग","#road":"रोडमैप"},
-  hero:{eb:"JobHuntWOW.com · हाई-लेवल + लो-लेवल डिज़ाइन · POC · v2",h1:'"मुझे नौकरी ढूँढो" से <span class="grad">इंटरव्यू</span> तक — <span class="stroke">एक एजेंट।</span>',lead:"आप <b>Hermes</b> से सामान्य भाषा में बात करते हैं। यह नौकरियाँ खोजता है, सच्चाई-जाँचे गए रिज़्यूमे और कवर लेटर लिखता है, Workday, Taleo, SuccessFactors, Personio और HiBob पर <b>असली</b> आवेदन प्रक्रिया पूरी करता है, फिर रिक्रूटर ईमेल और स्क्रीनिंग सवालों को इंटरव्यू निमंत्रण तक संभालता है। मल्टी-एजेंट, DigitalOcean पर serverless, प्रॉम्प्ट-इंजेक्शन से सुरक्षा, पूर्ण ऑब्ज़र्वेबिलिटी। यह पेज HLD भी है और LLD भी।",c1:"Hermes से मिलें →",c2:"पूरा आर्किटेक्चर देखें",st:["विशेष एजेंट","ATS प्लेटफ़ॉर्म","OWASP टॉप-10","DO serverless पर","कोई झूठ नहीं"]},
+ hi:{nav:{"#why":"क्यों","#hermes":"Electronic","#comms":"संवाद","#crm":"CRM","#arch":"आर्किटेक्चर","#agents":"एजेंट","#docs":"दस्तावेज़","#playbooks":"प्लेबुक","#layers":"परतें","#flows":"प्रवाह","#decisions":"निर्णय","#automation":"स्वचालन","#repo":"रेपो","#deploy":"तैनाती","#obs":"ऑब्ज़र्वेबिलिटी","#sec":"सुरक्षा","#reuse":"पुनःउपयोग","#road":"रोडमैप"},
+  hero:{eb:"JobHuntWOW.com · हाई-लेवल + लो-लेवल डिज़ाइन · POC · v2",h1:'"मुझे नौकरी ढूँढो" से <span class="grad">इंटरव्यू</span> तक — <span class="stroke">एक एजेंट।</span>',lead:"आप <b>Electronic</b> से सामान्य भाषा में बात करते हैं। यह नौकरियाँ खोजता है, सच्चाई-जाँचे गए रिज़्यूमे और कवर लेटर लिखता है, Workday, Taleo, SuccessFactors, Personio और HiBob पर <b>असली</b> आवेदन प्रक्रिया पूरी करता है, फिर रिक्रूटर ईमेल और स्क्रीनिंग सवालों को इंटरव्यू निमंत्रण तक संभालता है। मल्टी-एजेंट, DigitalOcean पर serverless, प्रॉम्प्ट-इंजेक्शन से सुरक्षा, पूर्ण ऑब्ज़र्वेबिलिटी। यह पेज HLD भी है और LLD भी।",c1:"Electronic से मिलें →",c2:"पूरा आर्किटेक्चर देखें",st:["विशेष एजेंट","ATS प्लेटफ़ॉर्म","OWASP टॉप-10","DO serverless पर","कोई झूठ नहीं"]},
   foot:["मल्टी-एजेंट · DigitalOcean पर Page-Agent + Qwen 3.x · सच्चाई-जाँच · मानव-इन-द-लूप · OWASP-LLM सुरक्षा · ओपन-सोर्स के लिए बना","HLD + LLD v2 · Proof of Concept · jobhuntwow.com · 2026 — संदर्भ: Alibaba Page-Agent, santifer/career-ops, AWS serverless-AI, OWASP LLM Top 10 (2025)"],
   sec:{why:["/ समस्या","“Easy Apply” एक <em>घिरा हुआ बगीचा</em> है","गंभीर नौकरियाँ एंटरप्राइज़ ATS पोर्टल के पीछे होती हैं, जहाँ उम्मीदवार के लिए कोई सबमिट API नहीं—फ़ॉर्म ब्राउज़र में भरना पड़ता है। यह डिज़ाइन पहुँच और गुणवत्ता दोनों सुधारता है।"],
-   hermes:["/ एक बातचीत","आप कहें। <em>Hermes करे।</em>","पूरा सफ़र एक ही चैट में—Telegram, WhatsApp या वेब ऐप। Hermes बताता है कि वह क्या कर रहा है और हर अपरिवर्तनीय कदम से पहले आपकी मंज़ूरी का इंतज़ार करता है।"],
+   hermes:["/ एक बातचीत","आप कहें। <em>Electronic करे।</em>","पूरा सफ़र एक ही चैट में—Telegram, WhatsApp या वेब ऐप। Electronic बताता है कि वह क्या कर रहा है और हर अपरिवर्तनीय कदम से पहले आपकी मंज़ूरी का इंतज़ार करता है।"],
    comms:["/ आवेदन के बाद — जिसे सब भूल जाते हैं","रिक्रूटर ईमेल और <em>स्क्रीनिंग सवाल</em>","आवेदन आधी लड़ाई है। संवाद एजेंट इनबॉक्स देखता है, ईमानदार व प्रमाण-आधारित उत्तर लिखता है, अप्रमाणित बातें चिह्नित करता है और आपकी मंज़ूरी का इंतज़ार करता है—इंटरव्यू निमंत्रण तक।"],
    crm:["/ फ्रंट-ऑफ़-हाउस · आपका JobHuntWOW CRM","वह पाइपलाइन जो आप <em>सचमुच देखते हैं</em>","एजेंट पृष्ठभूमि में आवेदन और रिक्रूटर से जवाब देते हैं—और आप यहाँ देखते हैं। एक kanban CRM (आपका JobHuntWOW डैशबोर्ड) जहाँ हर भूमिका एक कार्ड है जिसे एजेंट फ़नल में आगे बढ़ाते हैं, एनालिटिक्स और रिमाइंडर के साथ।"],
    arch:["/ HLD · सिस्टम संदर्भ","पूरी मशीन, <em>एक बोर्ड पर</em>","DigitalOcean पर एक मल्टी-एजेंट, इवेंट-ड्रिवन, serverless सिस्टम। विवरण के लिए किसी ब्लॉक पर टैप करें।"],
@@ -1570,11 +1570,11 @@ const I18N={
    ethics:["/ हक़ीक़त की जाँच","कानूनी, नैतिक और <em>ईमानदार</em>","आवेदन का स्वचालन सचमुच धूसर क्षेत्र है। यह डिज़ाइन बचाव-योग्य पक्ष पर रहता है और जहाँ गारंटी नहीं, वहाँ पारदर्शी है।"],
    road:["/ POC से ओपन-सोर्स तक","<em>रास्ता</em>","प्रोटोटाइप से ओपन-सोर्स तक का रास्ता।"]}},
 
- es:{nav:{"#why":"Por qué","#hermes":"Hermes","#comms":"Mensajes","#crm":"CRM","#arch":"Arquitectura","#agents":"Agentes","#docs":"Documentos","#playbooks":"Guías","#layers":"Capas","#flows":"Flujos","#decisions":"Decisiones","#automation":"Automatización","#repo":"Repo","#deploy":"Despliegue","#obs":"Observabilidad","#sec":"Seguridad","#reuse":"Reutilización","#road":"Hoja de ruta"},
-  hero:{eb:"JobHuntWOW.com · Diseño de alto y bajo nivel · POC · v2",h1:'De «búscame trabajo» a la <span class="grad">entrevista</span> — <span class="stroke">un agente.</span>',lead:"Hablas con <b>Hermes</b> en lenguaje natural. Busca vacantes, redacta currículos y cartas verificados contra la verdad, completa el proceso <b>real</b> de postulación en Workday, Taleo, SuccessFactors, Personio y HiBob, y luego gestiona los correos de reclutadores y las preguntas de cribado hasta la invitación a entrevista. Multiagente, serverless en DigitalOcean, protegido contra inyección de prompts y observable de extremo a extremo. Esta página es el HLD y el LLD.",c1:"Conoce a Hermes →",c2:"Ver toda la arquitectura",st:["agentes especializados","plataformas ATS","OWASP Top-10","en DO serverless","sin mentiras"]},
+ es:{nav:{"#why":"Por qué","#hermes":"Electronic","#comms":"Mensajes","#crm":"CRM","#arch":"Arquitectura","#agents":"Agentes","#docs":"Documentos","#playbooks":"Guías","#layers":"Capas","#flows":"Flujos","#decisions":"Decisiones","#automation":"Automatización","#repo":"Repo","#deploy":"Despliegue","#obs":"Observabilidad","#sec":"Seguridad","#reuse":"Reutilización","#road":"Hoja de ruta"},
+  hero:{eb:"JobHuntWOW.com · Diseño de alto y bajo nivel · POC · v2",h1:'De «búscame trabajo» a la <span class="grad">entrevista</span> — <span class="stroke">un agente.</span>',lead:"Hablas con <b>Electronic</b> en lenguaje natural. Busca vacantes, redacta currículos y cartas verificados contra la verdad, completa el proceso <b>real</b> de postulación en Workday, Taleo, SuccessFactors, Personio y HiBob, y luego gestiona los correos de reclutadores y las preguntas de cribado hasta la invitación a entrevista. Multiagente, serverless en DigitalOcean, protegido contra inyección de prompts y observable de extremo a extremo. Esta página es el HLD y el LLD.",c1:"Conoce a Electronic →",c2:"Ver toda la arquitectura",st:["agentes especializados","plataformas ATS","OWASP Top-10","en DO serverless","sin mentiras"]},
   foot:["Multiagente · Page-Agent + Qwen 3.x en DigitalOcean · verificado · humano en el bucle · protegido OWASP-LLM · pensado para código abierto","HLD + LLD v2 · Proof of Concept · jobhuntwow.com · 2026 — referencias: Alibaba Page-Agent, santifer/career-ops, AWS serverless-AI, OWASP LLM Top 10 (2025)"],
   sec:{why:["/ El problema","«Easy Apply» es un <em>jardín amurallado</em>","Las vacantes serias viven tras portales ATS empresariales sin API de envío para el candidato: el formulario se llena en el navegador. Este diseño arregla alcance y calidad."],
-   hermes:["/ Una conversación","Tú hablas. <em>Hermes actúa.</em>","Todo el recorrido en un solo chat — Telegram, WhatsApp o la app web. Hermes narra lo que hace y espera tu aprobación antes de cada paso irreversible."],
+   hermes:["/ Una conversación","Tú hablas. <em>Electronic actúa.</em>","Todo el recorrido en un solo chat — Telegram, WhatsApp o la app web. Electronic narra lo que hace y espera tu aprobación antes de cada paso irreversible."],
    comms:["/ Tras postular — lo que todos olvidan","Correos de reclutadores y <em>preguntas de cribado</em>","Postular es la mitad. El agente de mensajes vigila la bandeja, redacta respuestas honestas y fundamentadas, marca lo no verificable y espera tu aprobación — hasta la invitación a entrevista."],
    crm:["/ recepción · tu CRM JobHuntWOW","El embudo que <em>sí ves</em>","Los agentes postulan y responden a reclutadores en segundo plano — y aquí lo observas. Un CRM kanban (tu panel JobHuntWOW) donde cada vacante es una tarjeta que los agentes mueven por el embudo, con analítica y recordatorios."],
    arch:["/ HLD · contexto del sistema","Toda la máquina, <em>en un tablero</em>","Un sistema multiagente, orientado a eventos y serverless en DigitalOcean. Toca un bloque para ir al detalle."],
@@ -1596,11 +1596,11 @@ const I18N={
    ethics:["/ Revisión de la realidad","Legal, ético y <em>honesto</em>","Automatizar postulaciones es una zona gris. Este diseño se queda del lado defendible y es transparente donde no puede garantizar."],
    road:["/ De POC a código abierto","El <em>camino</em>","El camino del prototipo al código abierto."]}},
 
- ar:{nav:{"#why":"لماذا","#hermes":"Hermes","#comms":"المراسلات","#crm":"CRM","#arch":"الهندسة","#agents":"الوكلاء","#docs":"المستندات","#playbooks":"الأدلة","#layers":"الطبقات","#flows":"التدفقات","#decisions":"القرارات","#automation":"الأتمتة","#repo":"المستودع","#deploy":"النشر","#obs":"المراقبة","#sec":"الأمان","#reuse":"إعادة الاستخدام","#road":"خارطة الطريق"},
-  hero:{eb:"JobHuntWOW.com · تصميم عالي ومنخفض المستوى · POC · v2",h1:'من «جِد لي وظيفة» إلى <span class="grad">المقابلة</span> — <span class="stroke">وكيل واحد.</span>',lead:"تتحدث إلى <b>Hermes</b> بلغة طبيعية. يبحث عن الوظائف، ويكتب سيرًا ذاتية ورسائل تغطية مُتحقَّقة من صدقها، ويُكمل عملية التقديم <b>الحقيقية</b> على Workday وTaleo وSuccessFactors وPersonio وHiBob، ثم يتولى رسائل جهات التوظيف وأسئلة الفرز حتى دعوة المقابلة. نظام متعدد الوكلاء، serverless على DigitalOcean، محمي من حقن التعليمات وقابل للمراقبة بالكامل. هذه الصفحة هي HLD وLLD معًا.",c1:"تعرّف على Hermes →",c2:"عرض كامل الهندسة",st:["وكلاء متخصصون","منصات ATS","OWASP العشرة","على DO serverless","بلا كذب"]},
+ ar:{nav:{"#why":"لماذا","#hermes":"Electronic","#comms":"المراسلات","#crm":"CRM","#arch":"الهندسة","#agents":"الوكلاء","#docs":"المستندات","#playbooks":"الأدلة","#layers":"الطبقات","#flows":"التدفقات","#decisions":"القرارات","#automation":"الأتمتة","#repo":"المستودع","#deploy":"النشر","#obs":"المراقبة","#sec":"الأمان","#reuse":"إعادة الاستخدام","#road":"خارطة الطريق"},
+  hero:{eb:"JobHuntWOW.com · تصميم عالي ومنخفض المستوى · POC · v2",h1:'من «جِد لي وظيفة» إلى <span class="grad">المقابلة</span> — <span class="stroke">وكيل واحد.</span>',lead:"تتحدث إلى <b>Electronic</b> بلغة طبيعية. يبحث عن الوظائف، ويكتب سيرًا ذاتية ورسائل تغطية مُتحقَّقة من صدقها، ويُكمل عملية التقديم <b>الحقيقية</b> على Workday وTaleo وSuccessFactors وPersonio وHiBob، ثم يتولى رسائل جهات التوظيف وأسئلة الفرز حتى دعوة المقابلة. نظام متعدد الوكلاء، serverless على DigitalOcean، محمي من حقن التعليمات وقابل للمراقبة بالكامل. هذه الصفحة هي HLD وLLD معًا.",c1:"تعرّف على Electronic →",c2:"عرض كامل الهندسة",st:["وكلاء متخصصون","منصات ATS","OWASP العشرة","على DO serverless","بلا كذب"]},
   foot:["متعدد الوكلاء · Page-Agent + Qwen 3.x على DigitalOcean · تحقق من الصدق · إنسان ضمن الحلقة · حماية OWASP-LLM · مبني ليكون مفتوح المصدر","HLD + LLD v2 · Proof of Concept · jobhuntwow.com · 2026 — مراجع: Alibaba Page-Agent، santifer/career-ops، AWS serverless-AI، OWASP LLM Top 10 (2025)"],
   sec:{why:["/ المشكلة","«Easy Apply» حديقة <em>مسوَّرة</em>","الوظائف الجادة تقبع خلف بوابات ATS المؤسسية بلا واجهة برمجية للتقديم من المرشّح—يُملأ النموذج في المتصفح. هذا التصميم يعالج الوصول والجودة معًا."],
-   hermes:["/ محادثة واحدة","أنت تتحدث. <em>وHermes ينفّذ.</em>","الرحلة كاملة في محادثة واحدة — Telegram أو WhatsApp أو تطبيق الويب. يروي Hermes ما يفعله وينتظر موافقتك قبل كل خطوة لا رجعة فيها."],
+   hermes:["/ محادثة واحدة","أنت تتحدث. <em>وElectronic ينفّذ.</em>","الرحلة كاملة في محادثة واحدة — Telegram أو WhatsApp أو تطبيق الويب. يروي Electronic ما يفعله وينتظر موافقتك قبل كل خطوة لا رجعة فيها."],
    comms:["/ بعد التقديم — ما ينساه الجميع","رسائل جهات التوظيف و<em>أسئلة الفرز</em>","التقديم نصف المعركة. يراقب وكيل المراسلات البريد، ويكتب إجابات صادقة مدعّمة بالأدلة، ويعلّم ما لا يمكن التحقق منه، وينتظر موافقتك — حتى دعوة المقابلة."],
    crm:["/ الواجهة · نظام JobHuntWOW CRM","المسار الذي <em>تراه فعلاً</em>","يقدّم الوكلاء ويردّون على جهات التوظيف في الخلفية — وهنا تراقب ذلك. لوحة kanban (لوحة JobHuntWOW) حيث كل وظيفة بطاقة يحرّكها الوكلاء عبر المسار، مع تحليلات وتنبيهات."],
    arch:["/ HLD · سياق النظام","الآلة كلها على <em>لوحة واحدة</em>","نظام متعدد الوكلاء مدفوع بالأحداث وserverless على DigitalOcean. انقر أي كتلة للانتقال إلى التفاصيل."],
@@ -1643,6 +1643,7 @@ function applyLang(l){
 const sel=document.getElementById('lang');let saved='en';try{saved=localStorage.getItem('lang')||'en';}catch(e){}
 sel.value=saved;if(saved!=='en')applyLang(saved);
 sel.addEventListener('change',()=>applyLang(sel.value));
+var __ji=document.getElementById('jumpin');if(__ji)__ji.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();window.location.href='/login';},true);
 const bg=document.getElementById('burger'),mn=document.getElementById('menu');
 bg.addEventListener('click',()=>mn.classList.toggle('open'));
 mn.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>mn.classList.remove('open')));
@@ -1880,7 +1881,7 @@ window.TR.ru={
   ["🗄️","Данные","Managed Postgres + Spaces","Одна БД (реляционка + pgvector) + объектное хранилище; предсказуемо помесячно."],
   ["📈","Наблюдаемость","self-hosted OSS","Prometheus/Grafana/Loki/Tempo/ELK — только стоимость инфры, без SaaS за место."]],
  rm:[
-  ["ФАЗА 0 · сейчас","Доказать примитив",["Page-Agent + Qwen на ОДНОЙ ATS end-to-end","Врата правды на одном резюме","Docker Compose на ОДНОМ дроплете + тонкий Terraform","Чат Hermes + подача через гейт + журнал аудита"]],
+  ["ФАЗА 0 · сейчас","Доказать примитив",["Page-Agent + Qwen на ОДНОЙ ATS end-to-end","Врата правды на одном резюме","Docker Compose на ОДНОМ дроплете + тонкий Terraform","Чат Electronic + подача через гейт + журнал аудита"]],
   ["ФАЗА 1","Охват, переписка и сведение",["Адаптеры под все 5 ATS","Агент переписки: письмо рекрутёра → приглашение","Свести Compose+конфиги в cloud-init Terraform","CI: сборка → push DOCR → terraform apply"]],
   ["ФАЗА 2","Упрочнение и авто",["Гардрейлы OWASP-LLM + ревью безопасности","CD при merge · троттлинг-как-код · blue/green","Дашборды наблюдаемости + лимиты трат + DR"]],
   ["ФАЗА 3","Open source",["<code>terraform apply</code> с нуля → весь стек + конфиги","Опубликованная рубрика правды и соответствия","Комьюнити-адаптеры ATS"]]],
@@ -1919,7 +1920,7 @@ window.TM=window.TM||{};
 window.TM.ru={
  descs:[
   "Серьёзные вакансии живут за корпоративными ATS-порталами, где <b>нет API для подачи заявки кандидатом</b> — API работодателя есть (публиковать вакансии, читать кандидатов), но сама подача — это форма в браузере. Значит, либо заполнять руками, либо управлять реальным UI. Наш старый Python-бот Easy-Apply ломал хрупкие селекторы и выдавал спам. Этот дизайн чинит и охват, и качество.",
-  "Весь путь в одном чате — Telegram, WhatsApp или веб-приложение. Hermes рассказывает, что делает, и ждёт вашего подтверждения перед каждым необратимым шагом.",
+  "Весь путь в одном чате — Telegram, WhatsApp или веб-приложение. Electronic рассказывает, что делает, и ждёт вашего подтверждения перед каждым необратимым шагом.",
   "Подача — половина дела. Агент переписки следит за выделенным ящиком, пишет честные обоснованные ответы на обычные вопросы хедхантеров — срок выхода, зарплата, виза, «почему эта роль», — отмечает всё, что не может проверить, и ждёт вашего одобрения. Вплоть до приглашения на собеседование.",
   "Агенты подают заявки и отвечают рекрутёрам в фоне — а здесь вы за этим наблюдаете. Kanban-CRM (ваш существующий дашборд JobHuntWOW.com), где каждая вакансия — карточка, которую агенты двигают по воронке, с аналитикой и напоминаниями.",
   "Мультиагентная, событийная, serverless-система на DigitalOcean. Нажмите блок, чтобы перейти к слою, агенту, безопасности или наблюдаемости. Цвета — по 5-слойному эталону serverless-AI от AWS, переложенному на DO.",
@@ -1956,7 +1957,7 @@ window.TM.ru={
   "🛡️ Периметр и платформенные меры",
   "🧠 Угрозы LLM/агента — OWASP LLM Top 10 (2025), с мерами"],
  tg_h3:"Агент проговаривает каждый шаг — и никогда не отправляет без вашего «Подтвердить».",
- tg_p:"Поиск, подгонка, проверка правды, подача, ответы рекрутёрам, планирование собеседований. Hermes держит весь цикл в одном треде, чтобы вы всегда знали, что происходит, и оставались у руля.",
+ tg_p:"Поиск, подгонка, проверка правды, подача, ответы рекрутёрам, планирование собеседований. Electronic держит весь цикл в одном треде, чтобы вы всегда знали, что происходит, и оставались у руля.",
  tg_mini:["🔎 Поиск","📝 Проверенные документы","🕹️ Реальная подача","📩 Ответы рекрутёрам","📅 Планирование собеседований","✋ Гейты человека"]
 };
 (function(){
@@ -1996,12 +1997,12 @@ Object.assign(window.TM.ru,{
 /* ---------- KISS intro (5W) ---------- */
 window.INTRO={
  en:{tldr:"In one line: you chat with an AI that finds jobs, writes an honest CV, applies on the real company sites, and handles recruiters — all the way to the interview. You approve every step.",
-  steps:[["💬","You ask","«find me a job»"],["🔎","Hermes finds &amp; writes","truthful CV &amp; cover letter"],["🖱️","Applies &amp; replies","real ATS + recruiter emails"],["🎯","You interview","invite on your calendar"]],
-  w5:[["🙋 Who","Job seekers drowning in applications — and the recruiters on the other side."],["📦 What","An AI assistant (Hermes) that runs your whole job search, honestly."],["🎯 Why","Applying is slow, repetitive and easy to lose track of. It does the boring parts — without lying."],["🏢 Where","On the real company career sites (Workday, Personio, HiBob…), not just LinkedIn Easy Apply."],["⏱️ When","End-to-end: from «find me a job» to the interview invite."]],
+  steps:[["💬","You ask","«find me a job»"],["🔎","Electronic finds &amp; writes","truthful CV &amp; cover letter"],["🖱️","Applies &amp; replies","real ATS + recruiter emails"],["🎯","You interview","invite on your calendar"]],
+  w5:[["🙋 Who","Job seekers drowning in applications — and the recruiters on the other side."],["📦 What","An AI assistant (Electronic) that runs your whole job search, honestly."],["🎯 Why","Applying is slow, repetitive and easy to lose track of. It does the boring parts — without lying."],["🏢 Where","On the real company career sites (Workday, Personio, HiBob…), not just LinkedIn Easy Apply."],["⏱️ When","End-to-end: from «find me a job» to the interview invite."]],
   kiss:"How (KISS): 1 chat → the AI does the work → you tap Approve. No dashboards to learn, no lies on your CV, nothing sent without you."},
  ru:{tldr:"В одну строку: вы общаетесь с ИИ, который ищет вакансии, пишет честное резюме, подаёт заявки на реальных сайтах компаний и ведёт рекрутёров — вплоть до собеседования. Вы подтверждаете каждый шаг.",
-  steps:[["💬","Вы просите","«найди мне работу»"],["🔎","Hermes ищет и пишет","честное резюме и письмо"],["🖱️","Подаёт и отвечает","реальный ATS + письма рекрутёров"],["🎯","Вы на собеседовании","приглашение в календаре"]],
-  w5:[["🙋 Кто","Соискатели, тонущие в заявках — и рекрутёры с другой стороны."],["📦 Что","ИИ-ассистент (Hermes), который честно ведёт весь ваш поиск работы."],["🎯 Зачем","Подача — медленно, однообразно и легко всё растерять. Он делает скучное — без вранья."],["🏢 Где","На реальных карьерных сайтах компаний (Workday, Personio, HiBob…), а не только Easy Apply в LinkedIn."],["⏱️ Когда","От начала до конца: от «найди мне работу» до приглашения на собеседование."]],
+  steps:[["💬","Вы просите","«найди мне работу»"],["🔎","Electronic ищет и пишет","честное резюме и письмо"],["🖱️","Подаёт и отвечает","реальный ATS + письма рекрутёров"],["🎯","Вы на собеседовании","приглашение в календаре"]],
+  w5:[["🙋 Кто","Соискатели, тонущие в заявках — и рекрутёры с другой стороны."],["📦 Что","ИИ-ассистент (Electronic), который честно ведёт весь ваш поиск работы."],["🎯 Зачем","Подача — медленно, однообразно и легко всё растерять. Он делает скучное — без вранья."],["🏢 Где","На реальных карьерных сайтах компаний (Workday, Personio, HiBob…), а не только Easy Apply в LinkedIn."],["⏱️ Когда","От начала до конца: от «найди мне работу» до приглашения на собеседование."]],
   kiss:"Как (KISS): 1 чат → ИИ делает работу → вы жмёте «Подтвердить». Никаких дашбордов учить, никакого вранья в резюме, ничего не уходит без вас."}
 };
 window.__renderWhat=function(l){const I=(window.INTRO[l])||window.INTRO.en;const el=document.getElementById('whatbox');if(!el)return;

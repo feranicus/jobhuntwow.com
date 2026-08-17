@@ -1,0 +1,37 @@
+import { test, expect } from '@playwright/test';
+
+test('test', async ({ page }) => {
+  await page.goto('https://job-boards.greenhouse.io/okx/jobs/7699600003?gh_src=8ad01c4c3us');
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await page.getByRole('textbox', { name: 'First Name' }).click();
+  await page.getByRole('textbox', { name: 'First Name' }).fill('Evgeny');
+  await page.getByRole('textbox', { name: 'First Name' }).press('Tab');
+  await page.getByRole('textbox', { name: 'Last Name' }).fill('Vainshtein');
+  await page.getByRole('textbox', { name: 'Last Name' }).press('Tab');
+  await page.getByRole('textbox', { name: 'Email' }).fill('evgeny@s4biz.io');
+  await page.locator('.select__control').first().click();
+  await page.getByRole('option', { name: 'Germany +' }).click();
+  await page.getByRole('textbox', { name: 'Phone' }).fill('15785541545');
+  await page.locator('.field-wrapper > .select > .select__container > .select-shell > div > .select__control > .select__value-container > .select__input-container').first().click();
+  await page.getByRole('combobox', { name: 'Location (City)' }).fill('Friedberg');
+  await page.getByRole('option', { name: 'Friedberg, Hesse, Germany' }).click();
+  await page.getByLabel('Resume/CV*').locator('button').filter({ hasText: 'Attach' }).click();
+  await page.getByRole('group', { name: 'Resume/CV*' }).getByLabel('Attach').setInputFiles('Evgeny Vainshtein - CV 2026.pdf');
+  await page.locator('button').filter({ hasText: 'Attach' }).click();
+  await page.getByLabel('Attach').setInputFiles('Evgeny Vainshtein - Cover Letter 2026.pdf');
+  await page.getByRole('textbox', { name: 'LinkedIn Profile' }).click();
+  await page.getByRole('textbox', { name: 'LinkedIn Profile' }).fill('https://www.linkedin.com/in/feranicus/');
+  await page.getByRole('textbox', { name: 'LinkedIn Profile' }).click();
+  await page.getByText('How did you hear about us?*').click();
+  await page.locator('.select__control.select__control--is-focused > .select__value-container > .select__input-container').click();
+  await page.getByRole('option', { name: 'LinkedIn' }).click();
+  await page.locator('.eeoc__question__wrapper > .select > .select__container > .select-shell > div > .select__control > .select__value-container > .select__input-container').first().click();
+  await page.getByRole('option', { name: 'Male', exact: true }).click();
+  await page.locator('div:nth-child(4) > .select > .select__container > .select-shell > div > .select__control > .select__value-container > .select__input-container').click();
+  await page.getByRole('option', { name: 'No' }).click();
+  await page.locator('div:nth-child(6) > .select > .select__container > .select-shell > div > .select__control > .select__value-container > .select__input-container').click();
+  await page.getByRole('option', { name: 'I am not a protected veteran' }).click();
+  await page.locator('div:nth-child(9) > .select > .select__container > .select-shell > div > .select__control > .select__value-container > .select__input-container').click();
+  await page.getByRole('option', { name: 'No, I do not have a' }).click();
+  await page.getByRole('button', { name: 'Submit application' }).click();
+});

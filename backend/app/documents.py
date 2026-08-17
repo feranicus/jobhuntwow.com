@@ -78,19 +78,33 @@ def _join(parts, sep=" | ") -> str:
 
 
 # --------------------------------------------------------------------------- struct -> blocks
+def _b(d: dict) -> dict:
+    """Contact fields, wherever they are.
+
+    The old code did `d["basics"] if present else d`, so when a "basics" dict existed but the
+    model had put the name at TOP level, the header rendered as "Candidate" with an empty contact
+    line. Merge both, with basics winning.
+    """
+    merged = {k: v for k, v in d.items() if isinstance(v, (str, int, float))}
+    b = d.get("basics")
+    if isinstance(b, dict):
+        merged.update({k: v for k, v in b.items() if isinstance(v, (str, int, float))})
+    return merged
+
+
 def _contact_line(d: dict) -> str:
-    b = d.get("basics") if isinstance(d.get("basics"), dict) else d
+    b = _b(d)
     return _join([b.get("location"), b.get("phone"), b.get("email"),
                   b.get("linkedin"), b.get("website") or b.get("portfolio")])
 
 
 def _name_of(d: dict) -> str:
-    b = d.get("basics") if isinstance(d.get("basics"), dict) else d
+    b = _b(d)
     return _s(b.get("name") or b.get("full_name")) or "Candidate"
 
 
 def _headline_of(d: dict) -> str:
-    b = d.get("basics") if isinstance(d.get("basics"), dict) else d
+    b = _b(d)
     return _s(b.get("headline") or b.get("title"))
 
 
@@ -106,6 +120,13 @@ def _resume_blocks(d: dict) -> list:
     summary = _s(d.get("summary") or d.get("professional_summary"))
     if summary:
         out += [("h2", "PROFESSIONAL SUMMARY"), ("p", summary)]
+
+    # KEY ACHIEVEMENTS lead the document: a recruiter's first pass is ~7 seconds and the top
+    # third has to sell. Rendered as bullets so they are scannable.
+    hls = [x for x in (_s(y) for y in _list(d.get("highlights") or d.get("key_achievements"))) if x]
+    if hls:
+        out.append(("h2", "KEY ACHIEVEMENTS"))
+        out += [("li", x) for x in hls[:5]]
 
     skills = [x for x in (_s(y) for y in _list(d.get("skills") or d.get("skills_top"))) if x]
     if skills:
@@ -130,6 +151,16 @@ def _resume_blocks(d: dict) -> list:
                 if t:
                     out.append(("li", t))
             out.append(("spacer", ""))
+
+    # EARLIER EXPERIENCE: one line per role. This exists so the page limit can never delete an
+    # employer — a missing employer reads as an unexplained gap and gets the candidate screened out.
+    earlier = [e for e in _list(d.get("earlier")) if isinstance(e, dict)]
+    if earlier:
+        out.append(("h2", "EARLIER EXPERIENCE"))
+        for e in earlier:
+            line = _join([e.get("title") or e.get("role"), e.get("company")], " - ")
+            dates = _s(e.get("dates"))
+            out.append(("li", _join([line, dates], " | ") if dates else line))
 
     proj = [p for p in _list(d.get("projects")) if isinstance(p, dict)]
     if proj:
@@ -259,6 +290,16 @@ def to_blocks(md_or_struct: Any, kind: str = "resume") -> list:
 
 
 # --------------------------------------------------------------------------- DOCX writer
+def _add_photo_docx(doc, photo: str) -> None:
+    """Put the photo top-right. A CV photo is expected in DE/AT/CH and unwelcome in US/UK, so the
+    caller decides - we only render what we are given."""
+    from docx.shared import Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run().add_picture(photo, height=Cm(3.5))
+
+
 def _docx_base():
     doc = Document()
     st = doc.styles["Normal"]
@@ -273,8 +314,13 @@ def _docx_base():
     return doc
 
 
-def _write_docx(blocks: list, path: str) -> str:
+def _write_docx(blocks: list, path: str, photo: str = "") -> str:
     doc = _docx_base()
+    if photo and os.path.isfile(photo):
+        try:
+            _add_photo_docx(doc, photo)
+        except Exception:
+            pass          # a bad image must never cost the candidate the whole document
     for kind, text in blocks:
         text = _s(text)
         if kind == "spacer":
@@ -356,7 +402,7 @@ def _ensure_dir(path: str) -> None:
         os.makedirs(d, exist_ok=True)
 
 
-def _write_pdf(blocks: list, path: str, title: str = "") -> str:
+def _write_pdf(blocks: list, path: str, title: str = "", photo: str = "") -> str:
     _ensure_dir(path)
     doc = SimpleDocTemplate(path, pagesize=A4,
                             leftMargin=17 * mm, rightMargin=17 * mm,
@@ -364,6 +410,18 @@ def _write_pdf(blocks: list, path: str, title: str = "") -> str:
                             title=_s(title) or "Document", author=_s(title))
     flow = []
     pending = []
+    if photo and os.path.isfile(photo):
+        try:
+            from reportlab.platypus import Image as _Img
+            from reportlab.lib.utils import ImageReader
+            iw, ih = ImageReader(photo).getSize()
+            h = 34 * mm
+            img = _Img(photo, width=h * (iw / float(ih)), height=h)
+            img.hAlign = "RIGHT"
+            flow.append(img)
+        except Exception:
+            pass
+
 
     def flush():
         if pending:
@@ -403,9 +461,9 @@ def _title_of(blocks: list) -> str:
 
 
 # --------------------------------------------------------------------------- public API
-def resume_docx(md_or_struct: Any, path: str) -> str:
+def resume_docx(md_or_struct: Any, path: str, photo: str = "") -> str:
     """Write an ATS-safe resume .docx. Accepts a struct dict or markdown text."""
-    return _write_docx(to_blocks(md_or_struct, "resume"), path)
+    return _write_docx(to_blocks(md_or_struct, "resume"), path, photo=photo)
 
 
 def cover_docx(md_or_struct: Any, path: str) -> str:
@@ -413,9 +471,9 @@ def cover_docx(md_or_struct: Any, path: str) -> str:
     return _write_docx(to_blocks(md_or_struct, "cover"), path)
 
 
-def resume_pdf(md_or_struct: Any, path: str) -> str:
+def resume_pdf(md_or_struct: Any, path: str, photo: str = "") -> str:
     b = to_blocks(md_or_struct, "resume")
-    return _write_pdf(b, path, title=_title_of(b))
+    return _write_pdf(b, path, title=_title_of(b), photo=photo)
 
 
 def cover_pdf(md_or_struct: Any, path: str) -> str:
@@ -429,7 +487,7 @@ def to_pdf(md_or_struct: Any, path: str, kind: str = "resume") -> str:
     return _write_pdf(b, path, title=_title_of(b))
 
 
-def write_all(resume: Any, cover: Any, outdir: str) -> dict:
+def write_all(resume: Any, cover: Any, outdir: str, photo: str = "") -> dict:
     """Write resume.docx/.pdf + cover_letter.docx/.pdf into outdir.
 
     A failure in one renderer never blocks the others - the caller gets whatever
@@ -442,6 +500,7 @@ def write_all(resume: Any, cover: Any, outdir: str) -> dict:
         ("cover_letter.docx", cover_docx, cover),
         ("cover_letter.pdf", cover_pdf, cover),
     ]
+    photo_for = {"resume.docx", "resume.pdf"}      # a cover letter never carries a photo
     files = {}
     errors = {}
     for name, fn, payload in jobs:
@@ -449,7 +508,10 @@ def write_all(resume: Any, cover: Any, outdir: str) -> dict:
             continue
         p = os.path.join(outdir, name)
         try:
-            fn(payload, p)
+            if name in photo_for and photo:
+                fn(payload, p, photo)
+            else:
+                fn(payload, p)
             files[name] = p
         except Exception as e:
             errors[name] = "%s: %s" % (type(e).__name__, e)

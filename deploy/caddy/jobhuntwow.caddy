@@ -8,6 +8,14 @@ www.jobhuntwow.com {
 }
 
 jobhuntwow.com {
+	# JSON access log -> Caddy stdout -> videodead-promtail (docker_sd) -> Loki, labelled
+	# container="videodead-caddy-1". This is what the "JobHuntWOW — traffic" Grafana dashboard
+	# reads: {container="videodead-caddy-1"} | json | request_host="jobhuntwow.com". Without it
+	# the dashboard is empty (no access logs for this host). 1:1 with cybergod.ai's traffic board.
+	log {
+		output stdout
+		format json
+	}
 	encode zstd gzip
 	# SPA + FastAPI are the same container. flush_interval -1 keeps SSE (chat) unbuffered.
 	reverse_proxy jhw-web:8000 {

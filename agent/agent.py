@@ -12,7 +12,9 @@ import argparse, asyncio, json, os, re, secrets, sys, time
 import httpx
 from browser_use import Agent, BrowserSession, BrowserProfile, ChatOpenAI, Tools
 import ask, obs
-from flows import linkedin, workday, page_agent, llm_driver, greenhouse, easyapply, icims, workday_gevernova
+from flows import atscreds
+from flows import (linkedin, workday, page_agent, llm_driver, greenhouse, easyapply, icims,
+                   workday_gevernova, stagehand, electronic, phenom, workday_wd)
 
 PROXY   = os.getenv("JHW_PROXY_BASE", "http://host.docker.internal:8000/v1")
 TOKEN   = os.getenv("AGENT_PROXY_TOKEN", "none")
@@ -28,9 +30,18 @@ STEPS_PER_TRY = int(os.getenv("JHW_STEPS_PER_TRY", "40"))
 
 
 def parse_jid(a):
-    m = re.search(r"(\d{6,})", a)
+    """LinkedIn job id, or a DIRECT ATS URL kept intact.
+
+    The old version regex-grabbed the first 6+ digit run from anything. An NTT/Phenom URL
+    (".../NTT1GLOBAL337575EXTERNALENGLOBAL/...") therefore collapsed to "337575", the real target
+    was lost, and the run fell back to searching LinkedIn for a job id that does not exist there.
+    """
+    s_ = str(a or "").strip()
+    if s_.startswith(("http://", "https://")) and "linkedin.com" not in s_.lower():
+        return s_                      # the URL IS the identifier - never reduce it to digits
+    m = re.search(r"(\d{6,})", s_)
     if not m:
-        sys.exit(f"[ERR] no job id in '{a}'")
+        sys.exit(f"[ERR] no job id or ATS URL in '{a}'")
     return m.group(1)
 
 
@@ -121,15 +132,102 @@ def candidate_block(d):
     lines += ["", f"EDUCATION: {edu.get('credential','')}, {edu.get('org','')} ({edu.get('years','')})",
               f"CERTIFICATIONS: {', '.join(d.get('certifications', []))}",
               f"SKILLS: {', '.join(d.get('skills_flat', [])[:25])}"]
+    lines += ["", _screening_block()]
     return "\n".join(lines)
 
 
-def apply_context():
+def _screening_block() -> str:
+    """The ALWAYS-answers from userdata/candidate.md, verbatim, plus a start date computed at
+    RUN TIME.
+
+    These were written down weeks ago and never reached the form driver: candidate_block() was
+    built only from resume_data.json, so the model had no idea travel="Yes" was already decided
+    and asked the human on Telegram - twice - for answers that were sitting on disk. A fact the
+    engine owns must never become a question.
+    """
+    import datetime as _dt
+    start = (_dt.date.today() + _dt.timedelta(days=30)).strftime("%d-%m-%Y")
+    lines = ["SCREENING ANSWERS - these are DECIDED. Use them verbatim; never ask the human, "
+             "never invent an alternative:",
+             f"- available_start_date: {start}  (one month out, recomputed every run; write it in "
+             "the format the field's placeholder asks for, e.g. dd-mm-yyyy)",
+             "- notice_period: 1 month",
+             "- salary_expectation: 150000 EUR gross per year"]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "userdata", "candidate.md")
+    try:
+        keep, txt = [], open(path, encoding="utf-8").read()
+        sect = txt.split("## screening_defaults", 1)
+        if len(sect) == 2:
+            for ln in sect[1].splitlines():
+                if ln.startswith("##"):
+                    break
+                s = ln.strip()
+                # available_start_date is computed above - the file's literal date goes stale.
+                if s.startswith("- ") and not s.startswith("- available_start_date"):
+                    keep.append(s)
+        lines += keep
+    except Exception as e:
+        print(f"[warn] could not read screening defaults ({str(e)[:70]}) - "
+              "the driver will have to ask", file=sys.stderr)
+    return "\n".join(lines)
+
+
+def _ats_email(data: dict):
+    """(address, provenance). ONE decision, stated out loud.
+
+    MEASURED 2026-08-16, and it would have silently broken the whole unattended path: the ATS login
+    address had FOUR homes and they disagreed.
+        templates/resume_data.json basics.email  -> feranicus@s4biz.io   (what the account used)
+        userdata/candidate.md      email         -> evgeny@s4biz.io
+        out/ats_accounts.json      accenture     -> feranicus@s4biz.io
+        out/ats_accounts.json      redhat        -> feranicus@gmail.com
+    The candidate then set JHW_MAIL_USER=evgeny@s4biz.io, so Workday would have mailed the
+    verification code to feranicus@ while the reader watched evgeny@ -- finding nothing, forever,
+    and looking exactly like a broken mailbox reader rather than a mismatch. Same disease as
+    ENRICH_MODELS having four homes: generalise one layer, leave a stale one in front, and the stale
+    one silently wins.
+    RULE: THE ADDRESS WE REGISTER WITH MUST BE THE MAILBOX WE CAN READ. `JHW_MAIL_USER` is by
+    definition a mailbox the candidate controls, so when it is set it is the best available answer
+    and it is used -- unless JHW_ATS_EMAIL says otherwise explicitly."""
+    import os as _os
+    override = (_os.getenv("JHW_ATS_EMAIL") or "").strip()
+    if override:
+        return override, "JHW_ATS_EMAIL (explicit override)"
+    mail = (_os.getenv("JHW_MAIL_USER") or "").strip()
+    resume = (data.get("basics", {}) or {}).get("email", "") or ""
+    if mail:
+        if resume and mail.lower() != resume.lower():
+            print(f"[creds] NOTE: registering with the MAILBOX we can read ({mail}) rather than the "
+                  f"r\u00e9sum\u00e9 address ({resume}) — the verification code has to land somewhere we "
+                  f"can read it. Set JHW_ATS_EMAIL to override.", flush=True)
+        return mail, "JHW_MAIL_USER (the mailbox we can read)"
+    return resume, "resume_data.json basics.email (no mailbox configured)"
+
+
+def apply_context(url: str = ""):
+    """MEASURED BUG, fixed 2026-08-16: this used to do
+        pw = "Jhw!" + secrets.token_urlsafe(10)... + "9"
+    i.e. mint a BRAND-NEW password on EVERY run and overwrite out/credentials.json. An
+    account created last week could therefore never be signed into again, because the only
+    copy of its password had been thrown away. Meanwhile flows/workday.py already read a
+    PERSISTENT per-tenant store (out/ats_accounts.json) that this function never touched:
+    one credential, two homes, and the ephemeral home won.
+
+    flows/atscreds.py is now the single owner. A password is invented ONCE PER ATS VENDOR
+    and remembered forever, so every Workday tenant is opened with the same password while
+    the ACCOUNT stays per tenant (Workday accounts do not span employers)."""
     data = json.load(open(DATA, encoding="utf-8"))
-    email = data.get("basics", {}).get("email", "")
-    pw = "Jhw!" + secrets.token_urlsafe(10).replace("-", "x").replace("_", "y") + "9"
-    creds = {"email": email, "password": pw, "created_at": time.strftime("%Y-%m-%d %H:%M:%S")}
-    json.dump(creds, open(os.path.join(OUT, "credentials.json"), "w"), indent=2)
+    email, why = _ats_email(data)
+    print(f"[creds] ATS login e-mail = {email}   ({why})", flush=True)
+    acct = atscreds.account(url, email)
+    creds = {"email": acct["email"], "password": acct["password"],
+             "vendor": acct["vendor"], "tenant": acct["tenant"], "exists": acct["exists"]}
+    # out/credentials.json is kept ONLY as a read-only convenience for the older flows that
+    # still expect it. atscreds owns the truth; this file is a projection of it, never a source.
+    json.dump({k: v for k, v in creds.items() if k != "password"} | {"password": "***"},
+              open(os.path.join(OUT, "credentials.json"), "w"), indent=2)
+    print(f"[creds] {acct['vendor']}/{acct['tenant']} "
+          f"({'existing account' if acct['exists'] else 'no account recorded yet'})", flush=True)
     files = [p for p in [os.path.join(OUT, "resume.pdf"), os.path.join(OUT, "cover_letter.pdf")] if os.path.exists(p)]
     if not files:
         print("[WARN] no resume.pdf in out/ — run `jhw.py tailor` first.", file=sys.stderr)
@@ -214,13 +312,30 @@ async def run_scrape(jid):
 
 
 async def run_apply(jid):
-    block, files, creds = apply_context()
-    print("[i] Stage 1: deterministic LinkedIn (Playwright, no LLM) …")
-    prep = await linkedin.prepare_application(jid)
-    print(f"[i] LinkedIn -> status={prep['status']} apply_type={prep['apply_type']} :: {prep['note']}")
-    if prep["status"] != "logged_in":
-        print("[ACTION] " + (prep.get("note") or "Log into LinkedIn at http://localhost:9090/vnc.html, then re-run apply."))
-        return
+    block, files, creds = apply_context(str(jid or ''))
+
+    # A DIRECT ATS URL MUST NOT GO ANYWHERE NEAR LINKEDIN. Stage 1 exists to resolve a LinkedIn
+    # job id into its external "Apply" target; when the caller already handed us that target,
+    # visiting linkedin.com is pure overhead - and it fails the whole run if LinkedIn is
+    # unreachable or the session expired, for a job that has nothing to do with LinkedIn.
+    _u = str(jid or "")
+    _is_url = _u.startswith("http://") or _u.startswith("https://")
+    if _is_url and "linkedin.com" not in _u.lower():
+        prep = {"status": "logged_in", "apply_type": "external", "ats_url": _u,
+                "note": "direct ATS URL - LinkedIn stage skipped"}
+        print(f"[i] direct ATS URL -> skipping LinkedIn entirely :: {_u[:90]}")
+    else:
+        print("[i] Stage 1: deterministic LinkedIn (Playwright, no LLM) …")
+        prep = await linkedin.prepare_application(jid)
+        print(f"[i] LinkedIn -> status={prep['status']} apply_type={prep['apply_type']} :: {prep['note']}")
+        if prep["status"] != "logged_in":
+            note = prep.get("note") or ""
+            if "ERR_INTERNET_DISCONNECTED" in note or "ERR_NAME_NOT_RESOLVED" in note:
+                print("[ACTION] the SANDBOX has no internet (not your PC). Recreate it:\n"
+                      "         python jhw.py local-down  &&  python jhw.py apply <url>")
+            else:
+                print("[ACTION] " + (note or "Log into LinkedIn at http://localhost:9090/vnc.html, then re-run apply."))
+            return
 
     data = json.load(open(DATA, encoding="utf-8"))
     resume_path = files[0] if files else ""
@@ -241,7 +356,10 @@ async def run_apply(jid):
             await ask.notify(f"{kind}: stage={stage}. {(res.get('note') or '')[:180]}")
         except Exception:
             pass
-        print("\n[i] Review in noVNC (http://localhost:9090) and Submit yourself if ready.")
+        if stage == "submitted":
+            print("\n[OK] Application SUBMITTED. Nothing left for you to do.")
+        else:
+            print("\n[i] NOT submitted. Open http://localhost:9090 to see where it stopped.")
 
     # ROUTER — dispatch to the adapter built from the REAL recording for this ATS
     # (see RECORDINGS_FINDINGS.md). Deterministic drives; the LLM only answers free-text questions.
@@ -254,27 +372,204 @@ async def run_apply(jid):
         await _report("workday_ge", await workday_gevernova.drive(creds, data, resume_path, llm_answer,
                                                                   prep.get("ats_url", ""))); return
 
-    if prep["apply_type"] == "external" and re.search(r"myworkday|workday", ats):
-        print("[i] Workday — recorded adapter (deep-link, SSO / Use-My-Last-App, resume parse wait) ...")
-        await _report("workday", await workday.drive(creds, data, resume_path, llm_answer,
-                                                      prep.get("ats_url", ""))); return
+    # WORKDAY IS DISPATCHED FURTHER DOWN, ON PURPOSE. It used to be handled here, which put it
+    # BEFORE the Electronic document-tailoring block - so it applied with whatever stale PDF was
+    # left in out/ from a previous job. The Workday branch now sits directly after tailoring (and
+    # before Stagehand, because we have recorded ground truth for Workday and a generic agent must
+    # not be turned loose on it). flows/workday.py -- built from the candidate's own recording --
+    # is the DEFAULT; JHW_WD_EXPERIMENTAL=1 opts into the unverified workday_wd.py instead.
 
     if prep["apply_type"] == "external" and "greenhouse.io" in ats:
         print("[i] Greenhouse — recorded adapter ...")
-        await _report("greenhouse", await greenhouse.drive(data, resume_path,
-                                                           prep.get("ats_url", ""), llm_answer)); return
+        # TWO DIFFERENT THINGS, deliberately: `llm_answer` writes free-text prose with a model,
+        # `ask.ask_human` asks the CANDIDATE. Passing the model in as the human rung would let it
+        # answer a veteran/disability declaration on his behalf — which is the exact behaviour he
+        # suspected on the OKX run and which must never be possible.
+        await _report("greenhouse", await greenhouse.drive(
+            data, resume_path, prep.get("ats_url", ""), answer_fn=llm_answer,
+            asker=ask.ask_human)); return
 
     if prep["apply_type"] == "external" and "icims.com" in ats:
         print("[i] iCIMS — recorded adapter (pre-fill, then hand CAPTCHA/OTP to the human) ...")
         await _report("icims", await icims.drive(data, resume_path,
                                                  prep.get("ats_url", ""), llm_answer)); return
 
-    # Unknown ATS / apply type -> our generic text-DOM LLM driver (proxy, no CDN; asks Telegram when
-    # it needs a value). NO browser-use, NO screenshots.
-    print("[i] Unknown ATS / apply type — generic LLM DOM driver (our proxy + Telegram) ...")
-    ld = await llm_driver.run(block, resume_path)
-    await _report("llm_driver", {"ok": ld.get("ok"), "stage": "review" if ld.get("ok") else "paused",
+    # Unknown ATS (Phenom/NTT, SmartRecruiters, Ashby, ...) -> STAGEHAND first: act/observe are
+    # schema-constrained, so it follows the DOM instead of narrating. It was built and running but
+    # NEVER wired into this router, which is why every unknown site silently fell through to the
+    # text-DOM driver. Stagehand is tried first and we fall back only if it is unavailable/fails.
+    target = prep.get("ats_url") or ""
+
+    # PHENOM (NTT and most "careers.<brand>" sites): the apply form is a URL derived from the job
+    # URL, so navigate straight to it. Clicking "Apply now" is fragile - the cookie banner, the
+    # "Career Guide" chat widget and Chrome's "Restore pages?" bubble all overlay that button.
+    # MEASURED, and it broke the Workday target before it was guarded: phenom.is_phenom() matches
+    # ANY url containing "/job/<x>", so
+    #   .../AccentureCareers/job/Hamburg/Agentic-AI-..._R00329883/apply
+    # was claimed as Phenom and rewritten to
+    #   .../AccentureCareers/apply?jobSeqNo=Hamburg&step=1
+    # - the LOCATION slug taken for a Phenom job-sequence number and the real path thrown away.
+    # A more specific ATS must be excluded before a pattern this broad is allowed to rewrite a URL.
+    if phenom.is_phenom(target) and not (workday_wd.is_workday(target)
+                                         or workday_wd.is_workday_gateway(target)):
+        au = phenom.apply_url(target)
+        if au and au != target:
+            print(f"[i] Phenom ATS -> going straight to the application form: {au[:100]}")
+            target = au
+            prep["ats_url"] = au
+
+    # DOCUMENTS FIRST. The ATS demands "Upload Resume" and "Upload your Cover Letter", so ask the
+    # deployed Electronic backend to tailor BOTH to this posting and download them into out/.
+    # CACHE: that is TWO LLM calls on the droplet plus four downloads - the 1-2 minute wait before
+    # the browser does anything. The documents depend only on the JOB + profile, so rebuilding
+    # them for the same posting is pure latency. JHW_FRESH_DOCS=1 forces a rebuild.
+    import hashlib as _hl
+    doc_note = ""
+    _stamp = os.path.join(OUT, ".tailored_for")
+    _key = _hl.sha1((target or "").encode()).hexdigest()[:16]
+    _have = all(os.path.isfile(os.path.join(OUT, f)) for f in ("resume.pdf", "cover_letter.pdf"))
+    _same = False
+    if os.path.isfile(_stamp):
+        try:
+            _same = open(_stamp, encoding="utf-8").read().strip() == _key
+        except Exception:
+            _same = False
+
+    if _have and _same and os.getenv("JHW_FRESH_DOCS", "").lower() not in ("1", "true", "yes"):
+        _age = int(time.time() - os.path.getmtime(os.path.join(OUT, "resume.pdf")))
+        print(f"[i] reusing documents already tailored for THIS posting ({_age // 60}m old)"
+              " - set JHW_FRESH_DOCS=1 to rebuild")
+        files = [os.path.join(OUT, f) for f in ("resume.pdf", "cover_letter.pdf")]
+        resume_path = files[0]
+        doc_note = "cached"
+    else:
+        try:
+            page_text = ""
+            try:
+                page_text = json.dumps(data)[:12000]
+            except Exception:
+                pass
+            tail = await electronic.tailor_for(target, page_text, block)
+            if tail.get("ok"):
+                for nm, pth in tail["files"].items():
+                    if nm == "resume.pdf":
+                        resume_path = pth
+                files = list(tail["files"].values())
+                doc_note = "tailored: " + ", ".join(sorted(tail["files"]))
+                print(f"[i] Electronic tailored this posting -> {doc_note}")
+                try:
+                    open(_stamp, "w", encoding="utf-8").write(_key)
+                except Exception:
+                    pass
+                if tail.get("warnings"):
+                    print("    truth-check: "
+                          + "; ".join(str(w)[:90] for w in tail["warnings"][:3]))
+            else:
+                print(f"[warn] Electronic tailoring unavailable ({tail.get('note')})"
+                      " - using whatever is in out/")
+        except Exception as e:
+            print(f"[warn] Electronic tailoring error ({repr(e)[:110]}) - using out/ files")
+
+    # WORKDAY (*.myworkdayjobs.com, and the accenture.com careers GATEWAY whose Workday URL is
+    # NOT derivable by string rules - see userdata/skills/ats-workday/SKILL.md). The adapter owns
+    # URL derivation, the account gate and Workday's button->listbox portal dropdowns, then hands
+    # the rest of the form to the generic driver.
+    if workday_wd.is_workday(target) or workday_wd.is_workday_gateway(target):
+        # ROUTING CORRECTED 2026-08-16. flows/workday.py is built from the CANDIDATE'S OWN
+        # Playwright recording of the full Accenture wd103 lifecycle (recordings/workday.py,
+        # documented in RECORDINGS_FINDINGS.md): Accept Cookies -> Use My Last Application ->
+        # Sign in with Google -> How-did-you-hear (Job Boards/LinkedIn) -> resume delete+upload
+        # -> questions -> self-ID -> "I accept." -> Save and Continue -> Submit. It selects by
+        # ROLE/LABEL/TEXT, which RECORDINGS_FINDINGS.md measured to be far more robust across
+        # tenants than data-automation-id.
+        # flows/workday_wd.py was written by me from DOCUMENTATION, has never been executed
+        # against a real Workday page, and leans on data-automation-id (9 uses vs 2). Making it
+        # the default demoted the ground-truth adapter to "legacy" behind an env var -- the exact
+        # inversion of this repo's own rule: build adapters from the recordings, never from
+        # guesses. Opt in with JHW_WD_EXPERIMENTAL=1 once it has actually been proven on a run.
+        if os.getenv("JHW_WD_EXPERIMENTAL", "").lower() in ("1", "true", "yes"):
+            kind = "gateway" if workday_wd.is_workday_gateway(target) else "direct"
+            print(f"[i] Workday ({kind}) — EXPERIMENTAL adapter (JHW_WD_EXPERIMENTAL=1), "
+                  f"never verified on a live page :: {target[:100]}")
+            wd = await workday_wd.drive(creds, data, resume_path, llm_answer, target, facts=block)
+        else:
+            print(f"[i] Workday — recorded adapter (role/label selectors from the real "
+                  f"Accenture lifecycle) :: {target[:100]}")
+            await _report("workday", await workday.drive(creds, data, resume_path, llm_answer,
+                                                        target))
+            return
+        stage = wd.get("stage") or ("review" if wd.get("ok") else "paused")
+        if wd.get("ok"):
+            jd_bits = data if isinstance(data, dict) else {}
+            await electronic.mark_applied(
+                target, "", company=str(jd_bits.get("company") or "")[:120],
+                title=str(jd_bits.get("title") or "")[:160],
+                status=stage, note=(wd.get("note") or "")[:200])
+        if wd.get("warnings"):
+            print("    warnings: " + "; ".join(str(w)[:90] for w in wd["warnings"][:4]))
+        if wd.get("unresolved"):
+            print(f"    unresolved: {wd['unresolved'][:4]}")
+        await _report("workday", wd)
+        return
+
+    if target:
+        try:
+            h = await stagehand.health()
+        except Exception as e:
+            h = {"ok": False, "err": repr(e)[:80]}
+        if h.get("ok"):
+            print("[i] Unknown ATS — Stagehand (schema-constrained act/observe on our DO proxy) ...")
+            try:
+                await stagehand.goto(target)
+                if resume_path:
+                    try:
+                        await stagehand.upload(resume_path)
+                    except Exception as e:
+                        print(f"[warn] stagehand upload skipped: {repr(e)[:80]}")
+                res = await stagehand.agent(
+                    "Fill this job application with the candidate's details. Upload the resume if "
+                    "a file input is present. Answer screening questions from the facts given. "
+                    "NEVER click the final Submit button - stop at the review/summary step.",
+                    system=block, max_steps=25)
+                steps = res.get("steps") or res.get("actions") or []
+                if res.get("ok") or steps:
+                    await _report("stagehand", {"ok": True, "stage": "review",
+                                                "filled": steps, "note": res.get("note", "")})
+                    return
+                print(f"[warn] stagehand did nothing ({str(res)[:120]}) — falling back")
+            except Exception as e:
+                detail = ""
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    try:
+                        detail = " :: " + resp.text[:400]     # server.ts returns error + stack
+                    except Exception:
+                        pass
+                print(f"[warn] stagehand failed ({repr(e)[:120]}){detail}")
+                print("       logs: python jhw.py local-logs jhw-stagehand")
+                print("[i] falling back to the DOM driver")
+        else:
+            print(f"[i] stagehand not reachable ({h.get('err', 'no health')}) — using the DOM driver")
+
+    print("[i] Fallback — generic LLM DOM driver (our proxy + Telegram) ...")
+    ld = await llm_driver.run(block, resume_path, url=prep.get("ats_url") or "")
+    # The candidate asked for end-to-end automation: the driver clicks Submit itself and only
+    # records status="submitted" when the SITE confirmed it. "review" means it stopped short.
+    sent = bool(ld.get("submitted"))
+    stage = "submitted" if sent else ("review" if ld.get("ok") else "paused")
+    if ld.get("ok"):
+        jd_bits = data if isinstance(data, dict) else {}
+        await electronic.mark_applied(
+            target, "", company=str(jd_bits.get("company") or "")[:120],
+            title=str(jd_bits.get("title") or "")[:160],
+            status=stage, note=(ld.get("note") or "")[:200])
+    await _report("llm_driver", {"ok": ld.get("ok"), "stage": stage,
                                  "filled": ld.get("actions", []), "note": ld.get("note", "")})
+    if sent:
+        print(f"[OK] APPLICATION SUBMITTED — {target[:90]}", flush=True)
+    elif ld.get("ok"):
+        print("[i] Filled to Review but the site did not confirm a submission — check "
+              "http://localhost:9090 before closing.", flush=True)
     return
 
 

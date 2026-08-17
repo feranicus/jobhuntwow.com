@@ -1,0 +1,10 @@
+# jobhuntwow.com — security & monitoring notice (RFC 9116)
+# This host is actively monitored. All access is logged (IP, timestamp, request, user-agent)
+# for security purposes under GDPR Art. 6(1)(f). Automated scanning, probing and brute-force
+# attempts are detected, recorded, and may be reported to IP-reputation services and the relevant
+# network's abuse contact. See https://jobhuntwow.com/privacy for data handling and retention.
+Contact: mailto:feranicus@s4biz.io
+Preferred-Languages: en, de
+Canonical: https://jobhuntwow.com/.well-known/security.txt
+Policy: https://jobhuntwow.com/privacy
+Expires: 2027-01-01T00:00:00.000Z

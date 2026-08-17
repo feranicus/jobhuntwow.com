@@ -7,3 +7,29 @@ __pycache__/
 !.env.example
 .venv/
 data/
+
+# --- added by gitops.py: these must never reach a remote -------------------
+agent/out/
+agent/recordings/
+agent/userdata/candidate*.md
+hermes-context/CANDIDATE_PROFILE.md
+*.sqlite
+*.sqlite3
+learned_answers.json
+**/credentials.json
+**/ats_accounts.json
+dist/
+
+# --- added by gitops.py: these must never reach a remote -------------------
+agent/out/
+agent/recordings/
+agent/userdata/candidate*.md
+hermes-context/
+agent/CANDIDATE_PIPELINE.md
+Profile*.pdf
+*.sqlite
+*.sqlite3
+learned_answers.json
+**/credentials.json
+**/ats_accounts.json
+dist/

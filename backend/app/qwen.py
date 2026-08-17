@@ -1,7 +1,8 @@
 """Thin async client for DigitalOcean Serverless Inference (OpenAI-compatible)."""
 import json
 import httpx
-from .settings import DO_BASE_URL, DO_KEY, QWEN_MODEL, HERMES_SYSTEM
+from .settings import DO_BASE_URL, DO_KEY, QWEN_MODEL, ELECTRONIC_SYSTEM
+from . import llm
 
 def _headers():
     return {"Authorization": f"Bearer {DO_KEY}", "Content-Type": "application/json"}
@@ -18,11 +19,14 @@ async def list_models():
         r.raise_for_status()
         data = r.json()
     ids = [m.get("id") for m in data.get("data", []) if m.get("id")]
-    return {"models": ids, "default": QWEN_MODEL or (ids[0] if ids else "")}
+    # NEVER default to ids[0]: that is just DO's catalog sort order (it gave "alibaba-qwen3-32b",
+    # a model this account may not even be entitled to call -- visibility != entitlement).
+    # Use the role router, whose slugs were picked from the measured bake-off.
+    return {"models": ids, "default": QWEN_MODEL or llm.model_for("chat")}
 
 async def chat_stream(messages, model: str = "", temperature: float = 0.4):
     """Yield text chunks from a streaming chat completion."""
-    mdl = model or QWEN_MODEL
+    mdl = model or QWEN_MODEL or llm.model_for("chat")
     if not DO_KEY:
         yield "⚠️ Server has no DO_INFERENCE_KEY set. Add it in .env and restart the backend."
         return
@@ -31,7 +35,7 @@ async def chat_stream(messages, model: str = "", temperature: float = 0.4):
         return
     payload = {
         "model": mdl,
-        "messages": [{"role": "system", "content": HERMES_SYSTEM}] + messages,
+        "messages": [{"role": "system", "content": ELECTRONIC_SYSTEM}] + messages,
         "temperature": temperature,
         "stream": True,
     }

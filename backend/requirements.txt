@@ -5,8 +5,17 @@ pydantic==2.*
 python-dotenv==1.*
 # --- auth (Stage 1): signed session cookies + OTP email via the Gmail API ---
 # Password hashing uses stdlib hashlib.scrypt on purpose - no bcrypt/argon2 dependency.
-# Gmail send uses httpx (already above) for the HTTP call; google-auth only mints the token.
+# Gmail send uses httpx (already above) for the HTTP call; google-auth mints the token.
+# `requests` is NOT optional: google.auth.transport.requests (the transport used to refresh
+# the delegated token) imports it, and without it creds.refresh() raises ImportError, which
+# auth.send_otp swallows -> every signup shows 'Could not send the verification email.'
 itsdangerous==2.*
 google-auth==2.*
-python-docx==1.1.*     # ATS-safe DOCX resume/cover (electronic.py)
+requests==2.*
+python-docx==1.1.*     # ATS-safe DOCX resume/cover (electronic.py) AND reading .docx uploads
+pypdf==5.*             # extract text from an uploaded .pdf resume (pure python, no OS deps)
+python-multipart==0.0.*  # REQUIRED by FastAPI for UploadFile; without it the route 500s
 reportlab==4.2.*       # pure-Python PDF (no cairo/pango/wkhtmltopdf needed)
+pillow==12.*           # validate + embed the CV photo (reportlab pulls it in; pin it)
+# geoip country lookup for observability.py (DB-IP Lite, no API key). §6.
+maxminddb==2.*

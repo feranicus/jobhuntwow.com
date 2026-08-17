@@ -22,20 +22,22 @@ TRUTH RULES (these are the product, not decoration):
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
+import httpx
+import io
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import documents, jd_ingest, llm
+from . import documents, jd_ingest, resume_consensus as RC
 from .settings import DATA_DIR
 
 router = APIRouter(prefix="/api/electronic", tags=["electronic"])
@@ -76,135 +78,135 @@ def _write_json(path: str, data: dict) -> None:
 
 
 # --------------------------------------------------------------------------- LLM plumbing
-def _json(txt: Any) -> dict:
-    """Tolerate every shape a model actually emits: fenced, prefixed prose, [ {...} ].
+# ONE HOME per rule. `_json`, `_profile_text`, `_missing_employers` and `_truth_check` are now
+# implemented in resume_consensus (which needs them for its own deterministic guardrails) and
+# aliased here. Two copies of a truth rule is precisely how the two drift apart - the sibling
+# project paid for that four times over with one model chain living in four places.
+_json = RC.json_loose
 
-    Learned the hard way in the sibling project: a GOOD answer thrown away by a strict
-    parser costs the whole budget. Tolerate any SHAPE; reject only an EMPTY answer.
+
+async def _ask(system: str, user: str, max_tokens: int) -> dict:
+    """One JSON answer, walking the MEASURED model chain. Returns {'_error': ...} rather than raising.
+
+    It used to resolve the roles "content" -> "content_fb", i.e. `deepseek-v4-pro` with
+    `deepseek-3.2` behind it. `deepseek-v4-pro` appears in NO measurement in this repository:
+    model-selection-toolkit/MODEL_SELECTION.md measured `deepseek-3.2` and `llama-4-maverick` as
+    the winners, and neither names a v4-pro. An unverified id is exactly the phantom-model class the
+    sibling project already paid for ("DeepSeek V4 Flash" was a marketing name that returned 404 on
+    every call and silently degraded every run). So this path now uses the same measured chain the
+    consensus author uses - four vendors, all of them ids we can point at evidence for.
+    NOT VERIFIED HERE: whether `deepseek-v4-pro` exists on the account. That needs the live catalog
+    (`/api/models`). The `content` role is left untouched in llm.py because the agent uses it too.
     """
-    if isinstance(txt, dict):
-        return txt
-    s = (txt or "").strip()
-    s = re.sub(r"^```(?:json)?\s*", "", s)
-    s = re.sub(r"\s*```$", "", s)
-    try:
-        d = json.loads(s)
-        if isinstance(d, list):
-            d = next((x for x in d if isinstance(x, dict)), {})
-        if isinstance(d, dict):
-            return d
-    except Exception:
-        pass
-    m = re.search(r"\{.*\}", s, re.S)
-    if m:
-        try:
-            d = json.loads(m.group(0))
-            if isinstance(d, dict):
-                return d
-        except Exception:
-            pass
-    return {}
-
-
-async def _ask(role: str, fallback: str, system: str, user: str, max_tokens: int) -> dict:
-    """One LLM call with a cross-vendor fallback. Returns {'_error': ...} rather than raising."""
     last = None
-    for r in (role, fallback):
-        if not r:
-            continue
+    for m in RC.chain():
         try:
-            out = await llm.complete(r, [{"role": "system", "content": system},
-                                         {"role": "user", "content": user}],
-                                     temperature=0.3, max_tokens=max_tokens, json_mode=True)
-            d = _json(out)
+            txt, _usage, _fin = await RC.call_model(m, system, user, max_tokens=max_tokens,
+                                                    timeout=RC.TIMEOUT)
+            d = RC.json_loose(txt)
             if d:
-                d["_model_role"] = r
+                d["_model_role"] = m
                 return d
-            last = "empty/unparseable answer from role '%s'" % r
+            last = "empty/unparseable answer from %s" % m
         except Exception as e:
             last = "%s: %s" % (type(e).__name__, e)
     return {"_error": last or "no model answered"}
 
 
 # --------------------------------------------------------------------------- prompts
-_TRUTH = (
-    "HARD RULES - these override everything else:\n"
-    "1. NEVER invent, embellish or infer a fact about the candidate. Employers, job titles, dates, "
-    "degrees, certifications, tools, team sizes, revenue and percentages may ONLY appear if they are "
-    "present in the CANDIDATE PROFILE below. If the profile has no number for a claim, write the "
-    "bullet WITHOUT a number rather than inventing one.\n"
-    "2. You may re-angle, reorder, compress and rephrase what IS there so it speaks to this job.\n"
-    "3. Mirror the job description's real vocabulary ONLY where it is truthfully the same thing the "
-    "candidate has done. Do not adopt a JD keyword the candidate cannot back up.\n"
-    "4. ATS-safe output: plain text, no tables, no columns, no graphics, no emoji, no markdown "
-    "syntax inside field values.\n"
-    "5. Every bullet must carry a FACT, a NUMBER or an OUTCOME. No filler, no adjectives-only lines.\n"
-    "6. Output ONLY the requested JSON object. No prose before or after."
-)
-
-_RESUME_SYS = ("You tailor an existing resume to a specific job. You are a truth-gated editor, not a "
-               "copywriter with imagination.\n" + _TRUTH)
-
-_COVER_SYS = ("You write a concise, senior cover letter that a hiring manager will actually finish "
-              "reading. Specific, no cliches, no fabrication.\n" + _TRUTH)
-
-
-def _resume_user(profile_txt: str, jd: dict) -> str:
-    return (
-        "CANDIDATE PROFILE (the ONLY permitted source of facts):\n"
-        "%s\n\n"
-        "TARGET JOB\n"
-        "title: %s\ncompany: %s\nlocation: %s\n"
-        "description:\n%s\n\n"
-        "Return JSON with EXACTLY this shape:\n"
-        "{\n"
-        '  "summary": "3-4 sentence professional summary aimed at THIS job, true to the profile",\n'
-        '  "skills": ["12-20 skills taken from the profile, ordered by relevance to the JD"],\n'
-        '  "experience": [\n'
-        '    {"title":"<exact title from the profile>", "company":"<exact company from the profile>",\n'
-        '     "dates":"<exact dates from the profile, or empty>", "location":"<from profile, or empty>",\n'
-        '     "bullets":["3-5 bullets re-angled to the JD. Same facts. Each carries a fact, number or outcome."]}\n'
-        "  ],\n"
-        '  "keywords_matched": ["JD terms the candidate genuinely covers"],\n'
-        '  "gaps": ["JD requirements the profile does NOT evidence - be honest, this is for the candidate only"]\n'
-        "}\n"
-        "Keep EVERY employer from the profile, in the profile order. Do not merge or drop roles."
-        % (profile_txt[:14000], jd.get("title", ""), jd.get("company", ""),
-           jd.get("location", ""), (jd.get("text") or "")[:9000]))
-
-
-def _cover_user(profile_txt: str, jd: dict) -> str:
-    return (
-        "CANDIDATE PROFILE (the ONLY permitted source of facts):\n%s\n\n"
-        "TARGET JOB\ntitle: %s\ncompany: %s\nlocation: %s\ndescription:\n%s\n\n"
-        "Return JSON with EXACTLY this shape:\n"
-        "{\n"
-        '  "salutation": "Hiring Team, or a named person if the JD gives one",\n'
-        '  "paragraphs": [\n'
-        '    "Opening: why this role at this company, and the single strongest true hook. 2-3 sentences.",\n'
-        '    "Proof: the most relevant concrete evidence from the profile mapped to the top JD requirement.",\n'
-        '    "Fit: what the candidate would do in the first months, grounded in what they have already done.",\n'
-        '    "Close: short, direct, no grovelling."\n'
-        "  ],\n"
-        '  "closing": "Sincerely,"\n'
-        "}\n"
-        "Max ~320 words total. No sentence may contain a fact absent from the profile."
-        % (profile_txt[:9000], jd.get("title", ""), jd.get("company", ""),
-           jd.get("location", ""), (jd.get("text") or "")[:6000]))
+# The prompts, the recruiter rules and the truth rules now live in resume_consensus, because the
+# AUTHOR, the AUDITOR and the REVISION step all have to read the same text - and a prompt is a
+# string that reaches a human (via the model), so it may not exist in two versions. These aliases
+# keep the names documented in docs/TAILOR_LOGIC.md resolvable.
+_TRUTH = RC._TRUTH
+_RESUME_SYS = RC.RESUME_SYS
+_COVER_SYS = RC.COVER_SYS
+RESUME_RULES = RC.RESUME_RULES
+COVER_RULES = RC.COVER_RULES
+_resume_user = RC.resume_user
+_cover_user = RC.cover_user
 
 
 # --------------------------------------------------------------------------- profile handling
-def _profile_text(profile: Any) -> str:
-    if isinstance(profile, str):
-        return profile
-    try:
-        return json.dumps(profile, ensure_ascii=False, indent=1)
-    except Exception:
-        return str(profile)
+_profile_text = RC.profile_text
 
 
 def _pget(profile: Any, key: str, default):
     return profile.get(key, default) if isinstance(profile, dict) else default
+
+
+_RE_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_RE_PHONE = re.compile(r"(?:\+\d{1,3}[\s./-]?)?(?:\(?\d{2,4}\)?[\s./-]?){2,5}\d{2,4}")
+_RE_LI    = re.compile(r"(?:https?://)?(?:[\w-]+\.)?linkedin\.com/in/[\w%-]+/?", re.I)
+_RE_SITE  = re.compile(r"(?:https?://)?(?:www\.)?[\w-]+\.[a-z]{2,}(?:/[\w%./-]*)?", re.I)
+_RE_LABEL = re.compile(r"^\s*-?\s*([a-z_]+)\s*:\s*(.+?)\s*$", re.I)
+
+
+def _contacts_from_text(text: str) -> dict:
+    """Pull the contact block out of a REAL resume (a PDF/DOCX has no 'email:' labels).
+
+    Without this the header rendered as "Candidate" with an empty contact line — the documents
+    were unusable no matter how good the prose was.
+    """
+    out, head = {}, [l.strip() for l in (text or "").splitlines() if l.strip()][:12]
+    blob = "\n".join(head)
+
+    m = _RE_EMAIL.search(blob)
+    if m:
+        out["email"] = m.group(0)
+    m = _RE_LI.search(blob)
+    if m:
+        out["linkedin"] = m.group(0).rstrip("/")
+    for line in head:
+        cand = line
+        if out.get("email"):
+            cand = cand.replace(out["email"], " ")
+        if out.get("linkedin"):
+            cand = cand.replace(out["linkedin"], " ")
+        m = _RE_PHONE.search(cand)
+        # a phone needs enough digits; postcodes and years must not match
+        if m and len(re.sub(r"\D", "", m.group(0))) >= 9:
+            out.setdefault("phone", m.group(0).strip(" |,;"))
+    for line in head:
+        for w in _RE_SITE.findall(line):
+            lw = w.lower()
+            if ("linkedin.com" in lw or "@" in w or lw.endswith((".jpg", ".png"))
+                    or (out.get("email") and w in out["email"])):
+                continue
+            if "." in w and " " not in w and len(w) > 4:
+                out.setdefault("website", w.rstrip("/.,;|"))
+                break
+        if out.get("website"):
+            break
+
+    # Name = the first line that is not a contact line and looks like a person's name.
+    for line in head:
+        if any(t in line for t in ("@", "http", "linkedin.com")) or _RE_PHONE.search(line):
+            continue
+        words = line.replace(",", " ").split()
+        if 1 < len(words) <= 5 and sum(w[:1].isupper() for w in words) >= 2 and len(line) < 60:
+            out.setdefault("name", line.strip())
+            break
+    # Headline = the line right after the name, if it reads like a title.
+    if out.get("name") and out["name"] in head:
+        i = head.index(out["name"])
+        if i + 1 < len(head):
+            nxt = head[i + 1]
+            if "@" not in nxt and not _RE_PHONE.search(nxt) and 3 < len(nxt) < 140:
+                out.setdefault("headline", nxt.strip())
+    # Location = the contact line minus phone/email/links (usually "City, Street, ZIP, Country").
+    for line in head:
+        if _RE_EMAIL.search(line) or _RE_PHONE.search(line):
+            part = line
+            for k in ("email", "phone", "linkedin", "website"):
+                if out.get(k):
+                    part = part.replace(out[k], " ")
+            part = " ".join(p.strip(" |,;·•") for p in part.split("|"))
+            part = re.sub(r"\s{2,}", " ", part).strip(" |,;·•-")
+            if len(part) > 6 and any(c.isalpha() for c in part):
+                out.setdefault("location", part)
+            break
+    return out
 
 
 def _basics(profile: Any) -> dict:
@@ -219,10 +221,14 @@ def _basics(profile: Any) -> dict:
             if isinstance(v, (str, int, float)) and str(v).strip():
                 out[k] = str(v).strip()
     else:
-        for line in str(profile or "").split("\n"):
-            m = re.match(r"^\s*-?\s*([a-z_]+)\s*:\s*(.+?)\s*$", line, re.I)
+        txt = str(profile or "")
+        for line in txt.split("\n"):
+            m = _RE_LABEL.match(line)
             if m and m.group(1).lower() in keys:
                 out.setdefault(m.group(1).lower(), m.group(2).strip().strip('"'))
+        # A real resume has no "email:" labels -> parse the contact block out of the text itself.
+        for k, v in _contacts_from_text(txt).items():
+            out.setdefault(k, v)
     if "name" not in out and "full_name" in out:
         out["name"] = out["full_name"]
     if "headline" not in out and "title" in out:
@@ -234,29 +240,50 @@ def _basics(profile: Any) -> dict:
     return out
 
 
-def _truth_check(tailored: dict, profile: Any) -> list:
-    """Deterministic guard: flag any organisation the profile does not contain.
+_missing_employers = RC.missing_employers
+_truth_check = RC.truth_check
 
-    Absence of evidence is reported as a WARNING for the human, never silently corrected
-    and never treated as proof of fabrication - the profile may simply be terse.
+
+def _audit_warnings(con: dict) -> list:
+    """Turn the consensus record into warnings a human reads. Surface, never bury.
+
+    An adversarial reviewer whose findings are stored in a JSON blob nobody renders is decoration.
+    These are the four things the candidate must know BEFORE the document goes out under their name:
+    a claim the reviewer could not tie to the profile, a revision we refused to accept, an audit
+    round we refused entirely, and a review that never happened at all.
     """
-    hay = re.sub(r"\s+", " ", _profile_text(profile).lower())
-    warns = []
-    seen = set()
-    for e in tailored.get("experience") or []:
-        if not isinstance(e, dict):
-            continue
-        v = str(e.get("company") or "").strip()
-        if not v or v.lower() in seen:
-            continue
-        seen.add(v.lower())
-        probe = re.sub(r"[^a-z0-9 ]+", " ", v.lower())
-        probe = re.sub(r"\b(gmbh|ag|inc|ltd|llc|ou|se|bv|plc|kg|co)\b", " ", probe).strip()
-        head = probe.split(" ")[0] if probe else ""
-        if head and len(head) > 2 and head not in hay:
-            warns.append("Employer '%s' is not present in the supplied profile - verify it before "
-                         "sending." % v)
-    return warns
+    out = []
+    aud = con.get("audit") or {}
+    if aud.get("skipped"):
+        out.append("No independent review was performed: %s" % aud["skipped"])
+    for rnd in (aud.get("rounds") or []):
+        if rnd.get("error"):
+            out.append("Independent review round %s did not complete (%s) - the draft is "
+                       "unreviewed." % (rnd.get("round"), rnd["error"]))
+        if rnd.get("refused_all"):
+            out.append("The independent review was REFUSED and nothing was changed: %s. Read the "
+                       "draft yourself before sending." % rnd.get("refused_reason", ""))
+        for f in (rnd.get("kept") or {}).get("invented_facts") or []:
+            out.append("Independent review could not find this in your profile: \"%s\" (%s) - "
+                       "verify or remove it." % (str(f.get("claim", ""))[:180],
+                                                 str(f.get("where", ""))[:60]))
+        for r in (rnd.get("revisions") or []):
+            if not r.get("applied"):
+                out.append("A correction to the %s was REJECTED and the earlier draft kept: %s"
+                           % (r.get("doc"), r.get("why", "")))
+    q = con.get("quality") or {}
+    if q.get("resume_thin"):
+        out.append("The resume is thin (%s chars of prose, floor %s) - every model in the chain "
+                   "under-delivered." % (q.get("resume_chars"), q.get("resume_floor")))
+    if q.get("cover_thin"):
+        out.append("The cover letter is thin (%s chars, floor %s)."
+                   % (q.get("cover_chars"), q.get("cover_floor")))
+    seen, uniq = set(), []
+    for w in out:
+        if w not in seen:
+            seen.add(w)
+            uniq.append(w)
+    return uniq
 
 
 # --------------------------------------------------------------------------- API models
@@ -270,9 +297,131 @@ class GenerateReq(BaseModel):
     jd: Any = None                 # the dict from /jd, or a raw JD string
     profile: Any = None            # dict or markdown text (candidate.md)
     job_id: Optional[str] = ""
+    answers: Any = None            # {gap question: candidate's answer} from the gap Q&A
+    evidence: Any = None           # [{name, text}] extracted from uploaded portfolio/articles
+    links: Any = None              # ["https://..."] portfolio / publication URLs
+    use_photo: bool = False
 
 
 # --------------------------------------------------------------------------- endpoints
+def extract_text(name: str, blob: bytes) -> tuple[str, str]:
+    """Return (text, kind) from an uploaded resume/profile.
+
+    The browser cannot read a PDF or DOCX - FileReader hands back raw bytes, which is how a
+    resume arrived as "%PDF-1.4 ..." and the truth-check reported "Profile is
+    encrypted/unreadable". Extraction has to happen HERE.
+    """
+    low = (name or "").lower()
+    if low.endswith(".pdf"):
+        from pypdf import PdfReader
+        rd = PdfReader(io.BytesIO(blob))
+        if getattr(rd, "is_encrypted", False):
+            try:
+                rd.decrypt("")           # many "encrypted" PDFs use an empty owner password
+            except Exception:
+                raise HTTPException(400, "That PDF is password-protected - save an unlocked copy.")
+        pages = [(p.extract_text() or "") for p in rd.pages]
+        return "\n".join(pages).strip(), "pdf"
+    if low.endswith(".docx"):
+        import docx
+        d = docx.Document(io.BytesIO(blob))
+        parts = [p.text for p in d.paragraphs]
+        for t in d.tables:                # resumes very often put dates/roles in tables
+            for row in t.rows:
+                parts.append("\t".join(c.text for c in row.cells))
+        return "\n".join(x for x in parts if x.strip()).strip(), "docx"
+    if low.endswith(".doc"):
+        raise HTTPException(400, "Legacy .doc is not supported - save as .docx or PDF.")
+    return blob.decode("utf-8", "replace").strip(), "text"
+
+
+@router.post("/profile/upload")
+async def profile_upload(file: UploadFile = File(...)):
+    """PDF / DOCX / TXT / MD in -> plain text out, so the tailor never sees raw bytes."""
+    blob = await file.read()
+    if len(blob) > 8 * 1024 * 1024:
+        raise HTTPException(400, "File is larger than 8 MB.")
+    text, kind = extract_text(file.filename or "", blob)
+    words = len(text.split())
+    # Floor exists so we never tailor from garbage (a raw-bytes PDF reads as ~0 real words), but
+    # it must not reject a genuinely short profile -- and the message must match the actual cause.
+    if words < 25:
+        if kind == "pdf":
+            hint = ("This PDF appears to be a scan/image: there is no selectable text in it. "
+                    "Export a text PDF, or paste your resume below.")
+        else:
+            hint = "Paste more detail below - there is not enough here to tailor honestly."
+        raise HTTPException(400, f"Only {words} words could be read from {file.filename!r}. {hint}")
+    return {"text": text, "kind": kind, "chars": len(text), "words": words,
+            "filename": file.filename}
+
+
+@router.post("/evidence/upload")
+async def evidence_upload(email: str = Query(...), file: UploadFile = File(...)):
+    """A supporting artifact: project portfolio, case study, published article, reference letter.
+
+    Same extraction path as the profile (PDF/DOCX/TXT/MD). The text is returned to the browser and
+    sent back with the next generate() call, so it becomes evidence the model may cite - it is NOT
+    silently merged into the stored profile.
+    """
+    blob = await file.read()
+    if len(blob) > 8 * 1024 * 1024:
+        raise HTTPException(400, "File is larger than 8 MB.")
+    text, kind = extract_text(file.filename or "", blob)
+    if len(text.split()) < 10:
+        raise HTTPException(400, f"Almost no text could be read from {file.filename!r}.")
+    return {"name": file.filename, "kind": kind, "words": len(text.split()), "text": text}
+
+
+async def _fetch_link(url: str) -> dict:
+    """Best-effort: read an article/portfolio URL. Many sites block bots - we never pretend."""
+    try:
+        async with httpx.AsyncClient(timeout=jd_ingest.TIMEOUT, follow_redirects=True) as c:
+            r = await c.get(url, headers={"User-Agent": jd_ingest.UA})
+        if r.status_code >= 400:
+            return {"url": url, "ok": False, "note": f"HTTP {r.status_code}", "text": ""}
+        txt = jd_ingest.html_to_text(r.text)[:6000]
+        return {"url": url, "ok": bool(txt.strip()), "text": txt,
+                "note": "" if txt.strip() else "no readable text"}
+    except Exception as e:
+        return {"url": url, "ok": False, "note": type(e).__name__, "text": ""}
+
+
+@router.post("/photo/upload")
+async def photo_upload(email: str = Query(...), file: UploadFile = File(...)):
+    """Store a CV photo for this user. Optional by design.
+
+    A photo is customary on a German/Austrian/Swiss CV and is a liability in US/UK screening
+    (and some ATS parsers choke on images), so the UI must present it as opt-in.
+    """
+    blob = await file.read()
+    if len(blob) > 4 * 1024 * 1024:
+        raise HTTPException(400, "Photo is larger than 4 MB.")
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png"):
+        raise HTTPException(400, "Use a JPG or PNG photo.")
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(blob))
+        im.verify()                                  # reject anything that is not a real image
+    except Exception:
+        raise HTTPException(400, "That file is not a readable image.")
+    d = user_dir(email)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "photo" + (".png" if ext == ".png" else ".jpg"))
+    with open(path, "wb") as f:
+        f.write(blob)
+    return {"ok": True, "photo": os.path.basename(path), "bytes": len(blob)}
+
+
+def _photo_path(email: str) -> str:
+    for name in ("photo.jpg", "photo.png"):
+        p = os.path.join(user_dir(email), name)
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
 @router.post("/jd")
 async def parse_jd(req: JDReq):
     """Job description IN. Pasted text always works; URLs are best-effort by tier."""
@@ -299,6 +448,41 @@ async def generate(req: GenerateReq):
         raise HTTPException(status_code=400,
                             detail="profile is required - we never invent candidate facts")
     ptxt = _profile_text(req.profile)
+
+    # Gap answers are FACTS THE CANDIDATE CONFIRMED (e.g. "I ran projects for Aldi and AON" —
+    # true, but absent from the uploaded CV). They are appended to the profile so the model may
+    # use them; the truth-check treats the profile+answers as the permitted source, so this does
+    # not weaken the no-invention rule.
+    answered = []
+    if req.answers:
+        items = req.answers.items() if isinstance(req.answers, dict) else [
+            (a.get("q", ""), a.get("a", "")) for a in req.answers if isinstance(a, dict)]
+        for q, a in items:
+            if str(a or "").strip():
+                answered.append(f"- {str(q).strip()} -> {str(a).strip()}")
+    if answered:
+        ptxt += ("\n\nADDITIONAL FACTS CONFIRMED BY THE CANDIDATE (treat as true, use where "
+                 "relevant to the target job):\n" + "\n".join(answered))
+
+    # Supporting artifacts: portfolio, case studies, published articles, reference letters.
+    # Capped per item so one long PDF cannot crowd the JD out of the prompt window.
+    ev_used, link_used, link_notes = 0, 0, []
+    for e in (req.evidence or []):
+        if isinstance(e, dict) and str(e.get("text") or "").strip():
+            ptxt += ("\n\nSUPPORTING DOCUMENT PROVIDED BY THE CANDIDATE (%s):\n%s"
+                     % (str(e.get("name") or "attachment")[:120], str(e["text"])[:6000]))
+            ev_used += 1
+    for u in (req.links or []):
+        u = str(u or "").strip()
+        if not u.startswith(("http://", "https://")):
+            continue
+        got = await _fetch_link(u)
+        if got["ok"]:
+            ptxt += "\n\nLINK PROVIDED BY THE CANDIDATE (%s):\n%s" % (u, got["text"])
+            link_used += 1
+        else:
+            # Say so instead of silently ignoring it - the candidate thinks it was read.
+            link_notes.append("%s could not be read (%s)" % (u, got["note"]))
     if len(ptxt.strip()) < 60:
         raise HTTPException(status_code=400,
                             detail="profile is too thin to tailor from (we need the candidate's "
@@ -310,26 +494,42 @@ async def generate(req: GenerateReq):
     outdir = job_dir(req.email, jid)
     os.makedirs(outdir, exist_ok=True)
 
-    tailored, cover = await asyncio.gather(
-        _ask("content", "content_fb", _RESUME_SYS, _resume_user(ptxt, jd), 6000),
-        _ask("content", "content_fb", _COVER_SYS, _cover_user(ptxt, jd), 2000),
-    )
+    # 4-MODEL CONSENSUS. One model AUTHORS, a DIFFERENT model from a DIFFERENT VENDOR AUDITS
+    # against the JD + profile, then the author revises - bounded rounds. This replaced a single
+    # call per document whose answer WAS the document: nothing measured whether the draft was
+    # thin, nothing checked it against the JD, and a well-formed nothing rendered as a finished
+    # resume. resume_consensus owns the chain, the depth floors and the guardrail that an audit can
+    # never empty or gut a document. It never raises: partial success is legible.
+    con = await RC.tailor(ptxt, jd)
+    tailored = con["resume"] or {}
+    cover = con["cover"] or {}
 
-    errors = {}
-    if tailored.get("_error"):
-        errors["resume"] = tailored["_error"]
-    if cover.get("_error"):
-        errors["cover"] = cover["_error"]
-    if "_error" in tailored and "_error" in cover:
+    errors = dict(con["errors"])
+    if not con["resume"] and not con["cover"]:
+        # EVERY model in the chain failed the contract or the depth floor for BOTH documents.
+        # Report what each one actually said instead of a generic 502 - "the model failed" is a
+        # conclusion, not an observation.
         raise HTTPException(status_code=502,
-                            detail="the tailoring models did not answer: %s" % errors)
+                            detail={"error": "no model in the chain produced a usable document",
+                                    "per_document": errors, "attempts": con["attempts"]})
 
     basics = _basics(req.profile)
+    # MEASURED DEFECT, FIXED HERE: documents.py renders `highlights` (line 126) and `earlier`
+    # (line 157), and this struct never set either. So the 3-5 CAR highlights that are supposed to
+    # LEAD the resume - the top third a recruiter reads in the first 7 seconds - were requested
+    # from the model, returned, and thrown away. Worse, `earlier` is the ONLY mechanism that keeps
+    # a demoted employer in the document, so every older employer was silently absent from the
+    # rendered file while `_missing_employers(tailored)` inspected the model's ANSWER and reported
+    # clean. The manifest said the employers were there; the DOCX did not have them.
+    # `all_employers` is carried so the employer-drop check runs against what was RENDERED.
     resume_struct = {
         "basics": basics,
         "summary": tailored.get("summary") or _pget(req.profile, "summary", ""),
+        "highlights": tailored.get("highlights") or _pget(req.profile, "highlights", []),
         "skills": tailored.get("skills") or _pget(req.profile, "skills", []),
         "experience": tailored.get("experience") or _pget(req.profile, "experience", []),
+        "earlier": tailored.get("earlier") or [],
+        "all_employers": tailored.get("all_employers") or [],
         "education": _pget(req.profile, "education", []),
         "certifications": _pget(req.profile, "certifications", []),
         "languages": _pget(req.profile, "languages", []),
@@ -343,7 +543,8 @@ async def generate(req: GenerateReq):
         "closing": cover.get("closing") or "Sincerely,",
     }
 
-    written = documents.write_all(resume_struct, cover_struct, outdir)
+    photo = _photo_path(req.email) if req.use_photo else ""
+    written = documents.write_all(resume_struct, cover_struct, outdir, photo=photo)
     if written.get("errors"):
         errors.update(written["errors"])
     if not written.get("files"):
@@ -351,20 +552,189 @@ async def generate(req: GenerateReq):
 
     manifest = {
         "job_id": jid,
+        "email": req.email,          # daily_report attributes the job to a person
         "created": int(t0),
         "elapsed_ms": int((time.time() - t0) * 1000),
         "jd": {k: jd.get(k, "") for k in ("title", "company", "location", "source", "url", "note")},
-        "models": {"resume": tailored.get("_model_role"), "cover": cover.get("_model_role")},
+        # WHO wrote it and WHO reviewed it. A reader must be able to see that the auditor was not
+        # the author, without taking our word for it.
+        "models": {"resume": con["authors"].get("resume"), "cover": con["authors"].get("cover"),
+                   "auditor": con["audit"].get("auditor"),
+                   "auditor_vendor": con["audit"].get("auditor_vendor")},
+        "attempts": con["attempts"],
         "files": sorted(os.path.basename(p) for p in written["files"].values()),
         "keywords_matched": tailored.get("keywords_matched") or [],
         "gaps": tailored.get("gaps") or [],
-        "warnings": _truth_check(resume_struct, req.profile),
+        # The employer-drop check now runs on the RENDERED struct, not on the model's answer -
+        # the struct is what became the DOCX, and those were not the same thing (see above).
+        "warnings": (_truth_check(resume_struct, req.profile)
+                     + ["Employer missing from the resume: %s" % m
+                        for m in _missing_employers(resume_struct)]
+                     + _audit_warnings(con)),
+        "employers_missing": _missing_employers(resume_struct),
+        # THE CONSENSUS RECORD. Never hidden: the auditor's corroborated findings, what it flagged
+        # that we REFUSED to act on, and every rejected revision. Hiding these would defeat the
+        # point of having an adversarial reviewer at all.
+        "audit": con["audit"],
+        "audit_rounds": con["audit_rounds"],
+        "audit_refused": con["audit_refused"],
+        "quality": con["quality"],
+        "consensus_ms": con["elapsed_ms"],
+        "answers_used": len(answered),
+        "evidence_used": ev_used,
+        "links_used": link_used,
+        "link_notes": link_notes,
+        "photo_used": bool(photo),
         "errors": errors,
     }
     _write_json(os.path.join(outdir, "job.json"), manifest)
     _write_json(os.path.join(outdir, "tailored.json"),
                 {"resume": resume_struct, "cover": cover_struct})
     return manifest
+
+
+class ReviseReq(BaseModel):
+    email: str
+    job_id: str
+    instruction: str
+    use_photo: bool = False
+
+
+@router.post("/revise")
+async def revise(req: ReviseReq):
+    """Iterate on documents already built: 'add Canonical back', 'shorter', 'more formal'.
+
+    Editing the stored STRUCT (not regenerating from the JD) means the tailoring survives and the
+    change is cheap. The truth rules still apply: the model may only rearrange, trim or reword
+    what is already there.
+    """
+    outdir = job_dir(req.email, req.job_id)
+    tp = os.path.join(outdir, "tailored.json")
+    if not os.path.isfile(tp):
+        raise HTTPException(404, "No such job for this account.")
+    cur = json.load(open(tp, encoding="utf-8"))
+    instruction = (req.instruction or "").strip()
+    if not instruction:
+        raise HTTPException(400, "Say what you want changed.")
+
+    system = ("You edit an existing resume/cover-letter JSON. Apply ONLY the requested change. "
+              "Never invent facts, never delete an employer, keep every key that exists. "
+              "Return the SAME JSON shape, nothing else.")
+    user = ("CURRENT DOCUMENT JSON:\n%s\n\nREQUESTED CHANGE:\n%s\n\n"
+            "Return the complete updated JSON with keys 'resume' and 'cover'."
+            % (json.dumps(cur)[:24000], instruction[:2000]))
+    got = await _ask(system, user, 6500)
+    if got.get("_error"):
+        raise HTTPException(502, "The model could not apply that change: %s" % got["_error"])
+
+    # A REVISE COULD PREVIOUSLY WRITE AN EMPTY DOCUMENT. Any dict was accepted, so a model that
+    # answered {"resume": {}} overwrote a good resume with nothing and re-rendered a blank DOCX.
+    # The same guardrail the consensus uses applies here: the edit must pass the contract, and it
+    # may not silently lose an employer.
+    prev_resume = cur.get("resume") or {}
+    prev_cover = cur.get("cover") or {}
+    resume_struct, cover_struct = prev_resume, prev_cover
+    rejected = []
+    cand_r = got.get("resume")
+    if isinstance(cand_r, dict):
+        cand_r = RC.normalise_resume(cand_r)
+        # basics/education/certifications/languages are NOT the model's to rewrite - they come from
+        # the profile, so they are carried over rather than trusted from the edit.
+        for k in ("basics", "education", "certifications", "languages"):
+            cand_r.setdefault(k, prev_resume.get(k))
+        ok, why = RC.contract_ok_resume(cand_r)
+        if not ok:
+            rejected.append("resume edit rejected: %s - the previous version was kept" % why)
+        else:
+            lost = [c for c in RC.rendered_employers(prev_resume)
+                    if not any(RC._norm(c) in RC._norm(x) or RC._norm(x) in RC._norm(c)
+                               for x in RC.rendered_employers(cand_r))]
+            # An EXPLICIT instruction to remove something IS authorisation - the candidate asked.
+            # A drop that happens while doing something else is the bug this rule exists for.
+            asked = bool(re.search(r"\b(remove|drop|delete|take out|kill)\b", instruction, re.I))
+            if lost and not asked:
+                rejected.append("resume edit rejected: it would have dropped %s and you did not "
+                                "ask to remove anything - the previous version was kept"
+                                % ", ".join(sorted(set(lost))[:6]))
+            else:
+                resume_struct = cand_r
+    cand_c = got.get("cover")
+    if isinstance(cand_c, dict):
+        cand_c = RC.normalise_cover(cand_c)
+        cand_c.setdefault("basics", prev_cover.get("basics"))
+        for k in ("company", "job_title"):
+            cand_c.setdefault(k, prev_cover.get(k))
+        ok, why = RC.contract_ok_cover(cand_c)
+        if not ok:
+            rejected.append("cover-letter edit rejected: %s - the previous version was kept" % why)
+        else:
+            cover_struct = cand_c
+    for r in rejected:
+        print("[revise] %s" % r, file=sys.stderr)
+    photo = _photo_path(req.email) if req.use_photo else ""
+    written = documents.write_all(resume_struct, cover_struct, outdir, photo=photo)
+    _write_json(tp, {"resume": resume_struct, "cover": cover_struct})
+
+    manifest = {}
+    mp = os.path.join(outdir, "job.json")
+    if os.path.isfile(mp):
+        manifest = json.load(open(mp, encoding="utf-8"))
+    manifest.update({
+        "files": sorted(os.path.basename(x) for x in written["files"].values()),
+        "errors": written["errors"],
+        "revised": instruction[:200],
+        "revise_model": got.get("_model_role"),
+        "revise_rejected": rejected,
+        "employers_missing": _missing_employers(resume_struct),
+        "warnings": (["Employer missing from the resume: %s" % m
+                      for m in _missing_employers(resume_struct)] + rejected),
+        "photo_used": bool(photo),
+    })
+    _write_json(mp, manifest)
+    return manifest
+
+
+class AppliedReq(BaseModel):
+    email: str
+    job_id: Optional[str] = ""
+    url: Optional[str] = ""
+    company: Optional[str] = ""
+    title: Optional[str] = ""
+    status: Optional[str] = "applied"
+    note: Optional[str] = ""
+
+
+@router.post("/applied")
+def mark_applied(req: AppliedReq):
+    """The local apply engine reports what it actually submitted, so the Pipeline is real.
+
+    Writes into the job's own manifest when we know the job_id (documents were generated here),
+    otherwise creates a stub record - an application driven from a pasted URL still belongs in
+    the funnel.
+    """
+    d = user_dir(req.email)
+    os.makedirs(d, exist_ok=True)
+    jid = req.job_id or _new_job_id(req.company or "", req.title or "")
+    outdir = job_dir(req.email, jid)
+    os.makedirs(outdir, exist_ok=True)
+    mp = os.path.join(outdir, "job.json")
+    man = {}
+    if os.path.isfile(mp):
+        try:
+            man = json.load(open(mp, encoding="utf-8"))
+        except Exception:
+            man = {}
+    man.setdefault("job_id", jid)
+    man.setdefault("email", req.email)
+    man.setdefault("created", int(time.time()))
+    jd = man.get("jd") or {}
+    jd.update({k: v for k, v in (("company", req.company), ("title", req.title),
+                                 ("url", req.url)) if v})
+    man["jd"] = jd
+    man["applied"] = {"at": int(time.time()), "status": req.status or "applied",
+                      "note": (req.note or "")[:500], "url": req.url or ""}
+    _write_json(mp, man)
+    return {"ok": True, "job_id": jid, "status": man["applied"]["status"]}
 
 
 @router.get("/jobs")
@@ -383,8 +753,12 @@ def list_jobs(email: str = Query(...)):
             try:
                 with open(mf, encoding="utf-8") as f:
                     m = json.load(f)
-                item.update({"jd": m.get("jd", {}), "created": m.get("created"),
-                             "files": m.get("files", []), "warnings": m.get("warnings", [])})
+                jd = m.get("jd", {}) or {}
+                item.update({"jd": jd, "created": m.get("created"),
+                             "title": jd.get("title", ""), "company": jd.get("company", ""),
+                             "files": m.get("files", []), "warnings": m.get("warnings", []),
+                             # the Pipeline needs to know what was actually SENT, not just built
+                             "applied": m.get("applied")})
             except Exception:
                 item["note"] = "manifest unreadable"
         jobs.append(item)

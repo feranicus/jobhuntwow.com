@@ -1,3 +1,42 @@
+# Deploying JobHuntWOW ("Electronic")
+
+## ONE command (PowerShell)
+
+```powershell
+cd "C:\Python SW\Linkedin Scraper\jobhuntwow-app"
+python jhw.py deploy
+```
+
+That is the whole deploy. It does, by itself:
+
+1. **preflight** — one SSH to the droplet (key auto-detected from `%USERPROFILE%\.ssh`).
+2. **ship** — tars the build context (`backend/`, `frontend/`, `Dockerfile.web`, `index.html`,
+   `docker-compose.web.yml`, `deploy/caddy/`) and scp's it to `/opt/jobhuntwow`.
+   `node_modules`, `dist`, `__pycache__`, `.git` and any `.env` are excluded.
+3. **secrets** — writes `/opt/jobhuntwow/.env` (chmod 600) over **stdin**, never in argv.
+4. **build ON THE DROPLET** — `docker compose -p jobhuntwow -f docker-compose.web.yml build`.
+   No registry, no GitHub, no CI wait.
+5. **start** — `up -d --force-recreate` (never `--remove-orphans`: shared host).
+6. **Caddy** — runs `deploy/fix_caddy.py` on the droplet: it parses the shared Caddyfile,
+   expands `{$DOMAIN}`, strips our hostnames out of any block that is not ours (this is what
+   removes the old static one-pager), re-appends our managed block, validates and reloads.
+   Other vhosts (videodead, cybergod.ai) are never touched; a timestamped `.bak` is kept.
+7. **verify** — tags the request and greps jhw-web's access log to PROVE public traffic reaches
+   the container, then asserts `/api/health` is JSON, `/` is the landing, `/login` is the SPA.
+
+**GitHub is not involved.** `python jhw.py push` commits and pushes for source control; it is not
+part of deploying. Other verbs:
+
+- `python jhw.py status` — is the public site our app?
+- `python jhw.py diagnose` — who serves the domain, and how do events reach Grafana (section G)
+- `python jhw.py chat "hi"` — test the live Electronic chat, print the model + raw stream
+- `python jhw.py mailcheck --to you@x` — ask Google why OTP mail fails
+- `python jhw.py obs` — verify events reach Loki and install the Grafana dashboard
+- `python jhw.py logs --grep otp` — tail jhw-web
+
+
+---
+
 # JobHuntWOW ("Electronic") — how www.jobhuntwow.com is built and deployed
 
 **Single source of truth. Everything below is code in this repo; GitHub builds it and ships it to the

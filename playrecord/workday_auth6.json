@@ -1,0 +1,199 @@
+{
+  "cookies": [
+    {
+      "name": "PLAY_SESSION",
+      "value": "a20a7c5108b5299148cc3eb9cdb1a1c6da22b5c4-intive_pSessionId=o5frkb2tkoag9me7bfgt8k2h3i&instance=vps-prod-m8oafb3z.prod-vps.pr501.cust.dub.wd",
+      "domain": "intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "wd-browser-id",
+      "value": "a7c623e0-cfd1-4ec2-b36d-52e40182682c",
+      "domain": "intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "CALYPSO_CSRF_TOKEN",
+      "value": "f0d8c119-c789-4f32-a42b-294f7912a7e2",
+      "domain": "intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "CALYPSO_SESSION",
+      "value": "89beb9f1-ae1f-4fb4-8701-77a128fd007f.aW50aXZl.V0RDQzEuMIQAJQAAIIlhAK2kjfko3n0yikDYM8a4f+JTBrCrxVOlGomJ/nZ4AACMABYBMQAQ4nyE5Mp29PtVOxPpbV9N7gAAADg5YmViOWYxLWFlMWYtNGZiNC04NzAxLTc3YTEyOGZkMDA3Zg==",
+      "domain": "intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "wday_vps_cookie",
+      "value": "2505611530.53810.0000",
+      "domain": "intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "__cf_bm",
+      "value": "c9yAKqz9L_XmTb3rDDT.A1gWWX69CgR6NCgnusmRCpg-1786975632.4528196-1.0.1.1-9lxbMXpHGC.ELK4AkBj6ZAw2InN9DDhrJCSs5CUbnhrxn3XEiy8o_VKQSQL.rlkouMLY61yWaFr1sJFj5eLyna1LZxTrZ18QhOvAtMWb4j2E3xEdE2fWR1u77UbyMX8W",
+      "domain": ".intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": 1786977433.039112,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "__cflb",
+      "value": "02DiuJFb1a2FCfph91kR4XMuWBo9zS6fsZPCQ6bcwYrqi",
+      "domain": "intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": 1787058433.039179,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "_cfuvid",
+      "value": "tGR3u9E9mXuddgKTR1vSNKhyHo6YFBoBThqEnvhWoK8-1786975632.4528196-1.0.1.1-V3W3oonWtwSTvduW7tFNk_3Rj74TvXRTYebAWHcWiGI",
+      "domain": ".intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "timezoneOffset",
+      "value": "-60",
+      "domain": "intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "__cf_bm",
+      "value": "7lrlh_66xXMYnij.wwaRQlBQxQvHulDmbDdHAR8EFmU-1786975638.721711-1.0.1.1-vLyCaxqLdyBA1YYgFkNSUFNMHc7kIQsQUR.jcfSJ0oRbE8bhofULaDLyNEmviRKyYaRusnFciGHdwEaYktQbkQz2DeAd0Yavx3TqmDwxv3UcAMEBLS7IdGnZFDpFdDMf",
+      "domain": ".applywithlinkedin.myworkdaygadgets.com",
+      "path": "/",
+      "expires": 1786977439.172455,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "__cflb",
+      "value": "02DiuEhzEqcmmVbuV8B8iXV23tNdM98u6D85A1p7AyzUL",
+      "domain": "applywithlinkedin.myworkdaygadgets.com",
+      "path": "/",
+      "expires": 1787058439.172579,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "lang",
+      "value": "v=2&lang=en-us",
+      "domain": ".linkedin.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "bcookie",
+      "value": "\"v=2&310d87f5-3d42-4449-8dbd-fc59cccbb1b5\"",
+      "domain": ".linkedin.com",
+      "path": "/",
+      "expires": 1818511639.713658,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "bscookie",
+      "value": "\"v=1&2026081714071916720329-a35e-4aa8-8445-09d9fc1bce0eAQF2Rp_V4vVbAWfRzfcCogfChDGMUCtG\"",
+      "domain": ".www.linkedin.com",
+      "path": "/",
+      "expires": 1818511639.713691,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "lidc",
+      "value": "\"b=TGST06:s=T:r=T:a=T:p=T:g=3464:u=1:x=1:i=1786975639:t=1787062039:v=2:sig=AQH5XfeQ5P_Xzl6Ph_n34ERLvn0YEr87\"",
+      "domain": ".linkedin.com",
+      "path": "/",
+      "expires": 1787062039.476931,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "__cf_bm",
+      "value": "cBzvP1o1we0S7S04azmwMkkTFTjVEoSMpjpjTBUCgjo-1786975639.0693004-1.0.1.1-bjeErhu8AupIBWC6XR_A14hBPXS5YdsifD.oA3AVp9rv5vPcayM.mN.UuxOAouIRAOtidXLS.vvtxf1O7Pq5qa6ao2p_NW.pfMh8c7ao.OnB7idO37ZwSd60jUoB9pQ_",
+      "domain": ".linkedin.com",
+      "path": "/",
+      "expires": 1786977439.476977,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "JSESSIONID",
+      "value": "ajax:7016247728676645706",
+      "domain": ".www.linkedin.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "enablePrivacyTracking",
+      "value": "true",
+      "domain": "intive.wd3.myworkdayjobs.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://intive.wd3.myworkdayjobs.com",
+      "localStorage": [
+        {
+          "name": "localStorageLocale",
+          "value": "en-US"
+        },
+        {
+          "name": "wd-error-kit-session",
+          "value": "{\"id\":\"b8ef9b36-d10e-410b-bf47-bc1a54c006cf\",\"createdAt\":1786975776627,\"lastSeenAt\":1786975776627}"
+        }
+      ]
+    }
+  ]
+}

@@ -7,16 +7,30 @@ services:
     env_file: .env
     volumes:
       - jhw_data:/data
-      - jhw_events:/var/log/jhw
+      # events.log is a BIND mount so the obs promtail (docker-compose.obs.yml) tails the
+      # exact same file. SERVICE=jhw-web matches the Grafana dashboards' {service="jhw-web"}.
+      - ./obs/events:/var/log/jhw
     environment:
-      - EVENTS_LOG=/var/log/jhw/events.jsonl
-      - SERVICE=jhw-backend
+      - EVENTS_LOG=/var/log/jhw/events.log
+      - SERVICE=jhw-web
     expose:
       - "8000"
-    ports:
-      # LOCAL ONLY. jhw-agent reaches this via host.docker.internal:8000 (Docker Desktop proxies to
-      # the host loopback). Never bind 0.0.0.0 — this proxy holds the DO inference key.
-      - "127.0.0.1:8000:8000"
+    # NO HOST PORT PUBLISH -- deliberately, and this is a FIX not an omission.
+    # MEASURED 2026-08-16: `docker compose up -d --force-recreate backend` died with
+    #   ports are not available: exposing port TCP 127.0.0.1:8000 -> 127.0.0.1:0:
+    #   listen tcp4 127.0.0.1:8000: bind: An attempt was made to access a socket in a way
+    #   forbidden by its access permissions.
+    # That is Windows WSAEACCES: the OS refuses the bind because 8000 now falls inside a Hyper-V
+    # reserved/excluded port range (those ranges are re-picked on reboot, which is exactly why the
+    # 21 Jul run worked and today's did not). No compose setting can win that argument.
+    # So the agent no longer depends on a host port AT ALL: it reaches the backend over the shared
+    # docker network as `backend:8000`, which is the pattern this project already uses twice --
+    # frontend nginx proxies /api -> backend:8000, and on the droplet Caddy dials jhw-web:8000.
+    # From the HOST the API is still reachable at http://127.0.0.1:8090/api/... via the frontend.
+    # Re-add a publish only with a port you have verified is bindable:
+    #   netsh interface ipv4 show excludedportrange protocol=tcp
+    networks:
+      - jhw_shared
     security_opt:
       - no-new-privileges:true
     mem_limit: 1g
@@ -40,6 +54,8 @@ services:
       - backend
     ports:
       - "127.0.0.1:8090:80"
+    networks:
+      - jhw_shared
     security_opt:
       - no-new-privileges:true
     mem_limit: 256m
@@ -51,6 +67,11 @@ services:
         max-size: "10m"
         max-file: "3"
 
+networks:
+  # EXTERNAL so the separate `agent` compose project can join the same network. Created by
+  # `jhw.py` (_ensure_shared_net) so there is still ONE command and no manual setup step.
+  jhw_shared:
+    external: true
+
 volumes:
   jhw_data:
-  jhw_events:

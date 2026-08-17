@@ -34,6 +34,62 @@ app.include_router(proxy_router)
 app.include_router(auth_router)
 app.include_router(electronic_router)
 
+
+# ---- observability: visitor telemetry + security alerting (observability.py, 1:1 from cybergod.ai)
+# One JSON evt='http' per request (ip/country/device/bot/status/ms/user) -> EVENTS_LOG -> promtail ->
+# Loki -> Grafana, and the SAME event feeds the alert rules (DDoS, scanners, IDOR, exfil, spray,
+# OTP brute force). Detection only: never blocks a request, never touches the firewall.
+# SERVICE + EVENTS_LOG come from the environment (docker-compose sets them for prod).
+import os as _os
+try:
+    from . import observability as obs
+
+    def _session_user(request):
+        try:
+            from .auth import SESSION_COOKIE, read_session
+            tok = request.cookies.get(SESSION_COOKIE)
+            return read_session(tok) if tok else ""
+        except Exception:
+            return ""
+
+    obs.configure(
+        app_name="jobhuntwow",
+        service=_os.environ.get("SERVICE", "jhw-web"),
+        events_log=_os.environ.get("EVENTS_LOG", ""),
+        grafana_hint=_os.environ.get("OBS_GRAFANA_HINT",
+                                     "https://godeyes.ai/observe/d/jobhuntwow"),
+    )
+    obs.install_middleware(app, session_user_fn=_session_user)
+
+    # Daily "who used the platform and what did they run" report -> ALERT_EMAIL.
+    # In-app asyncio task on purpose: no cron in the container, no systemd unit on the droplet
+    # that would drift out of this repo.
+    from . import daily_report as _daily
+
+    @app.on_event("startup")
+    async def _start_daily_report():
+        import asyncio as _aio
+        _aio.create_task(_daily.scheduler())
+except Exception as _e:      # observability must NEVER stop the app from booting
+    print('{"evt":"telemetry_init","result":"error","err":"%s"}' % repr(_e)[:160], flush=True)
+
+
+@app.on_event("startup")
+async def _startup_selfcheck():
+    """Say out loud, at boot, whether OTP email can actually work.
+
+    A silent mailer is how 'Could not send the verification email.' reached a user: google-auth
+    was present but its requests transport was not, and the ImportError was swallowed per-request.
+    This emits evt=mailer_selfcheck so the failure is visible in logs/Grafana before anyone signs up.
+    """
+    try:
+        from .auth import mailer_selfcheck
+        mailer_selfcheck()
+    except Exception as e:  # never block startup on a diagnostic
+        import json as _j
+        print(_j.dumps({"evt": "mailer_selfcheck", "result": "error", "err": repr(e)[:200]}),
+              flush=True)
+
 # ---------- models ----------
 class Msg(BaseModel):
     role: str

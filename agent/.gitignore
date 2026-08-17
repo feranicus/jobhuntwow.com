@@ -9,3 +9,9 @@ events.jsonl
 wd_*.json
 recordings/
 auth.json
+
+# vision.dump() evidence: screenshot + DOM captured when every page reader goes blind.
+# Diagnostic output (URLs, page contents), never source.
+out/blind_*.png
+out/blind_*.html
+out/blind_*.json

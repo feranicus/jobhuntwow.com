@@ -13,7 +13,7 @@ export default function Pipeline() {
   return (
     <>
       <h1 className="page-h">Pipeline</h1>
-      <p className="page-sub">Every role Hermes touches, as a card the agents move through the funnel. (v0.1 — live sync with the agent next.)</p>
+      <p className="page-sub">Every role Electronic touches, as a card the agents move through the funnel. (v0.1 — live sync with the agent next.)</p>
       <div className="kan">
         {COLS.map(c => (
           <div className="kcol" key={c}>

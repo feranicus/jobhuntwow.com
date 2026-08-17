@@ -1,3 +1,8 @@
 # jhw-agent — LLM browser agent. Needs Python >=3.11 (Ubuntu 24.04 ships 3.12).
 browser-use
 playwright
+# flows/test_docker.py parses the compose file to enforce the container rules, and it must be able to
+# run WHERE IT IS INVOKED -- inside jhw-agent. Without this it printed
+# `ModuleNotFoundError: No module named 'yaml'` on every apply, i.e. it never ran there. Sixth
+# instance in this project of a check that could not see its subject. A skip is not a pass.
+pyyaml

@@ -1,9 +1,11 @@
-# Observability — Loki + Grafana + Promtail. KISS: no OTel collector, no metrics server, no sidecars.
-# Profile-gated: it NEVER runs during a normal apply. Start it with `python jhw.py obs`.
+# Observability — Loki + Grafana + Promtail, wired 1:1 from OBSERVABILITY.md §8 (their pipeline).
+# KISS: no OTel collector, no metrics server, no sidecars. Profile-gated: NEVER runs during a normal
+# apply. Start with `python jhw.py obs`.
 #
-# Flow: services append JSON lines (agent/obs.py) -> Promtail tails the files -> Loki -> Grafana.
-# Promtail does NOT get the docker socket (that would be root-equivalent on the host); it only reads
-# the event files read-only. Secure by Design + least privilege.
+# Flow: the backend (observability.py) appends JSON to ./obs/events/events.log -> promtail tails it,
+# promotes service/evt/severity to LABELS (so {service="jhw-web"} matches) -> Loki -> Grafana.
+# Promtail gets NO docker socket (root-equivalent on the host); it only reads the event file. Secure
+# by Design + least privilege (CLAUDE.md standing container rules kept on top of §8d).
 services:
   loki:
     image: grafana/loki:3.0.0
@@ -19,10 +21,13 @@ services:
 
   promtail:
     image: grafana/promtail:3.0.0
-    command: -config.file=/etc/promtail/promtail.yml
+    # -config.expand-env=true so ${LOKI_URL} in promtail.yml is substituted (OBSERVABILITY.md §8a/§8d)
+    command: -config.file=/etc/promtail/promtail.yml -config.expand-env=true
+    environment:
+      LOKI_URL: "http://loki:3100/loki/api/v1/push"
     volumes:
       - ./obs/promtail.yml:/etc/promtail/promtail.yml:ro
-      - ./agent/out:/events/agent:ro      # agent events.jsonl (READ-ONLY)
+      - ./obs/events:/logs:ro            # jhw-web's events.log (bind-shared with the backend)
     depends_on: [ loki ]
     security_opt: [ "no-new-privileges:true" ]
     cap_drop: [ "ALL" ]

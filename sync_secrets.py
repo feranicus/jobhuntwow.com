@@ -24,12 +24,15 @@ SOURCES = [
     os.path.join(HERE, ".env"),                              # DO_INFERENCE_KEY, AGENT_PROXY_TOKEN
     os.path.join(PARENT, "cassandra-bot", ".env"),           # GMAIL_SENDER, GMAIL_SA_B64, OTP tunables
     os.path.join(PARENT, "assess-bot", ".env"),              # fallback for the same
+    os.path.join(HERE, "agent", ".env"),                     # TELEGRAM_BOT_TOKEN / CHAT_ID
 ]
 
 # what the production app actually needs
 WANT = ["DO_INFERENCE_KEY", "DO_INFERENCE_BASE_URL", "AGENT_PROXY_TOKEN",
         "GMAIL_SENDER", "GMAIL_SA_B64",
-        "OTP_TTL_SECS", "OTP_MAX_TRIES", "AUTH_MAX_FAILS", "AUTH_LOCK_SECS"]
+        "OTP_TTL_SECS", "OTP_MAX_TRIES", "AUTH_MAX_FAILS", "AUTH_LOCK_SECS",
+        # security + observability, ported 1:1 from cybergod.ai (same bot, same mailbox)
+        "BOT_TOKEN", "ALERT_TG_CHAT", "ALERT_EMAIL", "ABUSEIPDB_KEY", "TELEMETRY_IP_SALT"]
 
 # sensible production defaults when a key isn't in any source file
 DEFAULTS = {
@@ -38,6 +41,10 @@ DEFAULTS = {
     "DO_INFERENCE_BASE_URL": "https://inference.do-ai.run/v1",
     "OTP_TTL_SECS": "600", "OTP_MAX_TRIES": "5",
     "AUTH_MAX_FAILS": "5", "AUTH_LOCK_SECS": "900",
+    # detection-only guardrails: never block a request, never touch the firewall
+    "ALERTS_ENABLED": "1", "GEOIP_ENABLED": "1", "GEOIP_DIR": "/data/geoip",
+    "TELEMETRY_HASH_IPS": "0",       # raw IPs kept for forensics (documented on /privacy)
+    "DAILY_REPORT_HOUR": "7",
 }
 
 
@@ -63,6 +70,19 @@ def collect() -> tuple[dict, list]:
         for k in WANT:
             if k in env and k not in merged and env[k]:
                 merged[k] = env[k]
+    # Same secret, different name per project: cybergod's notify.py reads BOT_TOKEN, the local
+    # agent stack uses TELEGRAM_BOT_TOKEN. Alias instead of asking the user to duplicate it.
+    aliases = {"BOT_TOKEN": ["TELEGRAM_BOT_TOKEN"],
+               "ALERT_TG_CHAT": ["TELEGRAM_CHAT_ID", "PATCH_TG_CHAT"],
+               "ALERT_EMAIL": ["GMAIL_SENDER"]}
+    for want, alts in aliases.items():
+        if not merged.get(want):
+            for src in SOURCES:
+                env = read_env(src)
+                hit = next((env[a] for a in alts if env.get(a)), "")
+                if hit:
+                    merged[want] = hit
+                    break
     for k, v in DEFAULTS.items():
         merged.setdefault(k, v)
     # SESSION_SECRET must exist and must be stable across deploys -> reuse if present, else mint one

@@ -61,23 +61,29 @@ DIST = os.environ.get("FRONTEND_DIST", "/app/frontend_dist")
 INDEX = os.path.join(DIST, "index.html")
 LANDING = os.environ.get("LANDING_HTML", "/app/landing.html")
 
+# HTML must ALWAYS be revalidated. Without an explicit Cache-Control, browsers fall back to
+# HEURISTIC caching (~10% of the document's age from Last-Modified). The landing file is weeks
+# old, so Chrome served a stale copy for over a day and the "Jump in" button kept pointing at
+# the OLD target even though the server had the new one. Hashed /assets stay cacheable.
+NOCACHE = {"Cache-Control": "no-cache, must-revalidate", "Pragma": "no-cache"}
+
 if os.path.isdir(os.path.join(DIST, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(DIST, "assets")), name="assets")
 
 
-@app.get("/{full_path:path}", include_in_schema=False)
+@app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
 async def spa(full_path: str):
     # Never let the SPA swallow an unknown API path -- that would turn a 404 into HTML.
     if full_path.startswith("api/"):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
     # "/" serves the public landing one-pager; the SPA owns /login, /signup and the cabinet.
     if not full_path and os.path.isfile(LANDING):
-        return FileResponse(LANDING)
+        return FileResponse(LANDING, headers=NOCACHE)
     candidate = os.path.normpath(os.path.join(DIST, full_path))
     if full_path and candidate.startswith(DIST) and os.path.isfile(candidate):
         return FileResponse(candidate)
     if os.path.isfile(INDEX):
-        return FileResponse(INDEX)
+        return FileResponse(INDEX, headers=NOCACHE)
     return JSONResponse({"detail": "frontend not built"}, status_code=404)
 PY
 

@@ -27,7 +27,7 @@ AI only for the parts that vary. Reuses what we already built — the real recor
 | AI fallback | Stagehand `observe`/`act`/`extract`/`agent` over HTTP | `stagehand-svc/server.ts` + client `flows/stagehand.py` |
 | Knowledge | The playbook + the answer DB | `userdata/skills/ats-workday/SKILL.md`, `.../candidate_profile.md` |
 | Browser | Real Chrome + noVNC, residential IP | `jhw-browser` container, watch at http://localhost:9090 |
-| Chat | Telegram (ask-once, notify, trigger) | `jhw-hermes` container |
+| Chat | Telegram (ask-once, notify, trigger) | `jhw-bot` container |
 
 ## Why this is fast
 - Known ATS = pure Playwright: **no LLM call at all**.
@@ -39,7 +39,7 @@ AI only for the parts that vary. Reuses what we already built — the real recor
 - `jhw-browser` — Chrome + noVNC (owns the network namespace; CDP stays on loopback).
 - `jhw-stagehand` — AI sidecar, shares that netns so it drives the SAME Chrome at `127.0.0.1:9222`.
   LLM = our DO proxy (`gpt-oss-120b`), only for the fuzzy bits.
-- `jhw-hermes` — Telegram chat / ask-once / notifications.
+- `jhw-bot` — Telegram chat / ask-once / notifications.
 
 ## Run
 ```bash
