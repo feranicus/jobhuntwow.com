@@ -756,6 +756,18 @@ _CONFIRM_BODY = re.compile(r"thank you|thanks for (your )?appl|congratulations|f
 _CONFIRM_URL = re.compile(r"job_application_id=|/applications?/|confirm|thank|success|complete", re.I)
 
 
+_DIALOG_TEXT_JS = """() => {
+  const bits = [];
+  document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal="true"],' +
+    '[class*="modal"],[class*="Modal"],[data-automation-id*="dialog"],' +
+    '[data-automation-id*="Dialog"]').forEach(el => {
+      const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
+      if (t) bits.push(t.slice(0, 500));
+    });
+  return bits.join(' | ');
+}"""
+
+
 def submitted_from(body: str, url: str) -> bool:
     """Did the SITE confirm the application? PURE, so his run is a permanent test case."""
     return bool(_CONFIRM_BODY.search(body or "")) or bool(_CONFIRM_URL.search(url or ""))
@@ -827,6 +839,17 @@ async def _submit_now(page, r: dict) -> bool:
     body, url = "", (page.url or "")
     try:
         body = await page.evaluate(CONFIRM_JS) or ""
+    except Exception:
+        pass
+    # THE CONFIRMATION IS IN A MODAL, and `CONFIRM_JS` reads document.body — which on this tenant was
+    # the jobs home page BEHIND it ("Skip to main content We love what we do..."). The modal also
+    # paints AFTER networkidle, so a read taken the instant the click settles can miss it entirely.
+    # Same doctrine as the sign-in gate: when a dialog owns the page, the dialog is the page.
+    await page.wait_for_timeout(900)
+    try:
+        extra = await page.evaluate(_DIALOG_TEXT_JS) or ""
+        if extra:
+            body = (body or "") + " | " + extra
     except Exception:
         pass
     ok = submitted_from(body, url)
