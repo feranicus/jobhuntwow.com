@@ -144,8 +144,15 @@ async def _fill_role(page, role: str, name_rx: str, value: str, exact: bool = Fa
 
 
 async def _fill_by_label(page, label_rx: str, value: str) -> bool:
-    """Ashby often uses placeholder or nearby label, not perfect a11y names."""
+    """Ashby often uses placeholder or nearby label, not perfect a11y names.
+
+    THE ONE CHOKE POINT FOR STUBS. `UNKNOWN` reached the Notice-period box twice now: the essay guard
+    refuses it, the residual pass refuses it, and then a THIRD caller typed it anyway. Guarding callers
+    one at a time does not work — every path ends here, so the refusal belongs here."""
     if not value:
+        return False
+    if _STUB.match(str(value).strip()):
+        _log(f"  refusing to type {str(value).strip()[:20]!r} into {label_rx[:34]!r} — not an answer")
         return False
     for role in ("textbox", "combobox", "searchbox"):
         if await _fill_role(page, role, label_rx, value):
@@ -240,14 +247,24 @@ async def _upload_files(page, resume_path: str, cover_path: str = "") -> list:
                     continue
                 await fi.first.set_input_files(path)
                 await page.wait_for_timeout(1200)
-                # READ IT BACK: the filename must now appear inside that same group.
+                # THE INPUT ITSELF IS THE AUTHORITY. My previous read-back asked whether the filename
+                # appeared in the group's TEXT and truncated it to 400 characters — on a container that
+                # holds the whole form the name sits far past that, so a SUCCESSFUL upload was reported
+                # as `COULD NOT ATTACH` and Submit was then refused. Truncated evidence produces
+                # confident false failures; this project already has that rule for a verifier that
+                # read 4000 bytes of a 210 KB page. Ask the DOM: `e.files.length`.
+                cnt = 0
+                try:
+                    cnt = await fi.first.evaluate("e => (e.files && e.files.length) || 0")
+                except Exception:
+                    pass
                 shown = ""
                 try:
-                    shown = (await g.inner_text() or "")[:400]
+                    shown = await g.inner_text() or ""      # WHOLE text, not a 400-char slice
                 except Exception:
                     pass
                 stem = os.path.splitext(base)[0][:14]
-                if base in shown or (stem and stem in shown):
+                if cnt or base in shown or (stem and stem in shown):
                     _log(f"  attached {base} to the {kind.upper()} group (the page shows it)")
                     filled.append(f"upload:{base}")
                     placed = True
@@ -263,7 +280,13 @@ async def _upload_files(page, resume_path: str, cover_path: str = "") -> list:
                     except Exception:
                         has = 0
                     if has:
-                        continue
+                        # IT MAY BE OURS. The group pass sets the file and, if its read-back was
+                        # inconclusive, the input still holds it — skipping it here is how a real
+                        # upload became "COULD NOT ATTACH". Accept it as attached.
+                        _log(f"  file input #{i} already holds {has} file(s) — counting it")
+                        filled.append(f"upload:{base}")
+                        placed = True
+                        break
                     await el.set_input_files(path)
                     await page.wait_for_timeout(1000)
                     try:
@@ -781,10 +804,18 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                 continue
             # HIS OWN RECORDED ANSWER FIRST, then the ladder. `UNKNOWN` reached this box because the
             # essay guard sat on one path and this one typed the stub anyway.
-            val = recorded_essay(lab) or await _ans(lab)
+            # A SHORT-ANSWER FIELD IS NOT AN ESSAY. `Notice period / availability details` wants
+            # "one month"; the essay rule (>=40 chars) refused the real answer and then a stub was
+            # typed instead. Known short answers come from candidate.md, verbatim.
+            if re.search(r"notice period|availability", lab, re.I):
+                val = _notice_text(_defaults(data))
+            elif re.search(r"expected yearly|salary|compensation", lab, re.I):
+                val = _salary_text(_defaults(data))
+            else:
+                val = recorded_essay(lab) or await _ans(lab)
             if not val:
                 continue
-            if not usable_essay(val, 12):
+            if _STUB.match(str(val).strip()) or not str(val).strip():
                 _log(f"    {lab[:44]!r}: the ladder gave {str(val).strip()[:20]!r} — "
                      f"NOT typing a stub; it stays unresolved for you")
                 r["unresolved"] = list(dict.fromkeys((r.get("unresolved") or []) + [lab]))
@@ -868,6 +899,20 @@ def _selftest() -> int:
        "salary is PLAIN DIGITS, as recorded")
     b = _basics({"basics": {"legal_name": "Jev Vainsteins", "email": "a@b.c"}})
     ck(b["full_name"] == "Jev Vainsteins", "full name")
+    print("\n[UNKNOWN reached a real form TWICE — the refusal now sits at the choke point]")
+    import inspect as _i4
+    _fbl = _i4.getsource(_fill_by_label)
+    ck("_STUB.match" in _fbl, "_fill_by_label — where EVERY path ends — refuses a stub itself")
+    _up2 = _i4.getsource(_upload_files)
+    _grp = _up2.split("LAST RESORT")[0]
+    ck("e.files && e.files.length" in _grp,
+       "the GROUP path asks the DOM for files.length, not the group's text")
+    ck("[:400]" not in _up2, "no truncated evidence (that is what made a real upload 'FAIL')")
+    ck("already holds" in _up2, "an input that already holds our file counts as attached")
+    _rs = _i4.getsource(drive)
+    ck("notice period|availability" in _rs and "_notice_text(_defaults(data))" in _rs,
+       "a short-answer field takes its written answer, never the essay rule")
+
     print("\n[the upload claimed success on an EMPTY Resume field]")
     import inspect as _i3
     _up = _i3.getsource(_upload_files)
