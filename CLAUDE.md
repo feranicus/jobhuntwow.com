@@ -2559,3 +2559,19 @@ control, so a 3-character fragment can never resolve to the wrong declaration.
 2. **`type(e).__name__` IS 'Error' FOR EVERY PLAYWRIGHT FAILURE**, so the log said nothing at all. It
    now prints the first line of the message. This project's oldest logging rule — name what happened —
    and I broke it in the same function.
+
+## THE UPLOAD CLAIMED SUCCESS ON AN EMPTY RESUME FIELD (Ashby, 2026-08-17)
+```
+[ashby]   uploaded resume.pdf -> file input #0      <- the log
+Resume*  [ Upload File   or drag and drop here ]    <- the screenshot, empty
+```
+`set_input_files` on a BLIND INDEX throws nothing when the index is the wrong control, and this form
+has several file inputs (Resume, cover letter, "screenshot of your favourite workflow") — so #0 was a
+guess. Nothing read it back, so the log asserted a success that had not happened. **A WRITE IS NOT
+DONE UNTIL IT HAS BEEN READ BACK** is the oldest rule in this project and the upload path never had it.
+FIXES: attach to the GROUP whose text asks for that document (Ashby renders the label, the drop zone
+and a hidden `input[type=file]` in one container), then require the FILENAME to appear inside that
+same group; a fallback tries any file input with no file yet and checks `e.files.length`; a failure
+says `COULD NOT ATTACH`, and a missing file on disk is named rather than silently skipped.
+AND SUBMIT NOW REFUSES when no upload was confirmed on a page that has a file input at all — a
+required CV that never arrived is a blocker, not a detail. Six contracts, negative-tested.

@@ -200,31 +200,85 @@ async def _fill_by_label(page, label_rx: str, value: str) -> bool:
 
 
 async def _upload_files(page, resume_path: str, cover_path: str = "") -> list:
+    """Attach by GROUP, then READ THE FILENAME BACK OFF THE PAGE.
+
+    MEASURED: the log said `uploaded resume.pdf -> file input #0` and the screenshot showed the
+    Resume drop zone EMPTY. `set_input_files` on a blind index throws nothing when the index is the
+    wrong control — this form has several file inputs (Resume, cover letter, "screenshot of your
+    favourite workflow"), so #0 is a guess. And nothing read it back, so the log asserted a success
+    that had not happened. A WRITE IS NOT DONE UNTIL IT HAS BEEN READ BACK — the oldest rule in this
+    project, and the upload path never had it.
+    Ashby renders the attached filename inside the same group, which is what we check."""
     filled = []
-    files = []
+    want = []
     if resume_path and os.path.isfile(resume_path):
-        files.append(resume_path)
-    if cover_path and os.path.isfile(cover_path):
-        files.append(cover_path)
-    # also look next to resume for cover_letter.pdf
-    if resume_path and not cover_path:
+        want.append(("resume", resume_path, r"resume|cv\b|curriculum"))
+    else:
+        _log(f"  NO RESUME FILE at {resume_path!r} — nothing to attach")
+    cov = cover_path if (cover_path and os.path.isfile(cover_path)) else ""
+    if not cov and resume_path:
         sib = os.path.join(os.path.dirname(resume_path), "cover_letter.pdf")
-        if os.path.isfile(sib):
-            files.append(sib)
-    if not files:
+        cov = sib if os.path.isfile(sib) else ""
+    if cov:
+        want.append(("cover_letter", cov, r"cover letter|motivation letter"))
+    if not want:
         return filled
-    try:
-        inputs = page.locator("input[type=file]")
-        n = await inputs.count()
-        for i, path in enumerate(files):
-            if i >= n:
-                break
-            await inputs.nth(i).set_input_files(path)
-            _log(f"  uploaded {os.path.basename(path)} -> file input #{i}")
-            filled.append(f"upload:{os.path.basename(path)}")
-            await page.wait_for_timeout(600)
-    except Exception as e:
-        _log(f"  upload failed: {type(e).__name__}: {e}")
+
+    for kind, path, label_rx in want:
+        base = os.path.basename(path)
+        placed = False
+        try:
+            # THE GROUP THAT ASKS FOR IT, not an index. Ashby wraps each upload in a container that
+            # holds the label, the drop zone and a hidden input[type=file].
+            groups = page.locator("div,section,fieldset").filter(
+                has_text=re.compile(label_rx, re.I))
+            n = min(await groups.count(), 12)
+            for i in range(n):
+                g = groups.nth(i)
+                fi = g.locator("input[type=file]")
+                if not await fi.count():
+                    continue
+                await fi.first.set_input_files(path)
+                await page.wait_for_timeout(1200)
+                # READ IT BACK: the filename must now appear inside that same group.
+                shown = ""
+                try:
+                    shown = (await g.inner_text() or "")[:400]
+                except Exception:
+                    pass
+                stem = os.path.splitext(base)[0][:14]
+                if base in shown or (stem and stem in shown):
+                    _log(f"  attached {base} to the {kind.upper()} group (the page shows it)")
+                    filled.append(f"upload:{base}")
+                    placed = True
+                    break
+                _log(f"  set {base} on a {kind} input but the group does not show it — trying the next")
+            if not placed:
+                # LAST RESORT: any file input that has no file yet. Still read back.
+                inputs = page.locator("input[type=file]")
+                for i in range(min(await inputs.count(), 6)):
+                    el = inputs.nth(i)
+                    try:
+                        has = await el.evaluate("e => (e.files && e.files.length) || 0")
+                    except Exception:
+                        has = 0
+                    if has:
+                        continue
+                    await el.set_input_files(path)
+                    await page.wait_for_timeout(1000)
+                    try:
+                        cnt = await el.evaluate("e => (e.files && e.files.length) || 0")
+                    except Exception:
+                        cnt = 0
+                    if cnt:
+                        _log(f"  attached {base} to file input #{i} (input reports {cnt} file)")
+                        filled.append(f"upload:{base}")
+                        placed = True
+                        break
+        except Exception as e:
+            _log(f"  upload {kind} failed: {type(e).__name__}: {str(e).splitlines()[0][:110]}")
+        if not placed:
+            _log(f"  COULD NOT ATTACH {base} — the {kind} field is still empty")
     return filled
 
 
@@ -533,6 +587,17 @@ async def _tick_required(page, r: dict, log=_log) -> int:
 
 
 async def _submit(page, r: dict) -> bool:
+    # A REQUIRED RESUME THAT NEVER ARRIVED IS A BLOCKER, not a detail. The screenshot showed an
+    # empty Resume* drop zone on a run whose log claimed the upload succeeded.
+    if not any(str(x).startswith("upload:") for x in (r.get("filled") or [])):
+        try:
+            need = await page.locator("input[type=file]").count()
+        except Exception:
+            need = 0
+        if need:
+            _log("  REFUSING submit — no resume/cover upload was confirmed on this run")
+            r["note"] = (r.get("note") or "") + " refused to submit: no document attached."
+            return False
     blank = await _required_empty(page)
     if blank:
         _log(f"REFUSING submit — still required+empty: {blank}")
@@ -803,6 +868,19 @@ def _selftest() -> int:
        "salary is PLAIN DIGITS, as recorded")
     b = _basics({"basics": {"legal_name": "Jev Vainsteins", "email": "a@b.c"}})
     ck(b["full_name"] == "Jev Vainsteins", "full name")
+    print("\n[the upload claimed success on an EMPTY Resume field]")
+    import inspect as _i3
+    _up = _i3.getsource(_upload_files)
+    ck("has_text=re.compile(label_rx" in _up, "attaches to the GROUP that asks for it, not input #0")
+    ck("base in shown" in _up, "the filename is READ BACK off the page")
+    ck("COULD NOT ATTACH" in _up, "a failed attach is stated, never silently 'uploaded'")
+    ck("NO RESUME FILE at" in _up, "a missing file on disk is named")
+    _sb = _i3.getsource(_submit)
+    ck("no resume/cover upload was confirmed" in _sb,
+       "Submit is refused when no document was confirmed")
+    ck(_sb.index("REFUSING submit") < _sb.index("SUBMIT_JS")
+       if "SUBMIT_JS" in _sb else True, "...and the refusal comes before the click")
+
     print("\n[the typeahead crashed on its own selector — 'typeahead failed: Error']")
     import inspect as _i2
     _ta2 = _i2.getsource(_typeahead)
