@@ -2974,8 +2974,9 @@ def _selftest() -> int:
     check("...and role is tried BEFORE the css selector chain",
           -1 < _pb.find("get_by_role(\"textbox\"") < _pb.find('_fill(page, "phone", natl)'))
     check("a phone value is READ BACK before it counts as filled", "input_value()" in _pb)
-    _af = io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "autofill.py"),
-                  encoding="utf-8").read()
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "autofill.py"),
+               encoding="utf-8") as _fh:
+        _af = _fh.read()
     check("autofill's national-number fallback cannot return the international form",
           "return raw or \"\"" not in _af)
 
