@@ -2352,3 +2352,51 @@ separate: the site public, the agent in its own PRIVATE repo (`python jhw.py git
    the gate that exists because of the angermann NameError outage — because the suite exercised the
    PURE functions and never CALLED `harden()` or `safepoint()`. Presence is not reachability. §5b now
    invokes every entry point.
+
+## THE RECORDINGS ARE GROUND TRUTH — AND THE PAIRING RULE ONLY KNEW ONE VENDOR'S WIDGET (2026-08-17)
+intive Workday failed with the site's own words:
+```
+Error: The field How Did You Hear About Us? is required and must have a value.
+Error: Enter a valid format for Phone Number.
+buttons : ['Back to Job Posting', 'Select One', 'Georgia', 'Mobile', 'Next']
+```
+Both answers were in the recording he made minutes earlier:
+```
+button("How Did You Hear About Us?").click()  ->  get_by_text("LinkedIn corporate page").click()
+button("Country Georgia Required").click()    ->  get_by_text("Germany").click()
+textbox("Phone Number").fill("+49 157 8551545") / ("+49 1578551545") / ("1578551545")  -> REJECTED
+textbox("Phone Number").fill("15785541545")                                            -> ACCEPTED
+```
+FOUR DEFECTS, and the first is the one that generalises:
+1. **`compile_choices` only understood a COMBOBOX or a bare label click.** Workday asks with a
+   **BUTTON**, and its rows are PLAIN TEXT, so a recording containing the answer taught us nothing. A
+   pairing rule written from one vendor's widget is a rule that works on one vendor. Now a non-
+   navigation BUTTON may hold a pending question, and while one is pending a text click is the ANSWER
+   (with nothing pending it is a question — the Greenhouse shape, unchanged). `_NAV_BUTTON` is anchored
+   so `Next` can never become a label.
+2. **THE PROFILE'S ANSWER DID NOT EXIST ON THE PAGE.** candidate.md says `how_did_you_hear: LinkedIn`;
+   this tenant's row reads **"LinkedIn corporate page"**. A profile value could never have been
+   clicked, which is exactly why the recorded human choice is the FIRST rung of the ladder.
+3. **`phone_national()` already existed and the Workday path never called it.** The identical fact was
+   measured on Greenhouse on the same day (`+49 …` rejected, national digits accepted). One rule, two
+   adapters, one of them wired — the disease this file records over and over.
+4. **A WORKDAY PROMPT CARRIES ITS CURRENT VALUE IN ITS NAME** (`Country Georgia Required` ->
+   `Germany` once answered), which makes the read-back free: `_answer_prompts()` clicks, picks, and
+   then requires the button's own name to contain the answer before counting it as filled.
+**AND TWO NONSENSE PAIRS MY OWN FIX INVENTED, both caught by reading the compiled output rather than
+trusting it:** a ticked radio stayed pending and produced `'No' -> 'Yes, I agree.'` (a tick is an
+answer IN PLACE), and a bare `No`/`Yes` text click was read as a QUESTION. A wrong answer learned once
+is repeated at every employer after, so the compiled knowledge must be read, not assumed.
+
+## GIT POLICY IS HIS, NOT MINE (2026-08-17)
+*"i need that this will be on git for now i dont care that my resume is seen to the internet but the
+passwords shouldn't be .env file"*. So the line is drawn at CREDENTIALS: `.env`, ATS credentials,
+**browser session state**, codegen recordings (they hold his typed password in cleartext) and the
+databases are refused; candidate.md and the CVs are allowed, and `safepoint()` pushes and says once
+per run that the remote is public. My job was to measure the exposure and name it, which I did — and
+then to respect the decision.
+**IT IMMEDIATELY CAUGHT SOMETHING THAT WAS NOT PII:** `playrecord/workday_auth5.json` and
+`workday_auth6.json` were TRACKED — 18 live cookies each, `PLAY_SESSION` and `CALYPSO_SESSION`
+included. Anyone holding that file is signed in as him until it expires. They were never pushed
+(verified against origin/main) and are now untracked and ignored. A session cookie is a credential;
+that it looks like a config file is exactly why a name-based rule misses it.

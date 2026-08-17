@@ -392,13 +392,16 @@ def safepoint(message: str = "", push: bool = True, allow_public: bool = False) 
 
     if not push:
         return r
-    name = "origin" if allow_public else app_remote()
-    if not name:
-        u = remote_url("origin")
-        r["note"] += ("  | NOT PUSHED: the only remote is the PUBLIC landing repo "
-                      f"({u.split('/')[-1] if u else '?'}). The automation needs its own private "
-                      "repo — `python jhw.py git` prints the one command that creates it.")
-        return r
+    name = app_remote() or "origin"
+    if name == "origin" and is_public_remote(remote_url("origin")):
+        # HIS DECISION, 2026-08-17: *"i need that this will be on git for now i dont care that my
+        # resume is seen to the internet but the passwords shouldn't be"*. So it pushes, and says once
+        # per run what that means. The CREDENTIAL guard above is what actually protects him and it is
+        # unchanged: .env, ATS credentials, session cookies, recordings and the databases never go.
+        r["note"] += ("  | note: this remote is PUBLIC, so everything committed is world-readable "
+                      "(your CV and candidate.md included, by your decision). "
+                      "`python jhw.py git --repo` moves the automation to a private repo when you want.")
+    rc, out = _git("push", name, "HEAD")
     rc, out = _git("push", name, "HEAD")
     if rc:
         r["note"] += f"  | push to {name} failed: {out[-160:]}"

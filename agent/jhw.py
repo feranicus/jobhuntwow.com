@@ -363,6 +363,11 @@ def cmd_git(a):
     if getattr(a, "repo", False):
         print("\n".join(G.create_private_repo(apply=True)))
         print()
+    # PUSH. He asked for git to be a real second source of truth, so this verb SAVES AND PUSHES —
+    # not merely reports. Credentials are still refused; that guard is the whole point.
+    r = G.safepoint("manual safepoint", push=True)
+    print("  " + r["note"])
+    print()
     print(G.audit())
     return 0
 
