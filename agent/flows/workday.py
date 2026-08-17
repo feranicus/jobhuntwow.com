@@ -337,7 +337,106 @@ _NAV = re.compile(r"^\s*(next|back|previous|zur[uü]ck|weiter|continue|save and 
 _PROMPT_RX = re.compile(r"select one|required$|^select\b", re.I)
 
 
-async def _answer_prompts(page, data: dict) -> int:
+# WHICH FIELDS DID THE SITE NAME? Workday says it twice, in two shapes:
+#   "Error: The field How Did You Hear About Us? is required and must have a value."
+#   "Error-Phone Number Enter a valid format for Phone Number."
+_ERR_FIELD = re.compile(r"the field\s+(.+?)\s+is required|Error-([A-Za-z0-9 /?'&.-]{3,40})", re.I)
+
+
+def error_fields(err: str) -> list:
+    """The field names the site itself named. PURE, so it is a test and not a hope."""
+    out = []
+    for m in _ERR_FIELD.finditer(err or ""):
+        nm = " ".join((m.group(1) or m.group(2) or "").split()).strip(" .:*")
+        # `Error-<Field>` runs straight into the sentence that follows it, so a greedy capture yields
+        # 'Phone Number Enter a valid format for Ph'. Used as a filter, a junk name that long matches
+        # the wrong control — so cut at the prose the site appends.
+        nm = re.split(r"\bthe field\b|\benter a\b|\bis required\b|\bmust have\b",
+                      nm, flags=re.I)[0].strip(" .:*-")
+        if 2 < len(nm) <= 44 and nm.lower() not in [o.lower() for o in out]:
+            out.append(nm)
+    return out
+
+
+async def _phone_block(page, data: dict, r: dict) -> bool:
+    """Country Phone Code + the NATIONAL number + device type — the three-control truth.
+
+    MEASURED on intive: the number box wants `15785541545`, the country is a SEPARATE control, and the
+    run left it on its default — the log printed `buttons: [... 'Georgia', 'Mobile', ...]`, Georgia,
+    because nothing had set it. A number without its country code is not a phone number to Workday."""
+    b = (data or {}).get("basics") or {}
+    try:
+        from greenhouse import phone_national as _natl
+    except Exception:
+        from flows.greenhouse import phone_national as _natl        # type: ignore
+    natl = (b.get("phone_national") or "").strip() or _natl(b.get("phone", ""))
+    want_country = (b.get("phone_country") or b.get("country") or "Germany").strip()
+    did = False
+    # THE COUNTRY FIRST: on several tenants setting it re-validates (and sometimes re-formats) the
+    # number, so doing it afterwards would throw the number away.
+    for key, want in (("phone_code", want_country), ("phone_device", b.get("phone_type", "Mobile"))):
+        try:
+            el = await _first(page, key, 2000)
+            if el is None:
+                continue
+            cur = " ".join((((await el.get_attribute("aria-label")) or
+                             (await el.inner_text()) or "").strip()).split())
+            if want.lower() in (cur or "").lower():
+                continue                                    # already right; never toggle a good value
+            await el.click(timeout=ACTION_TIMEOUT)
+            await page.wait_for_timeout(500)
+            for how in ("option", "text"):
+                try:
+                    row = (page.get_by_role("option", name=want, exact=False).first if how == "option"
+                           else page.get_by_text(want, exact=True).first)
+                    if await row.count() and await row.is_visible():
+                        await row.click(timeout=ACTION_TIMEOUT)
+                        break
+                except Exception:
+                    continue
+            await page.wait_for_timeout(400)
+            now = " ".join((((await el.get_attribute("aria-label")) or
+                             (await el.inner_text()) or "").strip()).split())
+            ok = want.lower() in (now or "").lower()
+            _log(f"    {key:<12} {'=' if ok else '?'} {want!r}" +
+                 ("" if ok else f"  (it now reads {now[:34]!r})"))
+            did |= ok
+            if ok:
+                r["filled"].append(key)
+        except Exception as e:
+            _log(f"    {key:<12} {type(e).__name__}")
+    if natl:
+        if await _fill(page, "phone", natl):
+            back = ""
+            try:
+                el = await _first(page, "phone", 1500)
+                back = (await el.input_value()) if el is not None else ""
+            except Exception:
+                pass
+            _log(f"    phone        = {natl!r}" + (f"  (reads {back!r})" if back and back != natl else ""))
+            r["filled"].append("phone")
+            did = True
+        else:
+            _log("    phone        NOT FOUND on this page")
+    return did
+
+
+async def _repair_validation(page, data: dict, err: str, r: dict) -> bool:
+    """The site named the broken fields. Fix THOSE, then let the loop press Next again."""
+    named = error_fields(err)
+    _log(f"    the site named: {named or '(nothing parseable)'}")
+    fixed = False
+    if any("phone" in n.lower() for n in named) or "phone" in (err or "").lower():
+        fixed |= await _phone_block(page, data, r)
+    if named:
+        try:
+            fixed |= bool(await _answer_prompts(page, data, only=named))
+        except Exception as e:
+            _log(f"    prompt repair: {type(e).__name__}: {e}")
+    return fixed
+
+
+async def _answer_prompts(page, data: dict, only=None) -> int:
     """Answer every unanswered Workday PROMPT from the recorded human choice. Returns how many.
 
     THE ANSWER COMES FROM HIS OWN RECORDING FIRST, and that matters here more than anywhere: the
@@ -364,7 +463,14 @@ async def _answer_prompts(page, data: dict) -> int:
                 continue
             nm = ((await b.get_attribute("aria-label")) or (await b.inner_text()) or "").strip()
             nm = " ".join(nm.split())[:80]
-            if not nm or _NAV.search(nm) or not _PROMPT_RX.search(nm):
+            if not nm or _NAV.search(nm):
+                continue
+            # `only` = the field names the SITE named in its error. A bare value like 'Georgia' is not
+            # prompt-shaped, so without this branch the country control could never be repaired.
+            if only is not None:
+                if not any(o.lower() in nm.lower() or nm.lower() in o.lower() for o in only):
+                    continue
+            elif not _PROMPT_RX.search(nm):
                 continue
             want = known_choice("workday", nm)
             if not want:
@@ -2463,6 +2569,7 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
         # ---- page loop: fill -> upload(+parse wait) -> answer -> Save and Continue ----
         r["stage"] = "pages"
         last_err = ""
+        _repaired: set = set()      # one targeted repair per DISTINCT error, never a loop
         for _i in range(10):
             await page.wait_for_timeout(1500)
             sn = await _log_page(page, f"page {_i + 1}/10")
@@ -2619,6 +2726,19 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
             if err:
                 print(f"[wd] validation error: {err}", flush=True)
                 if err == last_err:
+                    # HIS POINT, AND HE IS RIGHT: *"a fixable format error becomes a hard stop"*. The
+                    # halt was correct given what had been TRIED, and what had been tried was
+                    # incomplete — the site NAMED the two broken fields and nothing read the names.
+                    # One repair attempt per distinct error, then the old behaviour exactly.
+                    if err not in _repaired:
+                        _repaired.add(err)
+                        try:
+                            if await _repair_validation(page, data, err, r):
+                                _log("    repair attempted — trying Next again")
+                                last_err = ""
+                                continue
+                        except Exception as e:
+                            _log(f"    repair raised {type(e).__name__}: {e} — halting as before")
                     r["stage"] = "blocked"
                     r["note"] = f"Workday validation error we cannot resolve: '{err}'. Stopped for the human."
                     await _notify(r["note"])
@@ -2737,6 +2857,23 @@ def _selftest() -> int:
         _b = _aw.get_source_segment(src, next(n for n in _aw.walk(_wt)
                                     if isinstance(n, _aw.FunctionDef) and n.name == _fn))
         check(f"{_fn}() delegates to the single owner", "atscreds" in _b)
+
+    # THE SITE NAMED THE BROKEN FIELDS AND NOTHING READ THE NAMES (intive, 2026-08-17). This is the
+    # verbatim error string from that run. If it stops resolving to those two field names, the
+    # error-driven repair silently degrades back to the hard stop it replaced.
+    _real = ("Error: The field How Did You Hear About Us? is required and must have a value. | "
+             "Error: Enter a valid format for Phone Number. | Error-How Did You Hear About Us? The "
+             "field How Did You Hear About Us? is required and must have a value. Error-Phone Number "
+             "Enter a valid format for Phone Number. |")
+    _f = error_fields(_real)
+    check("the site's own error names How Did You Hear About Us?",
+          any(x.lower() == "how did you hear about us?" for x in _f))
+    check("...and Phone Number", any(x.lower() == "phone number" for x in _f))
+    check("no junk name long enough to match the wrong control", all(len(x) <= 44 for x in _f))
+    check("nothing is invented from a clean page",
+          error_fields("") == [] and error_fields("everything is fine") == [])
+    check("the phone block sets the COUNTRY before the number",
+          _wcode.index('"phone_code"') < _wcode.index('await _fill(page, "phone", natl)'))
 
     print("\n" + "=" * 78)
     if fails:

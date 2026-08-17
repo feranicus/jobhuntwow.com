@@ -2400,3 +2400,34 @@ then to respect the decision.
 included. Anyone holding that file is signed in as him until it expires. They were never pushed
 (verified against origin/main) and are now untracked and ignored. A session cookie is a credential;
 that it looks like a config file is exactly why a name-based rule misses it.
+
+## HIS OWN ANALYSIS WAS RIGHT ON ALL THREE COUNTS — intive Workday (2026-08-17)
+He sent `INTIVE_WORKDAY_FAILURE_ANALYSIS.md` plus two patch files, and the diagnosis matched the
+measurement in every particular. What was implemented, and why each one matters:
+1. **THE PHONE IS THREE CONTROLS, NOT ONE.** `_phone_block()` sets Country Phone Code FIRST (several
+   tenants re-validate and sometimes re-FORMAT the number when the country changes, so doing it
+   afterwards throws the number away), then the device type, then the NATIONAL digits, reading each
+   one back. The log had printed the evidence and nobody read it: `buttons: [... 'Georgia', 'Mobile',
+   ...]` — Georgia, because nothing had ever set that control.
+2. **A VALIDATION ERROR IS A TO-DO LIST, NOT A DEATH SENTENCE.** His words. `error_fields()` is PURE
+   and parses the field names out of the site's own two shapes ("The field X is required",
+   "Error-X ..."), `_repair_validation()` fixes exactly those and lets the loop press Next again, and
+   the old hard stop remains — once per DISTINCT error, so a repair can never become a loop.
+   GREEDY CAPTURE BITES HERE: `Error-<Field>` runs into the following sentence and yields
+   `'Phone Number Enter a valid format for Ph'`; used as a filter, a name that long matches the wrong
+   control, so it is cut at the appended prose and capped at 44 characters.
+3. **HIS SELECTOR CHAINS ARE MERGED, NOT SUBSTITUTED** — existing ids first, so Accenture keeps
+   working while intive's `Given Name(s) - Latin Script` and `Country Phone Code` resolve. 25 new
+   entries across 9 keys. A selector map is append-only: replacing it fixes one tenant and breaks the
+   ones already proven.
+4. **`_answer_prompts(only=[...])`** accepts the field names the SITE named, because the country
+   control renders as a BARE VALUE ('Georgia') which is not prompt-shaped and could never otherwise be
+   repaired.
+The verbatim error string from his run is now a permanent contract in `workday.py --logic`: if it ever
+stops resolving to those two field names, the repair path has silently degraded to the hard stop it
+replaced.
+ON THE GITHUB CREDENTIAL, honestly: there is none in the repo. All three `.git/config` files carry a
+plain `https://github.com/...` url with no embedded token and no credential helper, and no
+`.git-credentials` exists. His pushes work because Windows Credential Manager holds the token, and
+that is an OS keystore rather than a file, so a Linux sandbox cannot read it. `python jhw.py git`
+pushes from his machine, where the credential lives.
