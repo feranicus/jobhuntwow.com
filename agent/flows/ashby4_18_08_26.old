@@ -465,8 +465,8 @@ async def _upload_files(page, resume_path: str, cover_path: str = "") -> list:
             except Exception as e:
                 _log(f"  scoped input {kind}: {type(e).__name__}")
 
-        # --- 3) page-wide empty inputs (resume only — never drop cover onto Resume*) ---
-        if not placed and kind == "resume":
+        # --- 3) page-wide empty inputs ---
+        if not placed:
             try:
                 inputs = page.locator("input[type=file]")
                 for i in range(min(await inputs.count(), 8)):
@@ -794,125 +794,6 @@ async def _tick_required(page, r: dict, log=_log) -> int:
         r["unresolved"] = list(dict.fromkeys((r.get("unresolved") or []) + missed))
     log(f"  {done} recorded choice(s) applied (not a bulk tick)")
     return done
-
-
-
-def _validation_missing(body: str) -> list[str]:
-    """Ashby red banner: 'Missing entry for required field: How did you hear about X?'"""
-    out = []
-    for m in re.finditer(
-        r"Missing entry for required field:\s*([^\n•]+)", body or "", re.I
-    ):
-        lab = m.group(1).strip().rstrip(".")
-        if lab and lab not in out:
-            out.append(lab)
-    for m in re.finditer(r"required field[:\s]+([^\n•]+)", body or "", re.I):
-        lab = m.group(1).strip().rstrip(".")
-        if lab and lab not in out and len(lab) < 120:
-            out.append(lab)
-    return out
-
-
-def _is_phone_like(val: str) -> bool:
-    s = re.sub(r"[\s\-\(\)+]", "", str(val or ""))
-    return bool(re.fullmatch(r"\d{7,15}", s))
-
-
-async def _click_radio_by_patterns(page, patterns: list[str], tag: str, r: dict) -> bool:
-    for pat in patterns:
-        try:
-            loc = page.get_by_role("radio", name=re.compile(pat, re.I))
-            if await loc.count() == 0:
-                continue
-            el = loc.first
-            if not await el.is_visible():
-                continue
-            if not await el.is_checked():
-                await el.check(timeout=4000)
-            if await el.is_checked():
-                _log(f"  radio {tag}: matched {pat!r}")
-                r["filled"].append(f"tick:{tag}")
-                return True
-        except Exception:
-            continue
-    return False
-
-
-async def _answer_common_ashby_questions(page, data: dict, defaults: dict, url: str, r: dict) -> int:
-    """Easy closed questions the 3-LLM panel should not need a human for."""
-    n = 0
-    # How did you hear about <Company>?
-    utm = ""
-    try:
-        m = re.search(r"utm_source=([^&]+)", url or "", re.I)
-        utm = (m.group(1) if m else "").lower()
-    except Exception:
-        utm = ""
-    source_defaults = str(defaults.get("how_heard") or defaults.get("source") or "").strip()
-    if "linkedin" in utm or "linkedin" in source_defaults.lower() or not source_defaults:
-        hear_pats = [
-            r"LinkedIn",
-            r"Social media",
-            r"Job board",
-            r"Company website",
-            r"News article",
-            r"I'm a user",
-            r"Referral",
-            r"Other",
-        ]
-    else:
-        hear_pats = [re.escape(source_defaults)] + [
-            r"LinkedIn", r"Job board", r"Other", r"News article", r"I'm a user",
-        ]
-    if await _click_radio_by_patterns(page, hear_pats, "how_heard", r):
-        n += 1
-
-    # Years of experience (account executive / sales / …)
-    yrs = str(
-        defaults.get("years_account_executive")
-        or defaults.get("years_experience")
-        or defaults.get("ae_years")
-        or ""
-    ).strip()
-    if not yrs:
-        # senior commercial profile → prefer 7+ when those options exist
-        yrs = "7+"
-    yr_map = {
-        "7+": [r"^7\+", r"7\s*\+|10\+|more than 7"],
-        "4-6": [r"^4-6$", r"4\s*-\s*6"],
-        "1-3": [r"^1-3$", r"1\s*-\s*3"],
-        "n/a": [r"^N/?A$", r"not applicable"],
-    }
-    key = "7+"
-    if re.search(r"n/?a", yrs, re.I):
-        key = "n/a"
-    elif re.search(r"^[1-3]$|1-3", yrs):
-        key = "1-3"
-    elif re.search(r"4-6|4–6", yrs):
-        key = "4-6"
-    if await _click_radio_by_patterns(page, yr_map.get(key, yr_map["7+"]), f"years:{key}", r):
-        n += 1
-
-    # GitHub from candidate data (avoid Telegram when we already know it)
-    gh = ""
-    b = data.get("basics") or {}
-    for k in ("github", "github_url", "github_profile"):
-        gh = str(b.get(k) or defaults.get(k) or "").strip()
-        if gh:
-            break
-    if not gh:
-        # website sometimes is github
-        w = str(b.get("website") or "")
-        if "github.com" in w.lower():
-            gh = w
-    if gh and "github.com" in gh.lower():
-        if not gh.startswith("http"):
-            gh = "https://" + gh.lstrip("/")
-        if await _fill_by_label(page, r"github", gh) or await _fill_role(page, "textbox", r"Github|GitHub", gh):
-            r["filled"].append("github")
-            n += 1
-
-    return n
 
 
 async def _page_text(page) -> str:
@@ -1350,16 +1231,8 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                 val = _salary_text(_defaults(data))
             elif re.search(r"linkedin", lab, re.I):
                 val = _linkedin_url(data, defaults)
-            elif re.search(r"github", lab, re.I):
-                b0 = data.get("basics") or {}
-                val = str(b0.get("github") or b0.get("github_url") or defaults.get("github") or "").strip()
-                if val and not val.startswith("http"):
-                    val = "https://" + val.lstrip("/")
             else:
                 val = recorded_essay(lab) or await _ans(lab)
-            if val and _is_phone_like(val) and not re.search(r"phone|mobile|tel", lab, re.I):
-                _log(f"  residual refused phone-like for {lab[:40]!r}")
-                val = ""
             if not val:
                 continue
             if _STUB.match(str(val).strip()) or not str(val).strip():
@@ -1384,12 +1257,6 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                 _log(f"  {_n} screening radio(s) from candidate.md")
         except Exception as e:
             _log(f"  screening radios: {type(e).__name__}: {e}")
-        try:
-            _n2 = await _answer_common_ashby_questions(page, data, defaults, url, r)
-            if _n2:
-                _log(f"  {_n2} common Ashby question(s) answered")
-        except Exception as e:
-            _log(f"  common questions: {type(e).__name__}: {e}")
 
         # ---- AUTONOMOUS LADDER (never pause for the human mid-form)
         # 1) answer_fn / deterministic leftovers
@@ -1427,11 +1294,6 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                     except Exception:
                         val = ""
                 if val and not _STUB.match(str(val).strip()):
-                    # NEVER put a phone number into a free-text / essay box
-                    if _is_phone_like(val) and not re.search(r"phone|mobile|tel", lab, re.I):
-                        _log(f"  refusing phone-like value for {lab[:40]!r}")
-                        val = ""
-                        continue
                     if await _fill_by_label(page, re.escape(lab[:40]), val) or \
                        await _fill_role(page, "textbox", re.escape(lab[:40]), val):
                         r["filled"].append(f"heal:{lab[:20]}")
@@ -1578,80 +1440,7 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
             _log(r["note"])
             return r
 
-        # Submit with validation recovery (ElevenLabs: missing "how did you hear", etc.)
-        for attempt in range(3):
-            await _submit(page, r)
-            if r.get("submitted"):
-                break
-            if r.get("stage") != "blocked":
-                break
-            body = await _page_text(page)
-            missing = _validation_missing(body)
-            if not missing:
-                # also re-scan required empty
-                missing = await _required_empty(page)
-            if not missing:
-                break
-            _log(f"  validation recovery attempt {attempt+1}: {missing}")
-            # re-run common answers + targeted heal
-            try:
-                await _answer_common_ashby_questions(page, data, defaults, url, r)
-            except Exception:
-                pass
-            try:
-                await _apply_screening_radios(page, defaults, r)
-            except Exception:
-                pass
-            for lab in missing[:8]:
-                # radios first for hear-about / years
-                if re.search(r"hear about|how did you", lab, re.I):
-                    await _answer_common_ashby_questions(page, data, defaults, url, r)
-                    continue
-                if re.search(r"years of experience|account executive", lab, re.I):
-                    await _answer_common_ashby_questions(page, data, defaults, url, r)
-                    continue
-                val = ""
-                if re.search(r"github", lab, re.I):
-                    b0 = data.get("basics") or {}
-                    val = str(b0.get("github") or defaults.get("github") or "").strip()
-                    if val and not val.startswith("http"):
-                        val = "https://" + val.lstrip("/")
-                if not val and answer_fn:
-                    try:
-                        val = str(await answer_fn(lab, [], data) or "")
-                    except Exception:
-                        val = ""
-                if not val and asker:
-                    try:
-                        val = str(await asker(lab) or "")
-                    except Exception:
-                        val = ""
-                if not val and ask:
-                    try:
-                        val = str(await ask.ask_human(f"Ashby required: {lab}") or "")
-                    except Exception:
-                        val = ""
-                if not val or _STUB.match(str(val).strip()):
-                    continue
-                if _is_phone_like(val) and not re.search(r"phone|mobile|tel", lab, re.I):
-                    _log(f"  recovery refused phone-like for {lab[:40]!r}")
-                    continue
-                # try radio option matching the answer text
-                try:
-                    loc = page.get_by_role("radio", name=re.compile(re.escape(str(val)[:50]), re.I))
-                    if await loc.count():
-                        await loc.first.check(timeout=4000)
-                        r["filled"].append(f"fix-radio:{val[:16]}")
-                        continue
-                except Exception:
-                    pass
-                if await _fill_by_label(page, re.escape(lab[:40]), val) or \
-                   await _fill_role(page, "textbox", re.escape(lab[:40]), val):
-                    r["filled"].append(f"fix:{lab[:20]}")
-            # reset stage so next _submit can run
-            r["stage"] = "review"
-            r["submitted"] = False
-
+        await _submit(page, r)
         if not r.get("submitted"):
             r["stage"] = r.get("stage") or "review"
             r["note"] = r.get("note") or f"Ashby filled {r['filled']}; not submitted (confirm in noVNC)."
