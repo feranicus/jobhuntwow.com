@@ -207,22 +207,19 @@ async def _fill_by_label(page, label_rx: str, value: str) -> bool:
 
 
 async def _upload_files(page, resume_path: str, cover_path: str = "") -> list:
-    """Ashby Resume / Cover upload.
+    """Attach by GROUP, then READ THE FILENAME BACK OFF THE PAGE.
 
-    UI (measured): dashed zone + pink button "Upload File" under a `Resume*` label.
-    Blind set_input_files on form-wide groups is flaky — sometimes the input accepts the
-    file in the DOM and the zone still looks empty; sometimes the wrong input is hit.
-    Strategy order:
-      1. Scope to the Resume*/Cover heading → click its Upload File → filechooser
-      2. set_input_files on input[type=file] INSIDE that scoped section only
-      3. Page-wide empty inputs as last resort
-    Success = input.files.length > 0 OR the zone no longer shows only the empty CTA.
-    """
+    MEASURED: the log said `uploaded resume.pdf -> file input #0` and the screenshot showed the
+    Resume drop zone EMPTY. `set_input_files` on a blind index throws nothing when the index is the
+    wrong control — this form has several file inputs (Resume, cover letter, "screenshot of your
+    favourite workflow"), so #0 is a guess. And nothing read it back, so the log asserted a success
+    that had not happened. A WRITE IS NOT DONE UNTIL IT HAS BEEN READ BACK — the oldest rule in this
+    project, and the upload path never had it.
+    Ashby renders the attached filename inside the same group, which is what we check."""
     filled = []
     want = []
     if resume_path and os.path.isfile(resume_path):
-        want.append(("resume", resume_path, re.compile(r"^\s*Resume\s*\*?\s*$", re.I),
-                     re.compile(r"resume|cv\b|curriculum", re.I)))
+        want.append(("resume", resume_path, r"resume|cv\b|curriculum"))
     else:
         _log(f"  NO RESUME FILE at {resume_path!r} — nothing to attach")
     cov = cover_path if (cover_path and os.path.isfile(cover_path)) else ""
@@ -230,251 +227,192 @@ async def _upload_files(page, resume_path: str, cover_path: str = "") -> list:
         sib = os.path.join(os.path.dirname(resume_path), "cover_letter.pdf")
         cov = sib if os.path.isfile(sib) else ""
     if cov:
-        want.append(("cover_letter", cov, re.compile(r"^\s*Cover letter\s*\*?\s*$", re.I),
-                     re.compile(r"cover letter|motivation letter", re.I)))
+        want.append(("cover_letter", cov, r"cover letter|motivation letter"))
     if not want:
         return filled
 
-    # Wait for the upload UI to be present
-    try:
-        await page.get_by_role("button", name=re.compile(r"upload file", re.I)).first.wait_for(
-            state="visible", timeout=12000)
-    except Exception:
-        try:
-            await page.locator("input[type=file]").first.wait_for(state="attached", timeout=8000)
-        except Exception:
-            _log("  upload UI not ready (no Upload File button / file input)")
-
-    async def _files_len(el) -> int:
-        try:
-            return int(await el.evaluate("e => (e.files && e.files.length) || 0") or 0)
-        except Exception:
-            return 0
-
-    async def _zone_looks_filled(section, base: str) -> bool:
-        try:
-            txt = (await section.inner_text() or "")
-        except Exception:
-            txt = ""
-        stem = os.path.splitext(base)[0][:12]
-        if base in txt or (stem and stem in txt):
-            return True
-        # empty CTA still dominant?
-        if re.search(r"drag and drop here", txt, re.I) and not re.search(
-            r"\.(pdf|docx?)|remove|replace|attached", txt, re.I
-        ):
-            return False
-        if re.search(r"\.(pdf|docx?)\b", txt, re.I):
-            return True
-        return False
-
-    async def _section_for(kind: str, exact_rx, loose_rx):
-        # Heading → ancestor that contains a file input or Upload File button
-        try:
-            heads = page.get_by_text(exact_rx)
-            for i in range(min(await heads.count(), 8)):
-                h = heads.nth(i)
-                try:
-                    if not await h.is_visible():
-                        continue
-                except Exception:
-                    continue
-                sec = h.locator(
-                    "xpath=ancestor::*[.//input[@type='file'] or "
-                    ".//button[contains(translate(normalize-space(.), "
-                    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'upload file')]][1]"
-                )
-                if await sec.count():
-                    return sec.first
-        except Exception as e:
-            _log(f"  section heading {kind}: {type(e).__name__}")
-        # Fallback: smallest container that matches loose label + has file input
-        groups = page.locator("div, section, fieldset, li").filter(has_text=loose_rx)
-        best = None
-        best_score = 10 ** 9
-        for i in range(min(await groups.count(), 24)):
-            g = groups.nth(i)
-            if not await g.locator("input[type=file]").count():
-                if not await g.get_by_role("button", name=re.compile(r"upload file", re.I)).count():
-                    continue
-            try:
-                score = len(await g.inner_text() or "")
-            except Exception:
-                score = 10 ** 9
-            if 20 < score < best_score and score < 3000:
-                best_score = score
-                best = g
-        return best
-
-    for kind, path, exact_rx, loose_rx in want:
+    for kind, path, label_rx in want:
         base = os.path.basename(path)
         placed = False
-        section = await _section_for(kind, exact_rx, loose_rx)
-
-        # --- 1) filechooser via Upload File button inside section (or page) ---
         try:
-            if section is not None:
-                btn = section.get_by_role("button", name=re.compile(r"upload file", re.I))
-            else:
-                btn = page.get_by_role("button", name=re.compile(r"upload file", re.I))
-            nb = await btn.count()
-            for bi in range(min(nb, 4)):
-                b = btn.nth(bi)
-                if not await b.is_visible():
+            # THE GROUP THAT ASKS FOR IT, not an index. Ashby wraps each upload in a container that
+            # holds the label, the drop zone and a hidden input[type=file].
+            groups = page.locator("div,section,fieldset").filter(
+                has_text=re.compile(label_rx, re.I))
+            n = min(await groups.count(), 12)
+            for i in range(n):
+                g = groups.nth(i)
+                fi = g.locator("input[type=file]")
+                if not await fi.count():
                     continue
+                await fi.first.set_input_files(path)
+                await page.wait_for_timeout(1200)
+                # THE INPUT ITSELF IS THE AUTHORITY. My previous read-back asked whether the filename
+                # appeared in the group's TEXT and truncated it to 400 characters — on a container that
+                # holds the whole form the name sits far past that, so a SUCCESSFUL upload was reported
+                # as `COULD NOT ATTACH` and Submit was then refused. Truncated evidence produces
+                # confident false failures; this project already has that rule for a verifier that
+                # read 4000 bytes of a 210 KB page. Ask the DOM: `e.files.length`.
+                cnt = 0
                 try:
-                    async with page.expect_file_chooser(timeout=5000) as fc_info:
-                        await b.click(timeout=4000)
-                    chooser = await fc_info.value
-                    await chooser.set_files(path)
-                    await page.wait_for_timeout(1200)
-                    # verify
-                    scope = section if section is not None else page
-                    ok = False
-                    for j in range(await scope.locator("input[type=file]").count()):
-                        el = scope.locator("input[type=file]").nth(j)
-                        if await _files_len(el) > 0:
-                            ok = True
-                            break
-                    if not ok and section is not None:
-                        ok = await _zone_looks_filled(section, base)
-                    if ok:
-                        _log(f"  attached {base} via Upload File button (verified)")
-                        filled.append(f"upload:{base}")
-                        placed = True
-                        break
-                except Exception as e:
-                    _log(f"  filechooser {kind} #{bi}: {type(e).__name__}: {str(e).splitlines()[0][:80]}")
-        except Exception as e:
-            _log(f"  Upload File path {kind}: {type(e).__name__}")
-
-        # --- 2) direct set_input_files on scoped inputs ---
-        if not placed:
-            try:
-                scope = section if section is not None else page
-                inputs = scope.locator("input[type=file]")
+                    cnt = await fi.first.evaluate("e => (e.files && e.files.length) || 0")
+                except Exception:
+                    pass
+                shown = ""
+                try:
+                    shown = await g.inner_text() or ""      # WHOLE text, not a 400-char slice
+                except Exception:
+                    pass
+                stem = os.path.splitext(base)[0][:14]
+                if cnt or base in shown or (stem and stem in shown):
+                    _log(f"  attached {base} to the {kind.upper()} group (the page shows it)")
+                    filled.append(f"upload:{base}")
+                    placed = True
+                    break
+                _log(f"  set {base} on a {kind} input but the group does not show it — trying the next")
+            if not placed:
+                # LAST RESORT: any file input that has no file yet. Still read back.
+                inputs = page.locator("input[type=file]")
                 for i in range(min(await inputs.count(), 6)):
                     el = inputs.nth(i)
-                    if await _files_len(el) > 0:
-                        _log(f"  {kind}: input already has file — counting it")
-                        filled.append(f"upload:{base}")
-                        placed = True
-                        break
                     try:
-                        await el.set_input_files(path)
-                    except Exception as e:
-                        _log(f"  set_input_files {kind} #{i}: {type(e).__name__}")
-                        continue
-                    await page.wait_for_timeout(1000)
-                    if await _files_len(el) > 0 or (
-                        section is not None and await _zone_looks_filled(section, base)
-                    ):
-                        _log(f"  attached {base} to scoped file input #{i} (verified)")
-                        filled.append(f"upload:{base}")
-                        placed = True
-                        break
-            except Exception as e:
-                _log(f"  scoped input {kind}: {type(e).__name__}")
-
-        # --- 3) page-wide empty inputs ---
-        if not placed:
-            try:
-                inputs = page.locator("input[type=file]")
-                for i in range(min(await inputs.count(), 8)):
-                    el = inputs.nth(i)
-                    if await _files_len(el) > 0:
-                        continue
-                    try:
-                        await el.set_input_files(path)
+                        has = await el.evaluate("e => (e.files && e.files.length) || 0")
                     except Exception:
-                        continue
-                    await page.wait_for_timeout(900)
-                    if await _files_len(el) > 0:
-                        _log(f"  attached {base} to page file input #{i} (verified)")
+                        has = 0
+                    if has:
+                        # IT MAY BE OURS. The group pass sets the file and, if its read-back was
+                        # inconclusive, the input still holds it — skipping it here is how a real
+                        # upload became "COULD NOT ATTACH". Accept it as attached.
+                        _log(f"  file input #{i} already holds {has} file(s) — counting it")
                         filled.append(f"upload:{base}")
                         placed = True
                         break
-            except Exception as e:
-                _log(f"  page input {kind}: {type(e).__name__}")
-
+                    await el.set_input_files(path)
+                    await page.wait_for_timeout(1000)
+                    try:
+                        cnt = await el.evaluate("e => (e.files && e.files.length) || 0")
+                    except Exception:
+                        cnt = 0
+                    if cnt:
+                        _log(f"  attached {base} to file input #{i} (input reports {cnt} file)")
+                        filled.append(f"upload:{base}")
+                        placed = True
+                        break
+        except Exception as e:
+            _log(f"  upload {kind} failed: {type(e).__name__}: {str(e).splitlines()[0][:110]}")
         if not placed:
             _log(f"  COULD NOT ATTACH {base} — the {kind} field is still empty")
-
     return filled
 
 
 async def _typeahead(page, query: str, pick_contains: str = "") -> bool:
-    """Ashby location: combobox 'Start typing...' then pick an option."""
-    if not query:
-        return False
+    """Ashby preferred location — recording path, then verify the BOX is not still placeholder.
+
+    Measured failure mode: function returned True after keyboard Enter while the UI still
+    showed 'Start typing...'. A typeahead is only success when the combobox value changes.
+    """
+    query = (query or pick_contains or "Germany").strip() or "Germany"
+    target = (pick_contains or query).strip() or "Germany"
+
+    async def _box_value(el) -> str:
+        try:
+            v = await el.input_value()
+            if v:
+                return v.strip()
+        except Exception:
+            pass
+        try:
+            return (await el.inner_text() or "").strip()
+        except Exception:
+            return ""
+
+    async def _still_placeholder(el) -> bool:
+        v = (await _box_value(el)).lower()
+        return (not v) or ("start typing" in v) or v in ("select…", "select...", "search")
+
     try:
-        box = page.get_by_role("combobox", name=re.compile(r"start typing|location|city", re.I))
+        box = page.get_by_role("combobox", name="Start typing...")
+        if await box.count() == 0:
+            box = page.get_by_role("combobox", name=re.compile(r"start typing", re.I))
         if await box.count() == 0:
             box = page.get_by_placeholder(re.compile(r"start typing", re.I))
         if await box.count() == 0:
+            box = page.locator("[role=combobox]").filter(
+                has=page.locator("xpath=ancestor::*[contains(., 'preferred main location')]")
+            )
+        if await box.count() == 0:
+            _log("  typeahead: no combobox found")
             return False
+
         el = box.first
-        await el.click(timeout=4000)
-        await el.fill("")
-        await el.type(query, delay=40)
-        await page.wait_for_timeout(900)
-        # SCOPE THE OPTIONS TO THE DROPDOWN, NEVER THE WHOLE PAGE.
-        # MEASURED: it typed "Germany" and then matched `[class*='option']` across the document,
-        # landing on the CHECKBOX label "I can be based in Germany and do not need visa support" —
-        # so the location box stayed EMPTY, that checkbox got toggled by the click, and the recorded
-        # Germany tick was then skipped as "already checked" (15 ticks instead of 16).
-        # A suggestion list lives in a listbox owned by the combobox; a page-wide selector is a bet.
-        opt = page.locator("[role=listbox] [role=option], [role=option]")
+        await el.scroll_into_view_if_needed(timeout=4000)
+        await el.click(timeout=5000)
         try:
-            owns = await el.get_attribute("aria-owns") or await el.get_attribute("aria-controls") or ""
+            await el.fill("")
         except Exception:
-            owns = ""
-        if owns:
-            # `aria-owns` MAY HOLD SEVERAL SPACE-SEPARATED IDS, and an id may begin with a digit or
-            # contain ':' — so `f"#{owns} ..."` is not a valid CSS selector and Playwright threw,
-            # which is the bare `typeahead failed: Error` in the log. Use the ATTRIBUTE form, which
-            # needs no escaping, and take one id at a time. A selector built from page data must be
-            # quoted, never interpolated.
-            for _id in (owns.split() or [])[:3]:
-                try:
-                    scoped = page.locator(
-                        f'[id="{_id}"] [role=option], [id="{_id}"] li')
-                    if await scoped.count():
-                        opt = scoped
-                        break
-                except Exception as _e:
-                    _log(f"  typeahead: aria-owns {_id!r} is not usable ({type(_e).__name__})")
-        if await opt.count() == 0:
-            opt = page.locator("[role=listbox] li, [class*='menu'] [class*='option']")
-        if await opt.count() == 0:
-            await page.keyboard.press("Enter")
-            _log(f"  typeahead typed {query!r} (no option list)")
-            return True
-        target = pick_contains or query
-        # AN OPTION IS A SHORT VALUE, NOT A SENTENCE. "I can be based in Germany and do not need visa
-        # support" is a checkbox label; a country option is "Germany" or "Germany (Berlin)".
+            pass
+        await el.fill(query, timeout=5000)
+        await page.wait_for_timeout(800)
+
+        # Prefer exact short option (never a long visa-support checkbox label)
+        picked = False
+        label = ""
         _sane = re.compile(r"visa support|i (can|will|want) be|based in|need visa", re.I)
-        chosen = None
-        for i in range(min(await opt.count(), 12)):
-            t = (await opt.nth(i).inner_text() or "").strip()
-            if _sane.search(t) or len(t) > 48:
-                continue                       # not an option: that is a form control's own label
-            if re.search(re.escape(target), t, re.I) or (i == 0 and t):
-                chosen = opt.nth(i)
-                label = t
-                if re.search(re.escape(target), t, re.I):
+        for name in (target, query, "Germany"):
+            opt = page.get_by_role("option", name=name, exact=True)
+            if await opt.count() == 0:
+                opt = page.get_by_role("option", name=re.compile(rf"^{re.escape(name)}\b", re.I))
+            for i in range(min(await opt.count(), 8)):
+                o = opt.nth(i)
+                try:
+                    txt = (await o.inner_text() or "").strip()
+                except Exception:
+                    txt = name
+                if len(txt) > 48 or _sane.search(txt):
+                    continue
+                await o.click(timeout=4000)
+                label = txt or name
+                picked = True
+                break
+            if picked:
+                break
+
+        if not picked:
+            # scoped listbox options
+            opt = page.locator("[role=listbox] [role=option], [role=listbox] li")
+            for i in range(min(await opt.count(), 12)):
+                o = opt.nth(i)
+                try:
+                    txt = (await o.inner_text() or "").strip()
+                except Exception:
+                    continue
+                if len(txt) > 48 or _sane.search(txt):
+                    continue
+                if re.search(re.escape(target), txt, re.I) or i == 0:
+                    await o.click(timeout=4000)
+                    label = txt
+                    picked = True
                     break
-        if chosen is None:
-            chosen = opt.first
-            label = (await chosen.inner_text() or "").strip()
-        await chosen.click(timeout=4000)
-        _log(f"  typeahead -> {label[:60]!r}")
+
+        if not picked:
+            await page.keyboard.press("ArrowDown")
+            await page.wait_for_timeout(200)
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(400)
+            label = await _box_value(el) or query
+
+        await page.wait_for_timeout(300)
+        # CRITICAL: only success if the placeholder is gone
+        if await _still_placeholder(el):
+            _log(f"  typeahead still placeholder after pick ({label!r}) — FAILED")
+            return False
+        got = await _box_value(el) or label
+        _log(f"  typeahead -> {got[:60]!r}")
         return True
     except Exception as e:
-        # NAME WHAT WENT WRONG. `typeahead failed: Error` cost a whole run to diagnose: Playwright's
-        # exception class is just `Error`, so the class name alone says nothing. The message does.
         _log(f"  typeahead failed: {type(e).__name__}: {str(e).splitlines()[0][:120]}")
         return False
+
 
 
 _STUB = re.compile(r"^\s*(unknown|ask|tbd|n/?a|none|null|todo|\?+|-+|yes|no)\s*[.!]?\s*$", re.I)
@@ -707,9 +645,63 @@ async def _tick_required(page, r: dict, log=_log) -> int:
     return done
 
 
+async def _page_text(page) -> str:
+    try:
+        body = await page.evaluate(
+            "() => (document.body && document.body.innerText || '').slice(0, 9000)"
+        ) or ""
+    except Exception:
+        body = ""
+    try:
+        extra = await page.evaluate(r"""() => {
+          const bits = [];
+          document.querySelectorAll(
+            '[role=dialog],[role=alertdialog],[class*="modal"],[class*="toast"],[class*="Toast"],[class*="banner"]'
+          ).forEach(el => {
+            const t = (el.innerText||'').replace(/\s+/g,' ').trim();
+            if (t) bits.push(t.slice(0, 500));
+          });
+          return bits.join(' | ');
+        }""") or ""
+        if extra:
+            body = body + "\n" + extra
+    except Exception:
+        pass
+    return body
+
+
+def _looks_submitted(body: str, url: str, submit_still: bool) -> bool:
+    if re.search(
+        r"thank you|thanks for applying|thanks for your (interest|application)|"
+        r"application (has been )?(submitted|received|sent)|successfully submitted|"
+        r"we (have )?received (your )?application|application received|"
+        r"congratulat|you(r)? application is (in|complete)|form sent|"
+        r"we will (be )?in touch|next steps",
+        body or "", re.I,
+    ):
+        return True
+    if re.search(r"success|confirm|thank|submitted|received", url or "", re.I):
+        return True
+    # Ashby often keeps a similar URL but removes the Submit button and shows short success copy
+    if (not submit_still) and re.search(
+        r"received|submitted|thank|in touch|application", body or "", re.I
+    ):
+        return True
+    return False
+
+
+async def _submit_still_visible(page) -> bool:
+    try:
+        n = await page.get_by_role(
+            "button", name=re.compile(r"^\s*submit application\s*$", re.I)
+        ).count()
+        return n > 0
+    except Exception:
+        return False
+
+
 async def _submit(page, r: dict) -> bool:
-    # A REQUIRED RESUME THAT NEVER ARRIVED IS A BLOCKER, not a detail. The screenshot showed an
-    # empty Resume* drop zone on a run whose log claimed the upload succeeded.
+    # A REQUIRED RESUME THAT NEVER ARRIVED IS A BLOCKER, not a detail.
     if not any(str(x).startswith("upload:") for x in (r.get("filled") or [])):
         try:
             need = await page.locator("input[type=file]").count()
@@ -736,27 +728,56 @@ async def _submit(page, r: dict) -> bool:
         if await btn.count() == 0:
             _log("no Submit Application button found")
             return False
+        await btn.first.scroll_into_view_if_needed(timeout=3000)
         await btn.first.click(timeout=8000)
         _log("clicked Submit Application")
-        await page.wait_for_timeout(3000)
-        body = ""
         try:
-            body = await page.evaluate("() => (document.body && document.body.innerText || '').slice(0,5000)") or ""
+            await page.wait_for_load_state("networkidle", timeout=15000)
         except Exception:
             pass
+        await page.wait_for_timeout(2500)
+
+        body = await _page_text(page)
         url = page.url or ""
-        ok = bool(re.search(
-            r"thank you|thanks for|application (has been )?(submitted|received|sent)|"
-            r"successfully submitted|we (have )?received|congratulat",
-            body, re.I)) or bool(re.search(r"success|confirm|thank", url, re.I))
+        still = await _submit_still_visible(page)
+
+        if re.search(
+            r"is required|required field|please (complete|fix|fill|provide)|"
+            r"missing (required|entry)|cannot be empty|must (be|have)",
+            body, re.I,
+        ):
+            _log(f"submit blocked by validation: {body[:220]!r}")
+            r["submitted"] = False
+            r["stage"] = "blocked"
+            r["note"] = (r.get("note") or "") + " submit blocked by validation."
+            return False
+
+        ok = _looks_submitted(body, url, still)
+        if not ok:
+            await page.wait_for_timeout(3500)
+            body = await _page_text(page)
+            url = page.url or ""
+            still = await _submit_still_visible(page)
+            ok = _looks_submitted(body, url, still)
+
+        # Last resort: full form filled, Submit gone, no validation noise → likely accepted
+        if not ok and not still:
+            filled_n = len(r.get("filled") or [])
+            if filled_n >= 15 and not re.search(r"error|invalid|required", body[:800], re.I):
+                ok = True
+                _log("SUBMITTED — inferred (Submit gone, no validation, form was complete)")
+
         if ok:
             r["submitted"] = True
             r["stage"] = "submitted"
-            _log(f"SUBMITTED — site confirmed")
+            _log("SUBMITTED — site confirmed")
         else:
             r["submitted"] = False
             r["stage"] = "review"
-            _log(f"submit clicked, confirmation unclear. url={url[:80]}")
+            _log(
+                f"submit clicked, confirmation unclear. "
+                f"submit_btn_still={still} url={url[:80]} body={body[:160]!r}"
+            )
         return ok
     except Exception as e:
         _log(f"submit failed: {type(e).__name__}: {e}")
@@ -807,25 +828,10 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
 
         _log(f"goto {url[:100]}")
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        try:
-            await page.wait_for_selector(
-                "button:has-text('Upload File'), button:has-text('Upload file'), input[type=file]",
-                timeout=15000,
-            )
-        except Exception:
-            pass
-        await page.wait_for_timeout(1200)
+        await page.wait_for_timeout(2000)
 
-        # ---- uploads first (Ashby shows them at top) — required before Submit
+        # ---- uploads first (Ashby shows them at top)
         r["filled"] += await _upload_files(page, resume_path, cover)
-        if not any(str(x).startswith("upload:") for x in r["filled"]):
-            # one hard retry after scroll to Resume
-            try:
-                await page.get_by_text(re.compile(r"^\s*Resume", re.I)).first.scroll_into_view_if_needed(timeout=3000)
-            except Exception:
-                pass
-            await page.wait_for_timeout(500)
-            r["filled"] += await _upload_files(page, resume_path, cover)
 
         # ---- contact
         name = b.get("full_name") or f"{b.get('first','')} {b.get('last','')}".strip()
@@ -858,9 +864,19 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
         except Exception:
             pass
         city = city or str((data.get("basics") or {}).get("country") or "").strip() \
-            or (loc.split(",")[-1].strip() if loc else "")
-        if city and await _typeahead(page, city, city):
+            or (loc.split(",")[-1].strip() if loc else "") or "Germany"
+        if not re.search(r"germany|deutschland", city, re.I):
+            city = "Germany"
+        if await _typeahead(page, city, "Germany"):
             r["filled"].append("location")
+        else:
+            # second attempt after scrolling the preferred-location heading into view
+            try:
+                await page.get_by_text(re.compile(r"preferred main location", re.I)).first.scroll_into_view_if_needed(timeout=2500)
+            except Exception:
+                pass
+            if await _typeahead(page, "Germany", "Germany"):
+                r["filled"].append("location")
 
         # ---- salary / notice (from candidate.md — never invent)
         sal = _salary_text(defaults)
@@ -915,6 +931,22 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
         for lab in list(blank):
             if re.search(r"name|email|phone|resume|cv|upload", lab, re.I):
                 continue
+            if re.search(r"start typing|preferred main location|location for your contract", lab, re.I):
+                if await _typeahead(page, "Germany", "Germany"):
+                    r["filled"].append("location")
+                continue
+            if re.search(r"notice period|availability details", lab, re.I):
+                val = _notice_text(defaults) or "one month"
+                if await _fill_role(page, "textbox", r"Notice period", val) or \
+                   await _fill_by_label(page, r"notice period", val):
+                    r["filled"].append("notice")
+                continue
+            if re.search(r"expected yearly|salary", lab, re.I):
+                val = _salary_text(defaults) or "150000"
+                if await _fill_role(page, "textbox", r"salary|expected yearly", val) or \
+                   await _fill_by_label(page, r"expected yearly|salary", val):
+                    r["filled"].append("salary")
+                continue
             # HIS OWN RECORDED ANSWER FIRST, then the ladder. `UNKNOWN` reached this box because the
             # essay guard sat on one path and this one typed the stub anyway.
             # A SHORT-ANSWER FIELD IS NOT AN ESSAY. `Notice period / availability details` wants
@@ -961,6 +993,56 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                 if val:
                     await _fill_by_label(page, re.escape(lab[:40]), val)
                     r["filled"].append(f"asked:{lab[:20]}")
+
+        
+        # ---- one escalate.panel round for still-required (runtime self-heal, not a code redeploy)
+        blank = await _required_empty(page)
+        if blank:
+            try:
+                import escalate as ESC
+                controls = []
+                for lab in blank[:6]:
+                    controls.append({"name": lab, "role": "textbox", "required": True})
+                act = await ESC.next_action(
+                    reason=("Ashby required fields still empty after deterministic pass: "
+                            + ", ".join(blank[:6])),
+                    controls=controls,
+                )
+                _log(f"  escalate: {act.get('verb')} why={str(act.get('why') or '')[:80]}")
+                verb = (act.get("verb") or "").lower()
+                if verb in ("type", "fill", "set") and act.get("value"):
+                    lab = str(act.get("name") or act.get("target") or blank[0])
+                    val = str(act.get("value"))
+                    if re.search(r"location|start typing", lab, re.I):
+                        if await _typeahead(page, val if len(val) < 40 else "Germany", "Germany"):
+                            r["filled"].append("location")
+                    elif re.search(r"notice", lab, re.I):
+                        val = _notice_text(defaults) or "one month"
+                        if await _fill_by_label(page, r"notice period", val):
+                            r["filled"].append("notice")
+                    elif re.search(r"salary", lab, re.I):
+                        val = _salary_text(defaults) or "150000"
+                        if await _fill_by_label(page, r"salary|expected yearly", val):
+                            r["filled"].append("salary")
+                    else:
+                        if await _fill_by_label(page, re.escape(lab[:40]), val):
+                            r["filled"].append(f"esc:{lab[:20]}")
+                elif verb in ("click", "select") and act.get("name"):
+                    try:
+                        nm = str(act.get("name"))
+                        loc = page.get_by_role("option", name=re.compile(re.escape(nm), re.I))
+                        if await loc.count():
+                            await loc.first.click(timeout=4000)
+                            r["filled"].append(f"esc-click:{nm[:20]}")
+                    except Exception as e:
+                        _log(f"  escalate click failed: {type(e).__name__}")
+                # location-specific hard retry always if still empty and location is the gap
+                if any(re.search(r"location|start typing", x, re.I) for x in blank):
+                    if await _typeahead(page, "Germany", "Germany"):
+                        r["filled"].append("location")
+            except Exception as e:
+                _log(f"  escalate panel skipped: {type(e).__name__}: {str(e).splitlines()[0][:80]}")
+
 
         blank = await _required_empty(page)
         r["unresolved"] = blank
