@@ -1082,27 +1082,18 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                     _log(f"  answer_fn: {type(e).__name__}")
             return ""
 
-        # Employer-scoped essays. n8n sales prompts must NOT run on Volta/SoSafe/etc.
-        # URL path is jobs.ashbyhq.com/<employer>/...
-        _emp = ""
-        try:
-            _m = re.search(r"ashbyhq\.com/([^/]+)/", url or "", re.I)
-            _emp = (_m.group(1) if _m else "").lower()
-        except Exception:
-            _emp = ""
-        essay_labels = []
-        if _emp in ("n8n",):
-            essay_labels = [
-                (r"what about n8n|caught your attention",
-                 "What about n8n and the role caught your attention?"),
-                (r"enterprise sales methodology|rollout|enablement",
-                 "Tell us about one enterprise sales methodology rollout"),
-            ]
-            _log(f"  essay pack: n8n-specific ({len(essay_labels)} prompts)")
-        else:
-            # Other Ashby employers: only answer questions that exist on THIS page
-            # via residual + answer_fn(actual label). No sales methodology injection.
-            _log(f"  essay pack: generic (employer={_emp or 'unknown'}) — no n8n sales prompts")
+        essay_labels = [
+            (r"what about n8n|caught your attention|why (this|the) role|why (do you )?want",
+             "What about n8n and the role caught your attention?"),
+            (r"enterprise sales methodology|rollout|enablement",
+             "Tell us about one enterprise sales methodology rollout"),
+            # REMOVED an invented third question: `r"tell us about|describe a time|example of"` is
+            # unanchored and matches the REAL "Tell us about one enterprise sales methodology rollout"
+            # that the entry above has already answered — so it either no-ops and inflates `filled`,
+            # or overwrites a correct answer with a fabricated one. Anchored to the real label only.
+            (r"^tell us about one enterprise",
+             "Tell us about a relevant example from your experience"),
+        ]
         for rx, prompt in essay_labels:
             val = await _ans(prompt)
             if not val and answer_fn:
