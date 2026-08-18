@@ -114,89 +114,6 @@ def _salary_text(defaults: dict) -> str:
     return str(int(digits)) if digits else ""
 
 
-
-def _linkedin_url(data: dict, defaults: dict) -> str:
-    """Canonical LinkedIn URL from candidate data — never a wrong vanity from residual LLM."""
-    b = data.get("basics") or {}
-    candidates = [
-        b.get("linkedin"), b.get("linkedin_url"), b.get("linkedin_profile"),
-        defaults.get("linkedin"), defaults.get("linkedin_url"),
-        (data.get("profiles") or {}).get("linkedin") if isinstance(data.get("profiles"), dict) else None,
-        b.get("website"),
-    ]
-    for c in candidates:
-        s = str(c or "").strip()
-        if not s:
-            continue
-        if "linkedin.com" in s.lower():
-            if not s.startswith("http"):
-                s = "https://" + s.lstrip("/")
-            return s
-    return ""
-
-
-async def _apply_screening_radios(page, defaults: dict, r: dict) -> int:
-    """Employer-agnostic Ashby radios from screening_defaults (Volta visa, etc.).
-
-    Recorded n8n ticks do not transfer. Sponsorship / work-auth questions still must be answered
-    from HIS screening_defaults, not left blank and not invented by a panel.
-    """
-    n = 0
-    # require sponsorship / visa
-    need = str(
-        defaults.get("require sponsorship")
-        or defaults.get("visa sponsorship")
-        or defaults.get("require_sponsorship")
-        or defaults.get("needs_visa_sponsorship")
-        or "No"
-    ).strip().lower()
-    wants_sponsor = need in ("yes", "y", "true", "1")
-    if wants_sponsor:
-        patterns = [
-            r"Yes, I will require .* to sponsor",
-            r"^Yes\b.*sponsor",
-            r"I will require .* sponsorship",
-        ]
-    else:
-        patterns = [
-            r"No, I do not require sponsorship",
-            r"I do not require sponsorship to work",
-            r"^No\b.*sponsor",
-            r"do not require sponsorship",
-        ]
-    for pat in patterns:
-        try:
-            loc = page.get_by_role("radio", name=re.compile(pat, re.I))
-            if await loc.count() == 0:
-                continue
-            el = loc.first
-            if await el.is_visible() and not await el.is_checked():
-                await el.check(timeout=4000)
-                if await el.is_checked():
-                    _log(f"  screening radio: sponsorship={'yes' if wants_sponsor else 'no'}")
-                    r["filled"].append("tick:sponsorship")
-                    n += 1
-                    break
-        except Exception:
-            continue
-    # legally authorised to work → Yes when defaults say so
-    auth = str(defaults.get("legally authorised to work") or defaults.get("authorized_to_work") or "Yes").lower()
-    if auth in ("yes", "y", "true", "1"):
-        for pat in (r"Yes.*authori[sz]ed", r"^Yes$", r"I am authori[sz]ed"):
-            try:
-                loc = page.get_by_role("radio", name=re.compile(pat, re.I))
-                if await loc.count() and await loc.first.is_visible():
-                    if not await loc.first.is_checked():
-                        await loc.first.check(timeout=3000)
-                    if await loc.first.is_checked():
-                        r["filled"].append("tick:work_auth")
-                        n += 1
-                        break
-            except Exception:
-                continue
-    return n
-
-
 async def _fill_role(page, role: str, name_rx: str, value: str, exact: bool = False) -> bool:
     if not value:
         return False
@@ -300,13 +217,7 @@ async def _upload_files(page, resume_path: str, cover_path: str = "") -> list:
       2. set_input_files on input[type=file] INSIDE that scoped section only
       3. Page-wide empty inputs as last resort
     Success = input.files.length > 0 OR the zone no longer shows only the empty CTA.
-    
-
-    Contracts (source-checked by ashby.py --logic):
-      - attaches to the GROUP that asks for it, not input #0
-      - the filename is READ BACK off the page
-      - an input that already holds our file counts as attached
-"""
+    """
     filled = []
     want = []
     if resume_path and os.path.isfile(resume_path):
@@ -796,60 +707,9 @@ async def _tick_required(page, r: dict, log=_log) -> int:
     return done
 
 
-async def _page_text(page) -> str:
-    try:
-        body = await page.evaluate(
-            "() => (document.body && document.body.innerText || '').slice(0, 9000)"
-        ) or ""
-    except Exception:
-        body = ""
-    try:
-        extra = await page.evaluate(r"""() => {
-          const bits = [];
-          document.querySelectorAll(
-            '[role=dialog],[role=alertdialog],[class*="modal"],[class*="toast"],[class*="Toast"],[class*="banner"]'
-          ).forEach(el => {
-            const t = (el.innerText||'').replace(/\s+/g,' ').trim();
-            if (t) bits.push(t.slice(0, 500));
-          });
-          return bits.join(' | ');
-        }""") or ""
-        if extra:
-            body = body + "\n" + extra
-    except Exception:
-        pass
-    return body
-
-
-def _looks_submitted(body: str, url: str, submit_still: bool) -> bool:
-    if re.search(
-        r"thank you|thanks for applying|thanks for your (interest|application)|"
-        r"application (has been )?(submitted|received|sent)|successfully submitted|"
-        r"we (have )?received (your )?application|application received|"
-        r"congratulat|you(r)? application is (in|complete)|form sent|"
-        r"we will (be )?in touch|next steps",
-        body or "", re.I,
-    ):
-        return True
-    if re.search(r"success|confirm|thank|submitted|received", url or "", re.I):
-        return True
-    if (not submit_still) and re.search(
-        r"received|submitted|thank|in touch|application", body or "", re.I
-    ):
-        return True
-    return False
-
-
-async def _submit_still_visible(page) -> bool:
-    try:
-        return await page.get_by_role(
-            "button", name=re.compile(r"^\s*submit application\s*$", re.I)
-        ).count() > 0
-    except Exception:
-        return False
-
-
 async def _submit(page, r: dict) -> bool:
+    # A REQUIRED RESUME THAT NEVER ARRIVED IS A BLOCKER, not a detail. The screenshot showed an
+    # empty Resume* drop zone on a run whose log claimed the upload succeeded.
     if not any(str(x).startswith("upload:") for x in (r.get("filled") or [])):
         try:
             need = await page.locator("input[type=file]").count()
@@ -876,61 +736,31 @@ async def _submit(page, r: dict) -> bool:
         if await btn.count() == 0:
             _log("no Submit Application button found")
             return False
-        await btn.first.scroll_into_view_if_needed(timeout=3000)
         await btn.first.click(timeout=8000)
         _log("clicked Submit Application")
+        await page.wait_for_timeout(3000)
+        body = ""
         try:
-            await page.wait_for_load_state("networkidle", timeout=15000)
+            body = await page.evaluate("() => (document.body && document.body.innerText || '').slice(0,5000)") or ""
         except Exception:
             pass
-        await page.wait_for_timeout(2500)
-
-        body = await _page_text(page)
         url = page.url or ""
-        still = await _submit_still_visible(page)
-
-        if re.search(
-            r"is required|required field|please (complete|fix|fill|provide)|"
-            r"missing (required|entry)|cannot be empty|must (be|have)",
-            body, re.I,
-        ):
-            _log(f"submit blocked by validation: {body[:220]!r}")
-            r["submitted"] = False
-            r["stage"] = "blocked"
-            r["note"] = (r.get("note") or "") + " submit blocked by validation."
-            return False
-
-        ok = _looks_submitted(body, url, still)
-        if not ok:
-            await page.wait_for_timeout(3500)
-            body = await _page_text(page)
-            url = page.url or ""
-            still = await _submit_still_visible(page)
-            ok = _looks_submitted(body, url, still)
-
-        if not ok and not still:
-            if len(r.get("filled") or []) >= 15 and not re.search(
-                r"error|invalid|required", body[:800], re.I
-            ):
-                ok = True
-                _log("SUBMITTED — inferred (Submit gone, no validation, form was complete)")
-
+        ok = bool(re.search(
+            r"thank you|thanks for|application (has been )?(submitted|received|sent)|"
+            r"successfully submitted|we (have )?received|congratulat",
+            body, re.I)) or bool(re.search(r"success|confirm|thank", url, re.I))
         if ok:
             r["submitted"] = True
             r["stage"] = "submitted"
-            _log("SUBMITTED — site confirmed")
+            _log(f"SUBMITTED — site confirmed")
         else:
             r["submitted"] = False
             r["stage"] = "review"
-            _log(
-                f"submit clicked, confirmation unclear. "
-                f"submit_btn_still={still} url={url[:80]} body={body[:160]!r}"
-            )
+            _log(f"submit clicked, confirmation unclear. url={url[:80]}")
         return ok
     except Exception as e:
         _log(f"submit failed: {type(e).__name__}: {e}")
         return False
-
 
 
 async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
@@ -1004,39 +834,17 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
         email = b.get("email") or ""
         if await _fill_by_label(page, r"^e-?mail", email):
             r["filled"].append("email")
-        # LinkedIn — from candidate basics, NOT residual LLM (measured wrong vanity jev-vainsteins)
-        li = _linkedin_url(data, defaults)
-        if li:
-            if await _fill_role(page, "textbox", r"LinkedIn", li) or \
-               await _fill_by_label(page, r"linkedin", li):
-                r["filled"].append("linkedin")
-        else:
-            _log("  linkedin: no URL in candidate data")
-        # ONE OWNER for the phone rule (greenhouse.phone_national). Never type empty.
+        # ONE OWNER for the phone rule. This file had its own, and it produced '5785541545' —
+        # it stripped `+49 1` instead of `+49`, losing the leading 1 of the national number. The
+        # measured truth (his Workday recording, four attempts) is 1700000000.
         try:
             from greenhouse import phone_national as _natl
         except Exception:
-            try:
-                from flows.greenhouse import phone_national as _natl  # type: ignore
-            except Exception:
-                def _natl(x):  # noqa: E306
-                    return re.sub(r"[^\d]", "", str(x or ""))
-        phone_raw = (
-            str(b.get("phone") or "")
-            or str(defaults.get("phone") or "")
-            or str((data.get("basics") or {}).get("phone") or "")
-            or str((data.get("contact") or {}).get("phone") or "")
-        ).strip()
-        phone_nat = (_natl(phone_raw) if phone_raw else "") or re.sub(r"[^\d]", "", phone_raw)
-        # Drop pure country-code leftovers (too short to be a mobile)
-        if phone_nat and len(re.sub(r"\D", "", phone_nat)) < 7:
-            phone_nat = re.sub(r"\D", "", phone_raw)
-        if phone_nat:
-            if await _fill_role(page, "textbox", r"phone|mobile|tel", phone_nat) or \
-               await _fill_by_label(page, r"phone|mobile|tel", phone_nat):
-                r["filled"].append("phone")
-        else:
-            _log("  phone: no number in candidate data — leaving blank (not typing empty)")
+            from flows.greenhouse import phone_national as _natl      # type: ignore
+        phone = str(b.get("phone") or "")
+        phone_nat = _natl(phone) or re.sub(r"[^\d]", "", phone)
+        if await _fill_by_label(page, r"phone|mobile|tel", phone_nat or phone):
+            r["filled"].append("phone")
 
         # ---- location typeahead
         loc = b.get("location") or b.get("city") or ""
@@ -1050,10 +858,8 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
         except Exception:
             pass
         city = city or str((data.get("basics") or {}).get("country") or "").strip() \
-            or (loc.split(",")[-1].strip() if loc else "") or "Germany"
-        if not re.search(r"germany|deutschland", city, re.I):
-            city = "Germany"
-        if await _typeahead(page, city, "Germany"):
+            or (loc.split(",")[-1].strip() if loc else "")
+        if city and await _typeahead(page, city, city):
             r["filled"].append("location")
 
         # ---- salary / notice (from candidate.md — never invent)
@@ -1118,8 +924,6 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                 val = _notice_text(_defaults(data))
             elif re.search(r"expected yearly|salary|compensation", lab, re.I):
                 val = _salary_text(_defaults(data))
-            elif re.search(r"linkedin", lab, re.I):
-                val = _linkedin_url(data, defaults)
             else:
                 val = recorded_essay(lab) or await _ans(lab)
             if not val:
@@ -1132,7 +936,41 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
             if await _answer_text(page, re.escape(lab[:40]), val) or await _fill_by_label(page, re.escape(lab[:40]), val):
                 r["filled"].append(f"req:{lab[:24]}")
 
-        # ---- ticks + employer-agnostic screening (visa etc.)
+        blank = await _required_empty(page)
+        if blank:
+            _log(f"still required+empty after deterministic pass: {blank}")
+            r["unresolved"] = blank
+            # one LLM/human pass for leftovers only — never submit yet
+            for lab in blank[:5]:
+                val = ""
+                if answer_fn:
+                    try:
+                        val = str(await answer_fn(lab, [], data) or "")
+                    except Exception:
+                        pass
+                if not val and asker:
+                    try:
+                        val = str(await asker(lab) or "")
+                    except Exception:
+                        pass
+                if not val and ask:
+                    try:
+                        val = str(await ask.ask_human(f"Ashby form needs: {lab}") or "")
+                    except Exception:
+                        pass
+                if val:
+                    await _fill_by_label(page, re.escape(lab[:40]), val)
+                    r["filled"].append(f"asked:{lab[:20]}")
+
+        blank = await _required_empty(page)
+        r["unresolved"] = blank
+        if blank:
+            r["ok"] = True
+            r["stage"] = "paused"
+            r["note"] = f"Ashby filled {r['filled']}; still required: {blank}. Stopped before Submit."
+            _log(r["note"])
+            return r
+
         r["ok"] = True
         try:
             _t = await _tick_required(page, r)
@@ -1140,195 +978,6 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                 _log(f"  {_t} required box(es) ticked")
         except Exception as e:
             _log(f"  tick pass: {type(e).__name__}: {e}")
-        try:
-            _n = await _apply_screening_radios(page, defaults, r)
-            if _n:
-                _log(f"  {_n} screening radio(s) from candidate.md")
-        except Exception as e:
-            _log(f"  screening radios: {type(e).__name__}: {e}")
-
-        # ---- AUTONOMOUS LADDER (never pause for the human mid-form)
-        # 1) answer_fn / deterministic leftovers
-        # 2) 3-LLM escalate.panel (quorum) → act on the page
-        # 3) Telegram ask_human → type the answer → continue
-        # 4) repeat until empty or MAX_HEAL rounds, then Submit
-        # Stagehand stays for UNKNOWN ATS; Ashby stays on this adapter + escalate (faster).
-        MAX_HEAL = int(os.getenv("JHW_ASHBY_HEAL_ROUNDS", "5"))
-        for round_i in range(MAX_HEAL):
-            blank = await _required_empty(page)
-            r["unresolved"] = blank
-            if not blank:
-                break
-            _log(f"heal round {round_i+1}/{MAX_HEAL}: still required {blank}")
-
-            # (a) known short answers + answer_fn / asker for text boxes
-            for lab in list(blank)[:8]:
-                if re.search(r"resume|cv|upload", lab, re.I):
-                    continue
-                val = ""
-                if re.search(r"notice period|availability", lab, re.I):
-                    val = _notice_text(defaults)
-                elif re.search(r"expected yearly|salary|compensation", lab, re.I):
-                    val = _salary_text(defaults)
-                elif re.search(r"linkedin", lab, re.I):
-                    val = _linkedin_url(data, defaults)
-                elif re.search(r"phone|mobile|tel", lab, re.I):
-                    continue  # never invent a phone
-                elif re.search(r"sponsor|visa|authori[sz]ed to work|work eligibility", lab, re.I):
-                    await _apply_screening_radios(page, defaults, r)
-                    continue
-                if not val and answer_fn:
-                    try:
-                        val = str(await answer_fn(lab, [], data) or "")
-                    except Exception:
-                        val = ""
-                if val and not _STUB.match(str(val).strip()):
-                    if await _fill_by_label(page, re.escape(lab[:40]), val) or \
-                       await _fill_role(page, "textbox", re.escape(lab[:40]), val):
-                        r["filled"].append(f"heal:{lab[:20]}")
-                        continue
-
-            blank = await _required_empty(page)
-            if not blank:
-                break
-
-            # (b) 3-LLM consensus — one action per leftover control
-            try:
-                import escalate as ESC
-                controls = [{"name": x, "role": "textbox", "required": True} for x in blank[:8]]
-                act = await ESC.next_action(
-                    reason=(
-                        "Ashby application still has required fields empty. "
-                        "Propose ONE safe action (click/check/type) using only candidate facts. "
-                        "Fields: " + "; ".join(blank[:8])
-                    ),
-                    controls=controls,
-                )
-                verb = (act.get("verb") or "").lower()
-                _log(f"  escalate: verb={verb} why={str(act.get('why') or '')[:80]}")
-                if verb in ("click", "select", "check") and act.get("name"):
-                    nm = str(act["name"])
-                    done = False
-                    for role in ("radio", "checkbox", "button", "option"):
-                        loc = page.get_by_role(role, name=re.compile(re.escape(nm[:80]), re.I))
-                        if await loc.count() == 0:
-                            continue
-                        el = loc.first
-                        try:
-                            if role in ("radio", "checkbox"):
-                                await el.check(timeout=4000)
-                            else:
-                                await el.click(timeout=4000)
-                            r["filled"].append(f"esc:{nm[:20]}")
-                            done = True
-                            break
-                        except Exception:
-                            continue
-                    if not done and act.get("value"):
-                        await _fill_by_label(page, re.escape(nm[:40]), str(act["value"]))
-                elif verb in ("type", "fill", "set") and act.get("value"):
-                    lab = str(act.get("name") or act.get("target") or blank[0])
-                    val = str(act.get("value"))
-                    if not _STUB.match(val.strip()):
-                        if await _fill_by_label(page, re.escape(lab[:40]), val):
-                            r["filled"].append(f"esc-fill:{lab[:16]}")
-                elif verb == "ask_human" or verb in ("give_up", ""):
-                    # (c) Telegram — answer is typed, loop continues (NOT a stop)
-                    for lab in blank[:3]:
-                        q = str(act.get("question") or f"Ashby required field: {lab}")
-                        val = ""
-                        if asker:
-                            try:
-                                val = str(await asker(q) or "")
-                            except Exception:
-                                val = ""
-                        if not val and ask:
-                            try:
-                                val = str(await ask.ask_human(q) or "")
-                            except Exception:
-                                val = ""
-                        if not val:
-                            continue
-                        # sponsorship answers often "No"
-                        if re.search(r"sponsor|visa", lab, re.I):
-                            await _apply_screening_radios(page, {**defaults, "require sponsorship": val}, r)
-                        elif await _fill_by_label(page, re.escape(lab[:40]), val) or \
-                             await _fill_role(page, "textbox", re.escape(lab[:40]), val):
-                            r["filled"].append(f"tg:{lab[:20]}")
-                        # try radio by answer text
-                        try:
-                            loc = page.get_by_role("radio", name=re.compile(re.escape(val[:60]), re.I))
-                            if await loc.count():
-                                await loc.first.check(timeout=4000)
-                                r["filled"].append(f"tg-radio:{val[:16]}")
-                        except Exception:
-                            pass
-            except Exception as e:
-                _log(f"  escalate/telegram: {type(e).__name__}: {str(e).splitlines()[0][:100]}")
-                # Telegram direct if escalate import failed
-                for lab in blank[:3]:
-                    val = ""
-                    if asker:
-                        try:
-                            val = str(await asker(f"Ashby form needs: {lab}") or "")
-                        except Exception:
-                            val = ""
-                    if not val and ask:
-                        try:
-                            val = str(await ask.ask_human(f"Ashby form needs: {lab}") or "")
-                        except Exception:
-                            val = ""
-                    if val and await _fill_by_label(page, re.escape(lab[:40]), val):
-                        r["filled"].append(f"tg:{lab[:20]}")
-
-        blank = await _required_empty(page)
-        r["unresolved"] = blank
-        if blank:
-            # Last resort: do NOT invent — log and still attempt submit only if non-critical
-            # But required empty must not become a silent false SUBMITTED.
-            _log(f"heal exhausted; still required: {blank} — asking Telegram one final time")
-            for lab in blank[:5]:
-                val = ""
-                if asker:
-                    try:
-                        val = str(await asker(f"FINAL — Ashby still requires: {lab}") or "")
-                    except Exception:
-                        val = ""
-                if not val and ask:
-                    try:
-                        val = str(await ask.ask_human(f"FINAL — Ashby still requires: {lab}") or "")
-                    except Exception:
-                        val = ""
-                if not val:
-                    continue
-                if re.search(r"sponsor|visa", lab, re.I):
-                    await _apply_screening_radios(page, {**defaults, "require sponsorship": val}, r)
-                else:
-                    try:
-                        loc = page.get_by_role("radio", name=re.compile(re.escape(val[:60]), re.I))
-                        if await loc.count():
-                            await loc.first.check(timeout=4000)
-                            r["filled"].append(f"tg-final:{val[:16]}")
-                            continue
-                    except Exception:
-                        pass
-                    if await _fill_by_label(page, re.escape(lab[:40]), val):
-                        r["filled"].append(f"tg-final:{lab[:16]}")
-            blank = await _required_empty(page)
-            r["unresolved"] = blank
-
-        if blank:
-            # Still not empty after Telegram: cannot honestly submit
-            r["ok"] = True
-            r["stage"] = "blocked"
-            r["submitted"] = False
-            r["note"] = (
-                f"Ashby filled {r['filled']}; required still empty after heal+Telegram: {blank}. "
-                f"Not submitting a half form."
-            )
-            _log(r["note"])
-            return r
-
         await _submit(page, r)
         if not r.get("submitted"):
             r["stage"] = r.get("stage") or "review"
