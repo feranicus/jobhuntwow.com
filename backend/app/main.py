@@ -132,11 +132,11 @@ async def models(user: str = Depends(require_user)):
     return d
 
 @app.get("/api/connections")
-def connections():
+def connections(user: str = Depends(require_user)):
     return store.get_public()
 
 @app.post("/api/connections")
-def set_connection(req: ConnReq):
+def set_connection(req: ConnReq, user: str = Depends(require_user)):
     patch = dict(req.patch)
     # derive a "connected" flag from meaningful fields, keep secrets server-side
     if req.section == "telegram" and patch.get("bot_token"):
@@ -180,11 +180,11 @@ async def chat(req: ChatReq, request: Request, user: str = Depends(require_user)
 
 # ---------- job scout + apply (v0.1 stubs, real agent plugs in) ----------
 @app.post("/api/scout")
-def do_scout(req: ScoutReq):
+def do_scout(req: ScoutReq, user: str = Depends(require_user)):
     return scout.search(req.query, req.location, req.remote)
 
 @app.post("/api/apply")
-def do_apply(req: ApplyReq):
+def do_apply(req: ApplyReq, user: str = Depends(require_user)):
     if not req.confirm:
         return {"status": "needs_confirmation",
                 "message": "Human gate: confirm before the Apply Driver submits.",

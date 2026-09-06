@@ -33,14 +33,21 @@ import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import documents, jd_ingest, resume_consensus as RC
 from .settings import DATA_DIR
+from .auth import require_user
 
-router = APIRouter(prefix="/api/electronic", tags=["electronic"])
+# EVERY ROUTE HERE REQUIRES A SESSION (2026-09-06). Until today this whole API was PUBLIC and keyed
+# on a caller-supplied `email` query/body field: anyone on the internet could list any user's jobs,
+# download their tailored CV and cover letter (name, address, phone, employment history) by
+# naming their email, and run the four-model tailor chain on our DigitalOcean key without limit.
+# The identity now comes from the session cookie and the caller's `email` field is IGNORED.
+router = APIRouter(prefix="/api/electronic", tags=["electronic"],
+                   dependencies=[Depends(require_user)])
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
@@ -357,7 +364,7 @@ async def profile_upload(file: UploadFile = File(...)):
 
 
 @router.post("/evidence/upload")
-async def evidence_upload(email: str = Query(...), file: UploadFile = File(...)):
+async def evidence_upload(email: str = Depends(require_user), file: UploadFile = File(...)):
     """A supporting artifact: project portfolio, case study, published article, reference letter.
 
     Same extraction path as the profile (PDF/DOCX/TXT/MD). The text is returned to the browser and
@@ -388,7 +395,7 @@ async def _fetch_link(url: str) -> dict:
 
 
 @router.post("/photo/upload")
-async def photo_upload(email: str = Query(...), file: UploadFile = File(...)):
+async def photo_upload(email: str = Depends(require_user), file: UploadFile = File(...)):
     """Store a CV photo for this user. Optional by design.
 
     A photo is customary on a German/Austrian/Swiss CV and is a liability in US/UK screening
@@ -429,8 +436,10 @@ async def parse_jd(req: JDReq):
 
 
 @router.post("/generate")
-async def generate(req: GenerateReq):
+async def generate(req: GenerateReq, _user: str = Depends(require_user)):
     """Tailor resume + cover letter to the JD and write DOCX + PDF for both."""
+    if isinstance(_user, str):      # FastAPI injected the session identity: it wins over the body.
+        req.email = _user           # (a direct in-process call gets the raw Depends marker; tests do that)
     t0 = time.time()
 
     jd = req.jd
@@ -601,13 +610,15 @@ class ReviseReq(BaseModel):
 
 
 @router.post("/revise")
-async def revise(req: ReviseReq):
+async def revise(req: ReviseReq, _user: str = Depends(require_user)):
     """Iterate on documents already built: 'add Canonical back', 'shorter', 'more formal'.
 
     Editing the stored STRUCT (not regenerating from the JD) means the tailoring survives and the
     change is cheap. The truth rules still apply: the model may only rearrange, trim or reword
     what is already there.
     """
+    if isinstance(_user, str):      # FastAPI injected the session identity: it wins over the body.
+        req.email = _user           # (a direct in-process call gets the raw Depends marker; tests do that)
     outdir = job_dir(req.email, req.job_id)
     tp = os.path.join(outdir, "tailored.json")
     if not os.path.isfile(tp):
@@ -705,13 +716,15 @@ class AppliedReq(BaseModel):
 
 
 @router.post("/applied")
-def mark_applied(req: AppliedReq):
+def mark_applied(req: AppliedReq, _user: str = Depends(require_user)):
     """The local apply engine reports what it actually submitted, so the Pipeline is real.
 
     Writes into the job's own manifest when we know the job_id (documents were generated here),
     otherwise creates a stub record - an application driven from a pasted URL still belongs in
     the funnel.
     """
+    if isinstance(_user, str):      # FastAPI injected the session identity: it wins over the body.
+        req.email = _user           # (a direct in-process call gets the raw Depends marker; tests do that)
     d = user_dir(req.email)
     os.makedirs(d, exist_ok=True)
     jid = req.job_id or _new_job_id(req.company or "", req.title or "")
@@ -738,7 +751,7 @@ def mark_applied(req: AppliedReq):
 
 
 @router.get("/jobs")
-def list_jobs(email: str = Query(...)):
+def list_jobs(email: str = Depends(require_user)):
     """Every job this user has generated, newest first."""
     base = user_dir(email)
     if not os.path.isdir(base):
@@ -766,7 +779,7 @@ def list_jobs(email: str = Query(...)):
 
 
 @router.get("/artifacts/{job_id}")
-def artifacts(job_id: str, email: str = Query(...)):
+def artifacts(job_id: str, email: str = Depends(require_user)):
     """List the generated files for one job (with sizes + download URLs)."""
     d = job_dir(email, job_id)
     if not os.path.isdir(d):
@@ -790,7 +803,7 @@ def artifacts(job_id: str, email: str = Query(...)):
 
 
 @router.get("/artifacts/{job_id}/{filename}")
-def artifact(job_id: str, filename: str, email: str = Query(...)):
+def artifact(job_id: str, filename: str, email: str = Depends(require_user)):
     """Download one generated file. Path traversal is impossible: the name is allow-listed."""
     if not FILE_RE.match(filename or "") or filename not in ALLOWED_FILES:
         raise HTTPException(status_code=400, detail="unknown artifact")

@@ -18,8 +18,9 @@ def _call(method, path, body=None, cookie=None):
     if cookie:
         hdrs.append((b"cookie", cookie.encode()))
     raw = json.dumps(body).encode() if body is not None else b""
+    path, _, qs = path.partition("?")
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
-             "scheme": "https", "path": path, "raw_path": path.encode(), "query_string": b"",
+             "scheme": "https", "path": path, "raw_path": path.encode(), "query_string": qs.encode(),
              "headers": hdrs, "client": ("203.0.113.9", 1234), "server": ("jobhuntwow.com", 443)}
     out = {"status": None, "body": b""}
     sent = [False]
@@ -88,6 +89,58 @@ def test_one_allowlist_for_both_doors():
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "backend", "app", "proxy.py"), encoding="utf-8").read()
     assert "JHW_PROXY_ALLOW" not in src.split("def _allowed_models")[1].split("\n\n")[0]
+
+
+# The PUBLIC surface, enumerated and pinned. Anything not listed here must answer 401 to an
+# anonymous caller. Derived from the live app's route table, so a new route is caught the day it
+# is added without a session dependency -- the class of defect that made /api/chat, /api/models
+# and the whole /api/electronic tree (any user's CV by naming their email) public for weeks.
+PUBLIC_OK = {("GET", "/api/health"), ("POST", "/api/auth/signup"), ("POST", "/api/auth/login"),
+             ("POST", "/api/auth/logout"),      # clearing a cookie needs no session
+             ("POST", "/api/auth/verify")}
+
+
+def test_every_api_route_is_locked_except_the_named_public_ones():
+    from fastapi.routing import APIRoute
+    leaks = []
+    for r in app.routes:
+        if not isinstance(r, APIRoute) or not r.path.startswith(("/api/", "/v1/")):
+            continue
+        for m in r.methods:
+            if (m, r.path) in PUBLIC_OK or m in ("HEAD", "OPTIONS"):
+                continue
+            path = r.path.replace("{job_id}", "x").replace("{filename}", "x.pdf")
+            st = _call(m, path, {} if m in ("POST", "PUT") else None)["status"]
+            if st != 401 and not (r.path.startswith("/v1/") and st in (401, 503)):
+                leaks.append((m, r.path, st))
+    assert not leaks, "anonymous callers reach: %s" % leaks
+
+
+def test_the_electronic_api_ignores_the_callers_email(monkeypatch):
+    """The old contract let the CALLER name whose files to list. Now the session decides."""
+    r = _call("GET", "/api/electronic/jobs?email=victim%40example.com", cookie=_session())
+    assert r["status"] == 200, r["body"][:200]
+    assert b"victim" not in r["body"]
+
+def test_generate_binds_the_body_email_to_the_session(monkeypatch):
+    """Through FastAPI the caller's `email` in the BODY is replaced by the session identity, so a
+    logged-in user cannot write into somebody else's directory. A direct in-process call (the
+    consensus suite does that) still works, which is what the staging gate caught on 2026-09-06."""
+    from app import electronic as E
+    seen = {}
+    # Stop right after the binding: job_dir is the first thing generate() touches with req.email.
+    def fake_job_dir(email, jid):
+        seen["email"] = email; raise RuntimeError("stop-here")
+    monkeypatch.setattr(E, "job_dir", fake_job_dir)
+    # a jd dict with text and a profile get past the input validation and reach job_dir().
+    try:
+        r = _call("POST", "/api/electronic/generate",
+                  {"email": "victim@example.com", "jd": {"text": "Senior engineer, Berlin", "company": "X",
+                                                     "title": "Engineer"}, "profile": "Ada Lovelace. Senior engineer at Acme GmbH 2018-2024: led a 12-person platform team, cut release time from 3 weeks to 2 days. Before that, backend engineer at Beta AG."},
+                  cookie=_session())
+    except RuntimeError as e:          # our own stop marker, re-raised by the ASGI server
+        assert "stop-here" in str(e); r = {"status": "stopped", "body": b""}
+    assert seen.get("email") == "wallet-test@example.com", (seen, r["status"], r["body"][:120])
 
 
 if __name__ == "__main__":
