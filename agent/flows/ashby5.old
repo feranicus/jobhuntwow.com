@@ -135,155 +135,36 @@ def _linkedin_url(data: dict, defaults: dict) -> str:
     return ""
 
 
-async def _answer_yes_no_near(page, question_rx: str, prefer_yes: bool, tag: str, r: dict) -> bool:
-    """Click Yes/No for Ashby custom toggles (buttons, radios, or labeled controls).
-
-    Measured on Cohere 2026-08-18: 'Are you currently based in Germany?' and the 15+ years
-    VP question use side-by-side Yes/No *buttons*, not classic role=radio with long names.
-    role-based matching alone fails; climb from the question text and click the literal Yes/No.
-    """
-    want = "Yes" if prefer_yes else "No"
-    # --- 1) DOM climb from question text (most reliable for Ashby) ---
-    try:
-        ok = await page.evaluate(
-            """({qRx, want}) => {
-              const re = new RegExp(qRx, 'i');
-              const nodes = [...document.querySelectorAll(
-                'label,legend,p,div,span,h1,h2,h3,h4,li,td,th,strong,b'
-              )];
-              const q = nodes.find(el => {
-                const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-                return t.length > 8 && t.length < 220 && re.test(t);
-              });
-              if (!q) return {ok:false, why:'no-question'};
-              let root = q;
-              for (let depth = 0; depth < 10 && root; depth++) {
-                const candidates = [
-                  ...root.querySelectorAll('button,[role=button],input[type=radio],label,[role=radio]')
-                ];
-                for (const el of candidates) {
-                  const t = (el.innerText || el.getAttribute('aria-label') || el.value || '')
-                    .replace(/\\s+/g, ' ').trim();
-                  if (!new RegExp('^' + want + '$', 'i').test(t)) continue;
-                  // skip if this control belongs to a different long question in a nested sibling
-                  try {
-                    el.scrollIntoView({block:'center'});
-                    el.click();
-                    // mark selected state when possible
-                    if (el.tagName === 'INPUT' && el.type === 'radio') {
-                      el.checked = true;
-                      el.dispatchEvent(new Event('change', {bubbles:true}));
-                    }
-                    return {ok:true, why:'dom-click', depth, text:t};
-                  } catch (e) {
-                    return {ok:false, why:'click-err:'+e};
-                  }
-                }
-                root = root.parentElement;
-              }
-              return {ok:false, why:'no-yesno-under-question'};
-            }""",
-            {"qRx": question_rx, "want": want},
-        )
-        if ok and ok.get("ok"):
-            _log(f"  yes/no {tag}: {want} (dom {ok.get('why')})")
-            r["filled"].append(f"tick:{tag}")
-            await page.wait_for_timeout(400)
-            return True
-        if ok and ok.get("why"):
-            _log(f"  yes/no {tag}: DOM miss ({ok.get('why')})")
-    except Exception as e:
-        _log(f"  yes/no {tag}: DOM eval error {type(e).__name__}")
-
-    # --- 2) Playwright role=radio / button near get_by_text ---
-    try:
-        q = page.get_by_text(re.compile(question_rx, re.I))
-        for qi in range(min(await q.count(), 3)):
-            node = q.nth(qi)
-            if not await node.is_visible():
-                continue
-            for role in ("radio", "button"):
-                try:
-                    loc = node.locator("xpath=ancestor-or-self::*[position()<=8]").get_by_role(
-                        role, name=re.compile(rf"^\\s*{want}\\s*$", re.I)
-                    )
-                    if await loc.count() == 0:
-                        # broader: following siblings container
-                        loc = node.locator("xpath=following::*[self::button or @role='button' or @role='radio' or self::label][1]")
-                    if await loc.count() == 0:
-                        continue
-                    el = loc.first
-                    if not await el.is_visible():
-                        continue
-                    if role == "radio":
-                        try:
-                            await el.check(timeout=4000)
-                        except Exception:
-                            await el.click(timeout=4000)
-                    else:
-                        await el.click(timeout=4000)
-                    _log(f"  yes/no {tag}: {want} (pw {role})")
-                    r["filled"].append(f"tick:{tag}")
-                    return True
-                except Exception:
-                    continue
-    except Exception:
-        pass
-
-    # --- 3) Sponsorship-only: Yes/No radio whose ancestor text contains 'sponsor' ---
-    try:
-        if re.search(r"sponsor", question_rx, re.I):
-            radios = page.get_by_role("radio", name=re.compile(rf"^\\s*{want}\\s*$", re.I))
-            for i in range(min(await radios.count(), 8)):
-                el = radios.nth(i)
-                if not await el.is_visible():
-                    continue
-                ctx = await el.evaluate("""(el) => {
-                  let n = el, t = '';
-                  for (let i = 0; i < 5 && n; i++) { t += ' ' + (n.innerText||''); n = n.parentElement; }
-                  return t;
-                }""") or ""
-                if re.search(r"sponsor", ctx, re.I):
-                    if not await el.is_checked():
-                        await el.check(timeout=4000)
-                    if await el.is_checked():
-                        _log(f"  yes/no {tag}: {want} (sponsor context)")
-                        r["filled"].append(f"tick:{tag}")
-                        return True
-    except Exception:
-        pass
-    return False
-
-
 async def _apply_screening_radios(page, defaults: dict, r: dict) -> int:
-    """Employer-agnostic Ashby Yes/No from screening_defaults + career facts.
+    """Employer-agnostic Ashby radios from screening_defaults (Volta visa, etc.).
 
-    Cohere (and many Ashby forms) use short Yes/No radios or buttons under long questions.
-    Recorded n8n ticks do not transfer. Never leave required Yes/No blank.
+    Recorded n8n ticks do not transfer. Sponsorship / work-auth questions still must be answered
+    from HIS screening_defaults, not left blank and not invented by a panel.
     """
     n = 0
-    # require sponsorship / visa → No (EU work auth)
+    # require sponsorship / visa
     need = str(
         defaults.get("require sponsorship")
         or defaults.get("visa sponsorship")
         or defaults.get("require_sponsorship")
-        or defaults.get("requires_visa_sponsorship")
         or defaults.get("needs_visa_sponsorship")
         or "No"
     ).strip().lower()
     wants_sponsor = need in ("yes", "y", "true", "1")
-    # Long-label radios first (Volta-style)
     if wants_sponsor:
-        long_pats = [r"Yes, I will require .* to sponsor", r"^Yes\b.*sponsor", r"I will require .* sponsorship"]
+        patterns = [
+            r"Yes, I will require .* to sponsor",
+            r"^Yes\b.*sponsor",
+            r"I will require .* sponsorship",
+        ]
     else:
-        long_pats = [
+        patterns = [
             r"No, I do not require sponsorship",
             r"I do not require sponsorship to work",
             r"^No\b.*sponsor",
             r"do not require sponsorship",
         ]
-    hit = False
-    for pat in long_pats:
+    for pat in patterns:
         try:
             loc = page.get_by_role("radio", name=re.compile(pat, re.I))
             if await loc.count() == 0:
@@ -291,33 +172,16 @@ async def _apply_screening_radios(page, defaults: dict, r: dict) -> int:
             el = loc.first
             if await el.is_visible() and not await el.is_checked():
                 await el.check(timeout=4000)
-            if await el.is_visible() and await el.is_checked():
-                _log(f"  screening radio: sponsorship={'yes' if wants_sponsor else 'no'}")
-                r["filled"].append("tick:sponsorship")
-                n += 1
-                hit = True
-                break
+                if await el.is_checked():
+                    _log(f"  screening radio: sponsorship={'yes' if wants_sponsor else 'no'}")
+                    r["filled"].append("tick:sponsorship")
+                    n += 1
+                    break
         except Exception:
             continue
-    if not hit:
-        if await _answer_yes_no_near(
-            page,
-            r"require sponsorship|visa sponsorship|sponsor.*work",
-            prefer_yes=wants_sponsor,
-            tag="sponsorship",
-            r=r,
-        ):
-            n += 1
-
-    # authorized to work → Yes
-    auth = str(
-        defaults.get("legally authorised to work")
-        or defaults.get("legally authorized to work")
-        or defaults.get("authorized_to_work")
-        or "Yes"
-    ).lower()
+    # legally authorised to work → Yes when defaults say so
+    auth = str(defaults.get("legally authorised to work") or defaults.get("authorized_to_work") or "Yes").lower()
     if auth in ("yes", "y", "true", "1"):
-        hit = False
         for pat in (r"Yes.*authori[sz]ed", r"^Yes$", r"I am authori[sz]ed"):
             try:
                 loc = page.get_by_role("radio", name=re.compile(pat, re.I))
@@ -327,40 +191,9 @@ async def _apply_screening_radios(page, defaults: dict, r: dict) -> int:
                     if await loc.first.is_checked():
                         r["filled"].append("tick:work_auth")
                         n += 1
-                        hit = True
                         break
             except Exception:
                 continue
-        if not hit:
-            if await _answer_yes_no_near(
-                page,
-                r"authori[sz]ed to work|work in the country you currently reside",
-                prefer_yes=True,
-                tag="work_auth",
-                r=r,
-            ):
-                n += 1
-
-    # based in Germany → Yes (candidate lives in Friedberg, Hessen)
-    if await _answer_yes_no_near(
-        page,
-        r"based in Germany|currently based in Germany|reside in Germany",
-        prefer_yes=True,
-        tag="based_germany",
-        r=r,
-    ):
-        n += 1
-
-    # 15+ years VP / enterprise sales experience → Yes for this profile (20+ years, director/VP-level)
-    if await _answer_yes_no_near(
-        page,
-        r"15\+?\s*years|VP level experience|enterprise technology sales",
-        prefer_yes=True,
-        tag="vp_experience",
-        r=r,
-    ):
-        n += 1
-
     return n
 
 
@@ -566,19 +399,6 @@ async def _upload_files(page, resume_path: str, cover_path: str = "") -> list:
         base = os.path.basename(path)
         placed = False
         section = await _section_for(kind, exact_rx, loose_rx)
-        # Cover must not overwrite Resume*. If the only zone is Resume*, skip cover.
-        if kind == "cover_letter" and section is not None:
-            try:
-                stx = (await section.inner_text())[:200]
-                if re.search(r"\bResume\b", stx, re.I) and not re.search(r"cover\s*letter", stx, re.I):
-                    _log("  skipping cover_letter — resolved section is Resume* (would overwrite CV)")
-                    continue
-            except Exception:
-                pass
-        if kind == "cover_letter" and section is None:
-            # no Cover Letter field on this form (Cohere etc.) — do not fall back to Resume
-            _log("  skipping cover_letter — no distinct Cover Letter field on page")
-            continue
 
         # --- 1) filechooser via Upload File button inside section (or page) ---
         try:
@@ -1187,31 +1007,13 @@ async def _submit(page, r: dict) -> bool:
         body = await _page_text(page)
         url = page.url or ""
         still = await _submit_still_visible(page)
-        # Ashby red banner can sit outside the first body slice — pull it explicitly
-        try:
-            val_txt = await page.evaluate("""() => {
-              const bits = [];
-              for (const el of document.querySelectorAll('div,section,li,p,h1,h2,h3,span')) {
-                const t = (el.innerText || '').trim();
-                if (!t) continue;
-                if (/form needs corrections|Missing entry for required/i.test(t) && t.length < 600) {
-                  bits.push(t);
-                }
-              }
-              return bits.slice(0, 6).join('\n');
-            }""") or ""
-            if val_txt.strip():
-                body = val_txt + "\n" + (body or "")
-        except Exception:
-            pass
 
         if re.search(
-            r"Missing entry for required field|form needs corrections|"
-            r"required field.*(missing|empty)|please (complete|fix|fill) (the |all )?required|"
-            r"cannot be empty",
+            r"is required|required field|please (complete|fix|fill|provide)|"
+            r"missing (required|entry)|cannot be empty|must (be|have)",
             body, re.I,
         ):
-            _log(f"submit blocked by validation: {body[:280]!r}")
+            _log(f"submit blocked by validation: {body[:220]!r}")
             r["submitted"] = False
             r["stage"] = "blocked"
             r["note"] = (r.get("note") or "") + " submit blocked by validation."
@@ -1440,23 +1242,13 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
             except Exception:
                 def _natl(x):  # noqa: E306
                     return re.sub(r"[^\d]", "", str(x or ""))
-        # Prefer phone_national (form-safe). Wrong spaced phone produced 1578551545.
-        phone_nat = (
-            str(b.get("phone_national") or "")
-            or str(defaults.get("phone_national") or "")
-            or str((data.get("contact") or {}).get("phone_national") or "")
-        ).strip()
         phone_raw = (
             str(b.get("phone") or "")
             or str(defaults.get("phone") or "")
             or str((data.get("basics") or {}).get("phone") or "")
             or str((data.get("contact") or {}).get("phone") or "")
         ).strip()
-        if not phone_nat and phone_raw:
-            phone_nat = (_natl(phone_raw) if phone_raw else "") or re.sub(r"[^\d]", "", phone_raw)
-        phone_nat = re.sub(r"\D", "", phone_nat or "")
-        if phone_nat.startswith("49") and len(phone_nat) > 11:
-            phone_nat = phone_nat[2:]
+        phone_nat = (_natl(phone_raw) if phone_raw else "") or re.sub(r"[^\d]", "", phone_raw)
         # Drop pure country-code leftovers (too short to be a mobile)
         if phone_nat and len(re.sub(r"\D", "", phone_nat)) < 7:
             phone_nat = re.sub(r"\D", "", phone_raw)
@@ -1626,7 +1418,7 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                     val = _linkedin_url(data, defaults)
                 elif re.search(r"phone|mobile|tel", lab, re.I):
                     continue  # never invent a phone
-                elif re.search(r"sponsor|visa|authori[sz]ed to work|work eligibility|based in Germany|15\+?\s*years|VP level|enterprise technology sales", lab, re.I):
+                elif re.search(r"sponsor|visa|authori[sz]ed to work|work eligibility", lab, re.I):
                     await _apply_screening_radios(page, defaults, r)
                     continue
                 if not val and answer_fn:
@@ -1791,13 +1583,10 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
             await _submit(page, r)
             if r.get("submitted"):
                 break
-            # Recover on explicit blocked OR on review with a validation banner still present
+            if r.get("stage") != "blocked":
+                break
             body = await _page_text(page)
             missing = _validation_missing(body)
-            if r.get("stage") != "blocked" and not missing:
-                break
-            if not missing and r.get("stage") == "blocked":
-                missing = await _required_empty(page)
             if not missing:
                 # also re-scan required empty
                 missing = await _required_empty(page)
@@ -1820,91 +1609,6 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                     continue
                 if re.search(r"years of experience|account executive", lab, re.I):
                     await _answer_common_ashby_questions(page, data, defaults, url, r)
-                    continue
-                # Cohere-style required Yes/No — MUST verify click; else escalate / Telegram
-                yn_handled = False
-                if re.search(r"sponsor|visa", lab, re.I):
-                    yn_handled = await _answer_yes_no_near(
-                        page, r"require sponsorship|visa sponsorship|sponsor", False, "sponsorship", r
-                    ) or await _apply_screening_radios(page, defaults, r) > 0
-                elif re.search(r"based in Germany|currently based", lab, re.I):
-                    yn_handled = await _answer_yes_no_near(
-                        page, r"based in Germany|currently based in Germany", True, "based_germany", r
-                    )
-                elif re.search(r"15\+?\s*years|VP level|enterprise technology sales", lab, re.I):
-                    yn_handled = await _answer_yes_no_near(
-                        page, r"15\+?\s*years|VP level experience|enterprise technology sales", True, "vp_experience", r
-                    )
-                elif re.search(r"authori[sz]ed to work", lab, re.I):
-                    yn_handled = await _answer_yes_no_near(
-                        page, r"authori[sz]ed to work|work in the country you currently reside", True, "work_auth", r
-                    ) or await _apply_screening_radios(page, defaults, r) > 0
-                if yn_handled:
-                    continue
-                # Still missing closed Yes/No or free text → 3-LLM then Telegram (never silent exit)
-                val = ""
-                if re.search(r"based in Germany|currently based", lab, re.I):
-                    val = "Yes"
-                elif re.search(r"15\+?\s*years|VP level|enterprise technology sales", lab, re.I):
-                    val = "Yes"
-                elif re.search(r"sponsor|visa", lab, re.I):
-                    val = "No"
-                if not val and answer_fn:
-                    try:
-                        val = str(await answer_fn(lab, ["Yes", "No"], data) or "")
-                    except Exception:
-                        val = ""
-                if not val:
-                    try:
-                        import escalate as ESC
-                        act = await ESC.next_action(
-                            reason=f"Ashby required closed question unanswered: {lab}",
-                            controls=[{"name": lab, "role": "radio", "required": True, "options": ["Yes", "No"]}],
-                            page_url=url,
-                            candidate=data,
-                        )
-                        if act and act.get("value"):
-                            val = str(act.get("value"))
-                    except Exception as e:
-                        _log(f"  escalate miss: {type(e).__name__}: {e}")
-                if not val and asker:
-                    try:
-                        val = str(await asker(lab) or "")
-                    except Exception:
-                        val = ""
-                if not val and ask:
-                    try:
-                        val = str(await ask.ask_human(f"Ashby required: {lab} (Yes/No or short answer)") or "")
-                    except Exception:
-                        val = ""
-                if not val:
-                    _log(f"  still cannot answer {lab[:60]!r} — leaving for next recovery round")
-                    continue
-                prefer_yes = str(val).strip().lower() in ("yes", "y", "true", "1")
-                if re.search(r"yes|no", str(val), re.I) or re.search(
-                    r"based in|sponsor|15\+|VP level|authori", lab, re.I
-                ):
-                    ok = await _answer_yes_no_near(
-                        page, re.escape(lab[:50]), prefer_yes, f"esc:{lab[:12]}", r
-                    )
-                    if ok:
-                        continue
-                # last resort: try clicking literal value as radio/button name
-                try:
-                    loc = page.get_by_role("radio", name=re.compile(re.escape(str(val)[:40]), re.I))
-                    if await loc.count():
-                        await loc.first.check(timeout=4000)
-                        r["filled"].append(f"esc-radio:{val[:16]}")
-                        continue
-                    loc = page.get_by_role("button", name=re.compile(rf"^\s*{re.escape(str(val)[:20])}\s*$", re.I))
-                    if await loc.count():
-                        await loc.first.click(timeout=4000)
-                        r["filled"].append(f"esc-btn:{val[:16]}")
-                        continue
-                except Exception:
-                    pass
-                if await _fill_by_label(page, re.escape(lab[:40]), val):
-                    r["filled"].append(f"esc-fill:{lab[:16]}")
                     continue
                 val = ""
                 if re.search(r"github", lab, re.I):
@@ -1947,93 +1651,6 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
             # reset stage so next _submit can run
             r["stage"] = "review"
             r["submitted"] = False
-
-        # Final pass: red-banner leftovers → deterministic Yes/No, then escalate, then Telegram
-        if not r.get("submitted"):
-            try:
-                body = await _page_text(page)
-                leftover = _validation_missing(body) or []
-                if not leftover:
-                    leftover = await _required_empty(page)
-                for lab in list(leftover or [])[:6]:
-                    prefer = None
-                    if re.search(r"based in Germany|currently based", lab, re.I):
-                        prefer = True
-                        qrx = r"based in Germany|currently based in Germany"
-                        tag = "based_germany"
-                    elif re.search(r"15\+?\s*years|VP level|enterprise technology sales", lab, re.I):
-                        prefer = True
-                        qrx = r"15\+?\s*years|VP level experience|enterprise technology sales"
-                        tag = "vp_experience"
-                    elif re.search(r"sponsor|visa", lab, re.I):
-                        prefer = False
-                        qrx = r"require sponsorship|visa sponsorship|sponsor"
-                        tag = "sponsorship"
-                    elif re.search(r"authori[sz]ed to work", lab, re.I):
-                        prefer = True
-                        qrx = r"authori[sz]ed to work|work in the country you currently reside"
-                        tag = "work_auth"
-                    else:
-                        prefer = None
-                        qrx = tag = ""
-                    ok = False
-                    if prefer is not None:
-                        ok = await _answer_yes_no_near(page, qrx, prefer, tag, r)
-                    if not ok and answer_fn:
-                        try:
-                            val = str(await answer_fn(lab, ["Yes", "No"], data) or "")
-                            if val:
-                                prefer2 = str(val).strip().lower() in ("yes", "y", "true", "1")
-                                ok = await _answer_yes_no_near(
-                                    page, re.escape(lab[:50]), prefer2, f"llm:{lab[:10]}", r
-                                )
-                        except Exception as e:
-                            _log(f"  final answer_fn: {type(e).__name__}: {e}")
-                    if not ok:
-                        try:
-                            import escalate as ESC
-                            act = await ESC.next_action(
-                                reason=f"Ashby final required: {lab}",
-                                controls=[{"name": lab, "role": "radio", "required": True, "options": ["Yes", "No"]}],
-                                page_url=url,
-                                candidate=data,
-                            )
-                            val = ""
-                            if isinstance(act, dict):
-                                val = str(act.get("value") or act.get("answer") or act.get("text") or "")
-                            if val:
-                                prefer2 = str(val).strip().lower() in ("yes", "y", "true", "1")
-                                ok = await _answer_yes_no_near(
-                                    page, re.escape(lab[:50]), prefer2, f"esc:{lab[:10]}", r
-                                )
-                        except Exception as e:
-                            _log(f"  final escalate: {type(e).__name__}: {e}")
-                    if not ok and asker:
-                        try:
-                            val = str(await asker(lab) or "")
-                            if val:
-                                prefer2 = str(val).strip().lower() in ("yes", "y", "true", "1")
-                                ok = await _answer_yes_no_near(
-                                    page, re.escape(lab[:50]), prefer2, f"tg:{lab[:10]}", r
-                                )
-                        except Exception as e:
-                            _log(f"  final asker: {type(e).__name__}: {e}")
-                    if not ok and ask:
-                        try:
-                            val = str(await ask.ask_human(f"Ashby still required: {lab}") or "")
-                            if val:
-                                prefer2 = str(val).strip().lower() in ("yes", "y", "true", "1")
-                                ok = await _answer_yes_no_near(
-                                    page, re.escape(lab[:50]), prefer2, f"tg:{lab[:10]}", r
-                                )
-                        except Exception as e:
-                            _log(f"  final ask: {type(e).__name__}: {e}")
-                if leftover:
-                    r["stage"] = "review"
-                    r["submitted"] = False
-                    await _submit(page, r)
-            except Exception as e:
-                _log(f"  final pass error: {type(e).__name__}: {e}")
 
         if not r.get("submitted"):
             r["stage"] = r.get("stage") or "review"

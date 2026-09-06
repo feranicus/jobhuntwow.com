@@ -5,6 +5,8 @@ https://docs.digitalocean.com/products/inference/details/models/) and are overri
 so swapping a role's model is a one-line change with no code edits.
 """
 import os
+import time
+
 import httpx
 from .settings import DO_BASE_URL, DO_KEY
 
@@ -196,8 +198,20 @@ async def complete(role: str, messages: list[dict], *, temperature: float = 0.3,
         payload["max_tokens"] = max_tokens
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    _t0 = time.time()
     async with httpx.AsyncClient(timeout=120) as c:
         r = await c.post(f"{DO_BASE_URL}/chat/completions", headers=_headers(), json=payload)
         r.raise_for_status()
         data = r.json()
+    # METER IT. The response carries `usage` and this function used to drop it on the floor, which
+    # is why Loki held every HTTP request this service ever served and not one model call -- so when
+    # the shared DigitalOcean key produced a spend spike, jobhuntwow could neither be blamed nor
+    # cleared. Recording is best-effort and can never fail the completion.
+    try:
+        from . import llm_events
+        llm_events.record(payload.get("model"), (data or {}).get("usage"),
+                          caller="llm.complete", role=role,
+                          ms=int((time.time() - _t0) * 1000))
+    except Exception:
+        pass
     return data["choices"][0]["message"]["content"]

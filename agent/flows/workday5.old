@@ -1235,147 +1235,7 @@ async def _fill_country_germany(page) -> bool:
     return False
 
 
-
-async def _fill_application_questions(page, data: dict = None) -> int:
-    """Smith & Nephew Application Questions — answer by QUESTION TEXT, not by generic Select One.
-
-    Compliance defaults (candidate is external, not related to S&N employees):
-      - legally eligible to work → Yes
-      - previously considered for S&N role → No
-      - family member HCP / government official → No
-      - connected to HCP using S&N products → No
-      - related to current employee → No
-      - non-compete agreement → No
-    When answer is No, leave "if you answered yes..." textareas empty (they must not be required).
-    """
-    done = 0
-    # (question_regex, prefer_yes)
-    rules = [
-        (r"legally eligible to work", True),
-        (r"authorized to work|work authorization|right to work", True),
-        (r"require\s+(visa\s+)?sponsorship|need sponsorship", False),
-        (r"previously been considered for a role with S\s*&\s*N|previously been considered for a role", False),
-        (r"family member who is a Health Care Professional|government official", False),
-        (r"connected in any way to a HealthCare Professional|HCP that uses S\s*&\s*N|uses S\s*&\s*N products", False),
-        (r"related by blood, adoption, or marriage|related to a current employee", False),
-        (r"non-compete agreement", False),
-        (r"previously worked for this organization", False),
-        (r"convicted of a (felony|crime)|criminal", False),
-    ]
-
-    for qrx, prefer_yes in rules:
-        want = "Yes" if prefer_yes else "No"
-        try:
-            # Find question text, then the nearest Select One / Yes / No control after it
-            ok = await page.evaluate(
-                """([qrx, want]) => {
-                  const re = new RegExp(qrx, 'i');
-                  const nodes = [...document.querySelectorAll('label,div,span,p,legend,h1,h2,h3,h4')];
-                  const q = nodes.find(el => {
-                    const t = (el.innerText||'').replace(/\\s+/g,' ').trim();
-                    return re.test(t) && t.length < 280;
-                  });
-                  if (!q) return {ok:false, why:'no-q'};
-                  // climb to a section that contains a button or select
-                  let root = q;
-                  for (let i = 0; i < 8 && root; i++) {
-                    const btns = [...root.querySelectorAll('button,[role=button]')];
-                    const sel = btns.find(b => {
-                      const n = ((b.getAttribute('aria-label')||'') + ' ' + (b.innerText||'')).trim();
-                      return /Select One|Yes|No|Required/i.test(n) || n.length < 24;
-                    });
-                    if (sel || root.querySelector('select')) break;
-                    root = root.parentElement;
-                  }
-                  if (!root) return {ok:false, why:'no-root'};
-                  // Already set?
-                  const cur = ((root.innerText||'').match(/\\b(Yes|No)\\b/g) || []).slice(-3);
-                  if (cur.includes(want) && !/Select One/i.test(root.innerText||'')) {
-                    // check the button value more carefully
-                    const b = [...root.querySelectorAll('button,[role=button]')].find(x =>
-                      new RegExp('^\\\\s*' + want + '\\\\s*', 'i').test(
-                        ((x.getAttribute('aria-label')||'') + (x.innerText||'')).trim()));
-                    if (b) return {ok:true, why:'already'};
-                  }
-                  // open select
-                  const openBtn = [...root.querySelectorAll('button,[role=button]')].find(b => {
-                    const n = ((b.getAttribute('aria-label')||'') + ' ' + (b.innerText||'')).trim();
-                    return /Select One|Required|Yes|No/i.test(n);
-                  });
-                  if (openBtn) openBtn.click();
-                  return {ok:true, why:'opened', want};
-                }""",
-                [qrx, want],
-            )
-            if not ok or not ok.get("ok"):
-                continue
-            if ok.get("why") == "already":
-                done += 1
-                continue
-            await page.wait_for_timeout(400)
-            # pick option
-            picked = False
-            for loc in (
-                page.get_by_role("listbox").get_by_role("option", name=re.compile(rf"^{want}$", re.I)),
-                page.get_by_role("option", name=re.compile(rf"^{want}$", re.I)),
-                page.locator("[data-automation-id*='promptOption']").filter(
-                    has_text=re.compile(rf"^{want}$", re.I)),
-                page.get_by_text(re.compile(rf"^{want}$", re.I)),
-            ):
-                try:
-                    if await loc.count() == 0:
-                        continue
-                    row = loc.first
-                    if await row.is_visible():
-                        await row.click(timeout=ACTION_TIMEOUT)
-                        picked = True
-                        break
-                except Exception:
-                    continue
-            try:
-                await page.keyboard.press("Escape")
-            except Exception:
-                pass
-            if picked:
-                _log(f"    appQ {qrx[:40]!r} <- {want}")
-                done += 1
-                await page.wait_for_timeout(250)
-        except Exception as e:
-            _log(f"    appQ {qrx[:30]}: {type(e).__name__}")
-
-    # Clear / fill "if you answered yes" textareas: if parent is No, put N/A only if still required
-    try:
-        areas = page.locator("textarea")
-        n = min(await areas.count(), 12)
-        for i in range(n):
-            a = areas.nth(i)
-            if not await a.is_visible():
-                continue
-            # get nearby label
-            lab = await a.evaluate("""el => {
-              const p = el.closest('div,li,fieldset,section') || el.parentElement;
-              return (p && p.innerText || '').slice(0, 200);
-            }""") or ""
-            if not re.search(r"if you answered yes|further detail|further information|discuss with your recruiter", lab, re.I):
-                continue
-            cur = ""
-            try:
-                cur = await a.input_value()
-            except Exception:
-                pass
-            if cur and cur.strip():
-                continue
-            # Prefer leaving empty if we set parent to No; if still required, short N/A
-            await a.fill("N/A — answered No to the question above.", timeout=ACTION_TIMEOUT)
-            done += 1
-            _log("    appQ follow-up textarea <- N/A (answered No)")
-    except Exception as e:
-        _log(f"    appQ textareas: {type(e).__name__}")
-    return done
-
-
 async def _answer_prompts(page, data: dict, only=None) -> int:
-
 
 
 
@@ -1431,27 +1291,15 @@ async def _answer_prompts(page, data: dict, only=None) -> int:
                     continue
             elif not _PROMPT_RX.search(nm):
                 continue
-            # NEVER apply a recorded Yes/No to a generic "Select One" / "Yes Required" control.
-            # Measured Smith&Nephew 2026-08-18: known_choice("workday","Select One Required")
-            # returned "Yes" and every compliance dropdown became Yes → required detail textareas.
-            if re.search(r"^\s*(Select One|Yes|No)(\s+Required)?\s*$", nm, re.I):
-                continue
             want = known_choice("workday", nm)
             if not want:
-                for probe in ("How Did You Hear About Us?", "Country / Territory", "Phone Device Type"):
-                    if probe.split()[0].lower() in nm.lower() or probe.lower() in nm.lower():
+                # The country prompt's name carries the CURRENT value ("Country Georgia Required"),
+                # so an exact key will not match another tenant. Fall back to the QUESTION word.
+                for probe in ("How Did You Hear About Us?", "Country"):
+                    if probe.split()[0].lower() in nm.lower():
                         want = known_choice("workday", probe) or want
                         if want:
                             break
-            # Refuse to apply bare Yes/No without a real question in the control name
-            if want and re.search(r"^\s*(Yes|No)\s*$", str(want), re.I):
-                if not re.search(
-                    r"eligible|sponsor|authorize|work.?auth|citizen|disability|veteran|"
-                    r"gender|race|hispanic|lgbt|how did you hear|country|device|phone",
-                    nm, re.I,
-                ):
-                    _log(f"    prompt {nm[:44]!r}: refusing recorded {want!r} without question context")
-                    continue
             if not want:
                 _log(f"    prompt {nm[:44]!r}: no recorded human choice — leaving it to the ladder")
                 continue
@@ -1507,8 +1355,7 @@ async def _answer_prompts(page, data: dict, only=None) -> int:
 _CONFIRM_BODY = re.compile(r"thank you|thanks for (your )?appl|congratulations|form sent|"
                            r"application (has been )?(submitted|received|sent)|"
                            r"succes+fully (submitted|sent)|vielen dank|"
-                           r"bewerbung .{0,20}(eingegangen|übermittelt)|"
-                           r"application submitted|your application has been received", re.I)
+                           r"bewerbung .{0,20}(eingegangen|übermittelt)", re.I)
 _CONFIRM_URL = re.compile(r"job_application_id=|/applications?/|confirm|thank|success|complete", re.I)
 
 
@@ -1591,55 +1438,25 @@ async def _submit_now(page, r: dict) -> bool:
         await page.wait_for_load_state("networkidle", timeout=25000)
     except Exception:
         pass
-    # Workday confirmation often lands in a modal AFTER networkidle; CONFIRM_JS can read the
-    # page BEHIND the dialog (empty or careers home). Poll several times with a broad scrape.
-    # Measured Smith&Nephew 2026-08-18: modal "Application Submitted / Your application has been
-    # received" while our first read returned body='' — reported as failure though it succeeded.
+    await page.wait_for_timeout(2500)
     body, url = "", (page.url or "")
-    ok = False
-    for attempt in range(6):
-        await page.wait_for_timeout(1500 if attempt else 2500)
-        url = page.url or url
-        try:
-            body = await page.evaluate(CONFIRM_JS) or ""
-        except Exception:
-            body = body or ""
-        try:
-            extra = await page.evaluate(_DIALOG_TEXT_JS) or ""
-            if extra:
-                body = (body or "") + " | " + extra
-        except Exception:
-            pass
-        try:
-            more = await page.evaluate(
-                "() => {\n"
-                "  const bits = [];\n"
-                "  document.querySelectorAll('h1,h2,h3,[role=heading],[role=dialog],[aria-modal=\"true\"],"
-                " [class*=\"modal\"],[class*=\"Modal\"],[data-automation-id*=\"dialog\"]').forEach(el => {\n"
-                "    const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();\n"
-                "    if (t) bits.push(t.slice(0, 300));\n"
-                "  });\n"
-                "  const bt = (document.body && document.body.innerText || '').replace(/\\s+/g, ' ').trim();\n"
-                "  if (bt) bits.push(bt.slice(0, 900));\n"
-                "  return bits.join(' | ');\n"
-                "}"
-            ) or ""
-            if more:
-                body = (body or "") + " | " + more
-        except Exception:
-            pass
-        ok = submitted_from(body, url)
-        if not ok:
-            low = (body or "").lower()
-            if ("application submitted" in low
-                    or "your application has been received" in low
-                    or ("thank you for applying" in low and "my application" in low)
-                    or ("in process" in low and "my application" in low)):
-                ok = True
-        if ok:
-            break
-        _log(f"    confirm poll {attempt+1}/6 — not yet (url={url[:60]})")
-    snip = " ".join((body or "").split())[:180]
+    try:
+        body = await page.evaluate(CONFIRM_JS) or ""
+    except Exception:
+        pass
+    # THE CONFIRMATION IS IN A MODAL, and `CONFIRM_JS` reads document.body — which on this tenant was
+    # the jobs home page BEHIND it ("Skip to main content We love what we do..."). The modal also
+    # paints AFTER networkidle, so a read taken the instant the click settles can miss it entirely.
+    # Same doctrine as the sign-in gate: when a dialog owns the page, the dialog is the page.
+    await page.wait_for_timeout(900)
+    try:
+        extra = await page.evaluate(_DIALOG_TEXT_JS) or ""
+        if extra:
+            body = (body or "") + " | " + extra
+    except Exception:
+        pass
+    ok = submitted_from(body, url)
+    snip = " ".join(body.split())[:150]
     if ok:
         r["submitted"] = True
         why = ("the site's confirmation" if "job_application_id" not in url.lower()
@@ -2843,217 +2660,34 @@ async def _check_consent(page) -> bool:
 
 
 # ---------- account --------------------------------------------------------------------------------
-async def _fill_auth_fields(page, email: str, password: str, verify=None) -> dict:
-    """Fill Workday Create Account / Sign In modal fields by label, role, placeholder, and DOM.
-
-    Measured Smith&Nephew 2026-08-18: generic fill reported email=True password=True while the site
-    replied "Please enter a valid email | Please enter your password". React controlled inputs need
-    real key events; a silent DOM value is not enough. Always verify with input_value after write.
-    """
-    result = {"email": False, "password": False, "verify": False}
-
-    async def _write(loc, value: str, *, secret: bool = False) -> bool:
-        if not value:
-            return False
-        try:
-            if await loc.count() == 0:
-                return False
-            el = loc.first
-            if not await el.is_visible():
-                return False
-            await el.click(timeout=ACTION_TIMEOUT)
-            # Clear: Ctrl+A then Backspace (works on React better than fill(""))
-            try:
-                await el.press("Control+a")
-                await el.press("Backspace")
-            except Exception:
-                try:
-                    await el.fill("", timeout=ACTION_TIMEOUT)
-                except Exception:
-                    pass
-            # Prefer sequential typing so React onChange fires
-            try:
-                await el.press_sequentially(value, delay=18)
-            except Exception:
-                try:
-                    await el.type(value, delay=18)
-                except Exception:
-                    await el.fill(value, timeout=ACTION_TIMEOUT)
-            # Dispatch input/change for stubborn controlled components
-            try:
-                await el.evaluate(
-                    """(node, v) => {
-                      const setter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value').set;
-                      setter.call(node, v);
-                      node.dispatchEvent(new Event('input', {bubbles: true}));
-                      node.dispatchEvent(new Event('change', {bubbles: true}));
-                    }""",
-                    value,
-                )
-            except Exception:
-                pass
-            try:
-                got = await el.input_value(timeout=ACTION_TIMEOUT)
-            except Exception:
-                got = ""
-            if secret:
-                return len(got or "") >= max(4, min(len(value), 8))
-            return bool(got) and (value.lower() in got.lower() or got.lower() in value.lower()
-                                  or len(got) >= max(3, len(value) - 2))
-        except Exception:
-            return False
-
-    # Strategy 1: get_by_label
-    pairs = [
-        ("email", email, r"Email Address|E-?mail|User(name)?", False),
-        ("password", password, r"^Password$|Password\*|New Password", True),
-    ]
-    if verify is not None:
-        pairs.append(("verify", verify, r"Verify New Password|Confirm Password|Re-?enter|Verify Password", True))
-    for key, val, rx, secret in pairs:
-        try:
-            if await _write(page.get_by_label(re.compile(rx, re.I)), val, secret=secret):
-                result[key] = True
-        except Exception:
-            pass
-
-    # Strategy 2: role=textbox by name
-    if not result["email"]:
-        try:
-            if await _write(page.get_by_role("textbox", name=re.compile(r"Email|E-?mail", re.I)), email):
-                result["email"] = True
-        except Exception:
-            pass
-    if not result["password"]:
-        try:
-            loc = page.locator("input[type='password']").first
-            if await loc.count():
-                if await _write(loc, password, secret=True):
-                    result["password"] = True
-                if verify is not None and not result["verify"]:
-                    n = await page.locator("input[type='password']").count()
-                    if n >= 2:
-                        if await _write(page.locator("input[type='password']").nth(1), verify, secret=True):
-                            result["verify"] = True
-        except Exception:
-            pass
-
-    # Strategy 3: placeholder / name attributes via JS query
-    if not result["email"] or not result["password"]:
-        try:
-            info = await page.evaluate(
-                """() => {
-                  const inputs = [...document.querySelectorAll('input')].filter(el => {
-                    const r = el.getBoundingClientRect();
-                    const s = getComputedStyle(el);
-                    return r.width > 2 && r.height > 2 && s.visibility !== 'hidden' && s.display !== 'none';
-                  });
-                  return inputs.map((el, i) => ({
-                    i,
-                    type: (el.type || '').toLowerCase(),
-                    name: el.name || '',
-                    id: el.id || '',
-                    ph: el.placeholder || '',
-                    aria: el.getAttribute('aria-label') || '',
-                    autocomplete: el.autocomplete || '',
-                  }));
-                }"""
-            ) or []
-            for item in info:
-                idx = item.get("i")
-                blob = " ".join(str(item.get(k) or "") for k in ("type", "name", "id", "ph", "aria", "autocomplete")).lower()
-                loc = page.locator("input").nth(idx)
-                if not result["email"] and item.get("type") in ("email", "text", "") and re.search(
-                        r"email|user|login", blob):
-                    if await _write(loc, email):
-                        result["email"] = True
-                if not result["password"] and item.get("type") == "password" and not re.search(r"verify|confirm", blob):
-                    if await _write(loc, password, secret=True):
-                        result["password"] = True
-                if verify is not None and not result["verify"] and item.get("type") == "password" and re.search(
-                        r"verify|confirm", blob):
-                    if await _write(loc, verify, secret=True):
-                        result["verify"] = True
-        except Exception:
-            pass
-
-    # Strategy 4: first visible email-like + first password
-    if not result["email"]:
-        for sel in ("input[type=email]", "input[autocomplete=username]", "input[autocomplete=email]",
-                    "input[name*=email i]", "input[id*=email i]"):
-            try:
-                loc = page.locator(sel).first
-                if await _write(loc, email):
-                    result["email"] = True
-                    break
-            except Exception:
-                continue
-    if not result["password"]:
-        try:
-            loc = page.locator("input[type=password]").first
-            if await _write(loc, password, secret=True):
-                result["password"] = True
-        except Exception:
-            pass
-    if verify is not None and not result["verify"]:
-        try:
-            n = await page.locator("input[type=password]").count()
-            if n >= 2 and await _write(page.locator("input[type=password]").nth(1), verify, secret=True):
-                result["verify"] = True
-        except Exception:
-            pass
-
-    _log(f"    auth fields: email={result['email']} password={result['password']} verify={result['verify']}")
-    return result
-
-
 async def _try_signin(page, email, password) -> bool:
-    """Fully automatic sign-in. Never asks the human when email+password are known."""
-    # Ensure we are on the Sign In form, not Create Account
-    try:
-        body = await page.evaluate("() => (document.body && document.body.innerText || '').slice(0, 2500)") or ""
-    except Exception:
-        body = ""
-    if re.search(r"Verify New Password|Create Account", body, re.I) and not re.search(
-        r"Sign In\s*$", body[:400], re.I
-    ):
-        # switch to Sign In if the link/button exists
-        for role, rx in (("button", r"^\s*sign\s*in\s*$"), ("link", r"^\s*sign\s*in\s*$"),
-                         ("button", r"already have an account"), ("link", r"already have an account")):
-            if await _click_role(page, role, rx, 1200):
-                await page.wait_for_timeout(1000)
-                break
-
-    _SIGNIN_ONLY = r"^\s*(sign\s*in|anmelden|einloggen)\s*$"
-    # password field presence: use DOM, not only recorded selector
-    has_pw = await _has(page, "password", 800)
-    if not has_pw:
-        try:
-            has_pw = await page.locator("input[type='password']").count() > 0
-        except Exception:
-            has_pw = False
-    if not has_pw:
-        await _reveal_email_login(page)
-        await page.wait_for_timeout(600)
-        try:
-            has_pw = await page.locator("input[type='password']").count() > 0
-        except Exception:
-            has_pw = False
-    if not has_pw:
-        _log("    no password field on screen — cannot sign in yet")
+    # MEASURED: 70 SECONDS between "revealed the email/password form" and the panel being consulted,
+    # on a gate whose password box was not on screen. Even at a 6s action cap, a dozen dead actions
+    # is over a minute of silence. Ask ONE cheap question first: is there a password field at all?
+    # If not, this function cannot succeed and the run should reach a reader that can SEE instead.
+    if not await _has(page, "password", 1200):
+        _log("    no password field on screen — not grinding a sign-in that cannot work")
         return False
-
-    filled = await _fill_auth_fields(page, email, password, verify=None)
-    if not (filled.get("email") and filled.get("password")):
-        _log("    sign-in fields did not accept values — retrying with type-only path")
-        # one more hard retry after short wait (modal animation)
-        await page.wait_for_timeout(800)
-        filled = await _fill_auth_fields(page, email, password, verify=None)
-        if not (filled.get("email") and filled.get("password")):
-            _log("    sign-in fields still empty after retry")
-            return False
-
+    # MEASURED 2026-08-16, and this is what actually broke four runs: `r"sign\s*in"` is UNANCHORED,
+    # so `get_by_role(name=...)` matched **"Sign in with Google"** as well as "Sign in with email",
+    # and `.first` takes DOM order -- which on this gate is Google. So _try_signin navigated the
+    # browser to accounts.google.com at ~36s and every reader afterwards was correctly reporting an
+    # empty WORKDAY page while actually looking at Google's account chooser. The evidence was the
+    # three links the new diagnostics finally printed:
+    #   [0] 'Open Google Account Help Centre'  [1] 'Privacy Policy'  [2] 'Google Terms of Service'
+    # My aria-hidden theory was wrong. THIS is the bug.
+    _SIGNIN_ONLY = r"^\s*(sign\s*in|anmelden|einloggen)\s*$"
+    if not await _click(page, "signin_link", 1200):
+        await _click_role(page, "link", _SIGNIN_ONLY, 1200) \
+            or await _click_role(page, "button", _SIGNIN_ONLY, 1200)
+    await page.wait_for_timeout(800)
+    await _fill(page, "email", email)
+    await _fill(page, "password", password)
+    # MEASURED 2026-08-16: the deterministic sign-in filled the form correctly and then FAILED to
+    # press the button, because on this tenant it is labelled **"Submit"** -- and `_SIGNIN_ONLY` is
+    # anchored to sign-in wording, deliberately, so it cannot hit "Sign in with Google". The panel
+    # then clicked 'Submit' and we went straight through. So try the submit wordings too, each
+    # ANCHORED so none of them can reach a third-party SSO control.
     if not await _click(page, "signin_submit", 2000):
         for _rx in (r"^\s*sign\s*in\s*$", r"^\s*submit\s*$", r"^\s*(anmelden|einloggen|absenden)\s*$",
                     r"^\s*(log\s*in|continue)\s*$"):
@@ -3061,27 +2695,7 @@ async def _try_signin(page, email, password) -> bool:
                 _log(f"    pressed the sign-in button matching {_rx!r}")
                 break
     await page.wait_for_timeout(2800)
-    if await _through_gate(page):
-        return True
-    # wrong password / still on gate — if site says fields empty, retype once more
-    err = (await _error_text(page)) or ""
-    if err:
-        _log(f"    sign-in site message: {err[:180]}")
-    if re.search(r"enter (a valid )?email|enter your password|required", err, re.I):
-        _log("    site rejected empty/invalid auth fields — retyping credentials once")
-        await page.wait_for_timeout(500)
-        filled = await _fill_auth_fields(page, email, password, verify=None)
-        if filled.get("email") and filled.get("password"):
-            if not await _click(page, "signin_submit", 2000):
-                await _click_role(page, "button", r"^\s*sign\s*in\s*$", 1500)
-            await page.wait_for_timeout(3000)
-            if await _through_gate(page):
-                return True
-            err = (await _error_text(page)) or ""
-            if err:
-                _log(f"    sign-in site message (retry): {err[:180]}")
     return await _through_gate(page)
-
 
 
 async def _reveal_email_login(page) -> bool:
@@ -3214,89 +2828,46 @@ async def _account(page, host, email, proposed_pw, filled) -> bool:
     # produced exactly what the screenshot shows: "You may have entered the wrong email address or
     # password". A credential that has just FAILED is not a reason to refuse to register.
     on_create = await _has(page, "verify_pw", 1200) or await _has(page, "acct_checkbox", 800)
-    # Prefer Sign In when we already know this host has an account
-    if stored and not on_create:
-        _log("    existing account on file — Sign In before Create Account")
-        await _reveal_email_login(page)
-        if await _try_signin(page, login_email, stored):
-            filled.append("account:signin")
-            _log("    signed in with stored password (preferred path)")
-            return True
-        # Also try proposed vault password if different
-        if proposed_pw and proposed_pw != stored:
-            if await _try_signin(page, login_email, proposed_pw):
-                _save_account(host, login_email, proposed_pw)
-                filled.append("account:signin")
-                return True
-    if not on_create and not stored:
-        if await _open_create_account():
-            on_create = await _has(page, "verify_pw", 2000) or await _has(page, "password", 1500)
-            _log(f"    Create Account form {'found' if on_create else 'NOT found'}")
-    elif not on_create and stored:
-        # last resort after sign-in failed: still try create only if email might be free
-        _log("    stored sign-in failed — will try Create Account as last resort")
+    if not on_create:
         if await _open_create_account():
             on_create = await _has(page, "verify_pw", 2000) or await _has(page, "password", 1500)
             _log(f"    Create Account form {'found' if on_create else 'NOT found'}")
     if on_create:
         _log(f"    creating an account for {email} with the vault password (remembered for reuse)")
-        # If we already have a stored password for this host, prefer SIGN IN over create.
-        # Opening Create Account on an existing mailbox produces "email already registered"
-        # or a half-filled form and wastes the run (measured smithnephew 2026-08-18).
-        _consent_ok = True
-        _create_blocked = False
-        if stored:
-            _log("    stored credential exists — switching Create modal to Sign In")
-            try:
-                # close create or click Sign In tab/link
-                for role, rx in (("button", r"^\s*sign\s*in\s*$"),
-                                 ("link", r"^\s*sign\s*in\s*$"),
-                                 ("button", r"already have an account")):
-                    if await _click_role(page, role, rx, 1500):
-                        await page.wait_for_timeout(1200)
-                        break
-                await _reveal_email_login(page)
-                if await _try_signin(page, login_email, stored):
-                    filled.append("account:signin")
-                    _log("    signed in with stored password (after create diversion)")
-                    return True
-                if alt_email and await _try_signin(page, alt_email, stored):
-                    filled.append("account:signin")
-                    return True
-            except Exception as e:
-                _log(f"    sign-in after create diversion: {type(e).__name__}")
-        # Label-based fill for Create Account modal (Smith&Nephew labels: Email Address*, Password*)
-        async def _label_fill(label_rx: str, value: str) -> bool:
-            try:
-                el = page.get_by_label(re.compile(label_rx, re.I)).first
-                if await el.count() and await el.is_visible():
-                    await el.fill("", timeout=ACTION_TIMEOUT)
-                    await el.fill(value, timeout=ACTION_TIMEOUT)
-                    got = await el.input_value()
-                    return bool(got)
-            except Exception:
-                pass
-            try:
-                el = page.get_by_role("textbox", name=re.compile(label_rx, re.I)).first
-                if await el.count() and await el.is_visible():
-                    await el.fill(value, timeout=ACTION_TIMEOUT)
-                    return True
-            except Exception:
-                pass
-            return False
-
-        filled_auth = await _fill_auth_fields(page, email, proposed_pw, verify=proposed_pw)
-        _wrote = {
-            "email": bool(filled_auth.get("email")),
-            "password": bool(filled_auth.get("password")),
-            "verify_pw": bool(filled_auth.get("verify")),
-        }
+        # A WRITE IS NOT DONE UNTIL IT HAS BEEN READ BACK -- this repo's own rule, and I broke it
+        # here. MEASURED: all three fills and the submit logged at the SAME timestamp (42.2s), i.e.
+        # every `_fill` returned False instantly, nothing checked, and a BLANK form was submitted.
+        # Workday bounced it to /login and the run blamed the credential.
+        _wrote = {}
+        for key, val, label in (("email", email, "e-mail"),
+                                ("password", proposed_pw, "password"),
+                                ("verify_pw", proposed_pw, "verify password")):
+            ok = await _fill(page, key, val)
+            got = ""
+            if ok:
+                el = await _first(page, key, 1200)     # same lookup _fill used
+                if el:
+                    try:
+                        got = await el.input_value(timeout=ACTION_TIMEOUT)
+                    except Exception:
+                        pass
+            # the READ-BACK is the evidence, not the fill returning without throwing
+            _wrote[key] = bool(ok and got)
+            _log(f"      {label}: " + ("FIELD NOT FOUND" if not ok
+                                       else f"reads {len(got)} char(s)" if got
+                                       else "WRITTEN BUT READS EMPTY"))
         if not (_wrote.get("email") and _wrote.get("password")):
-
+            # DO NOT SUBMIT A BLANK FORM. Submitting one produces a bounce that looks exactly like a
+            # rejected credential, which is how six runs blamed the password.
             _log("    the create form did not accept our values — NOT submitting a blank form")
             _create_blocked = True
         else:
             _create_blocked = False
+            # THE RETURN VALUE WAS DISCARDED AT EVERY CALL SITE. Workday's own documentation says a
+            # candidate "must click the Acknowledge checkbox before completing account setup", and
+            # submitting without it bounces straight back to /login — which is EXACTLY the 23:31
+            # symptom, and it was blamed on the password. Not finding the tick is worth recording
+            # before we submit, the same way not accepting our values is.
             _consent_ok = await _check_consent(page)
             if not _consent_ok:
                 _log("    NO consent checkbox found on the create form — if this tenant requires "
@@ -4112,21 +3683,6 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
             # text) and nothing filled them proactively — the run only ever discovered them from a
             # validation error. `workday_questions` is the one owner of that page.
             try:
-                from workday_smart import fill_application_questions as _smart_aq
-                _nq0 = await _smart_aq(page, data, ask_human=_ask, log=_log)
-                if _nq0:
-                    r["filled"].append(f"appQ:{_nq0}")
-                    _log(f"    application questions (smart ladder) wrote {_nq0} field(s)")
-            except Exception as e:
-                _log(f"    application questions smart: {type(e).__name__}: {e}")
-                # fallback to local deterministic helper if present
-                try:
-                    _nq0 = await _fill_application_questions(page, data)
-                    if _nq0:
-                        r["filled"].append(f"appQ:{_nq0}")
-                except Exception:
-                    pass
-            try:
                 from workday_questions import fill_page_questions as _fpq
                 _nq = await _fpq(page, data, r, log=_log)
                 if _nq:
@@ -4198,26 +3754,6 @@ async def drive(creds: dict, data: dict, resume_path: str = "", answer_fn=None, 
                             continue
                     except Exception as e:
                         _log(f"    device-type fast repair: {type(e).__name__}")
-                if re.search(r"if you answered yes|further detail|further information|"
-                             r"previously been considered|family member|non-compete|related by blood",
-                             err, re.I):
-                    try:
-                        from workday_smart import repair_validation_errors as _smart_rep
-                        n = await _smart_rep(page, err, data, ask_human=_ask, log=_log)
-                        if n:
-                            r["filled"].append(f"appQ-repair:{n}")
-                            last_err = ""
-                            continue
-                    except Exception as e:
-                        _log(f"    appQ smart repair: {type(e).__name__}")
-                    try:
-                        n = await _fill_application_questions(page, data)
-                        if n:
-                            r["filled"].append(f"appQ-repair:{n}")
-                            last_err = ""
-                            continue
-                    except Exception as e:
-                        _log(f"    appQ repair: {type(e).__name__}")
                 if re.search(r"Country / Territory(?! Phone)", err, re.I) or re.search(r"\bGeorgia\b", err, re.I):
                     try:
                         if await _fill_country_germany(page):

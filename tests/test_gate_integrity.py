@@ -27,6 +27,7 @@ fail; that mistake has been made four separate times in the sibling project.
 
 THE EXIT GATE IS THE LAST STATEMENT IN THIS FILE.
 """
+import ast
 import io
 import os
 import re
@@ -46,6 +47,12 @@ import quorum    # noqa: E402
 
 RUN = [0]
 FAILS = []
+
+
+def _code_only(src):
+    """Strip # comments before grepping. A check that matches its own explanatory comment cannot
+    fail -- this repository family has been caught by that four separate times."""
+    return "\n".join(ln.split("#")[0] for ln in src.splitlines())
 
 
 def check(cond, what):
@@ -113,18 +120,37 @@ check(bool(heredoc_balance("cat > f <<'EOF'\nline\n")),
       "NEGATIVE: an unterminated heredoc IS detected (the one structural fault that silently "
       "swallows the rest of a script)")
 
+def _bash_n(script):
+    """Syntax-check a script by piping it to `bash -n` on STDIN, never via a PATH.
+
+    THE DEFECT THIS FIXES, seen on the operator's machine:
+        /bin/bash: C:UsersferanAppDataLocalTemptmpv9srpgars.sh: No such file or directory
+    The scripts were valid the whole time. The harness wrote a temp file and passed its PATH, and
+    the bash on a Windows box cannot resolve a Windows drive path -- the backslashes are eaten and
+    it gets `C:UsersferanAppData...`, exit 127. So the ONE real syntax check in this file has been
+    reporting a false failure on the only machine that runs it, which is worse than not having it:
+    a check that fails on working code trains you to ignore it.
+
+    stdin has no path to mangle, so it behaves identically everywhere. BYTES, not text: Python's
+    text mode on Windows rewrites every \\n into \\r\\n and bash then chokes on the \\r -- the same
+    CRLF trap already recorded for the ssh payloads and for `git archive`.
+
+    (The sibling repo hit and fixed this exact thing in tests/test_decommission.py. It was never
+    carried across. Same rule, both projects: a check that cannot run on the invoking platform is
+    not a check.)
+    """
+    r = subprocess.run(["bash", "-n"], input=script.encode("utf-8"),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return r.returncode, r.stderr.decode("utf-8", "replace")
+
+
 if shutil.which("bash"):
     for name, sc in (("health", gate.ship_verdict_py() + HEALTH), ("provision", PROV)):
-        d = tempfile.mkdtemp()
-        p = os.path.join(d, "s.sh")
-        io.open(p, "w", encoding="utf-8", newline="\n").write(sc)
-        r = subprocess.run(["bash", "-n", p], capture_output=True, text=True)
-        check(r.returncode == 0, "%s: bash -n says the shell is valid (%s)"
-              % (name, (r.stderr or "clean").strip()[:150]))
-    d = tempfile.mkdtemp()
-    p = os.path.join(d, "broken.sh")
-    io.open(p, "w", encoding="utf-8", newline="\n").write("if true; then\n  echo x\n")
-    check(subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0,
+        rc, err = _bash_n(sc)
+        check(rc == 0, "%s: bash -n says the shell is valid (%s)"
+              % (name, (err or "clean").strip()[:150]))
+    rc, _err = _bash_n("if true; then\n  echo x\n")
+    check(rc != 0,
           "NEGATIVE: bash -n rejects an unbalanced script, so the two passes above are real")
 else:
     check(True, "[!] bash is NOT on this machine, so `bash -n` DID NOT RUN this time. Only the "
@@ -306,7 +332,52 @@ i_deploy = main_src.index("do_deploy()")
 check(i_stage < i_deploy, "the staging gate runs BEFORE the production deploy")
 check('return 2' in main_src[i_stage:i_deploy] and 'gate_res == "NO-GO"' in main_src,
       "a NO-GO returns exit 2 before the deploy is reached")
-check("jhw.cmd_deploy" in sh, "the deploy is delegated to the EXISTING orchestrator (jhw.cmd_deploy)")
+# ---- THE CLASS, not the instance -------------------------------------------------------------
+# THE OLD ASSERTION HERE WAS `check("jhw.cmd_deploy" in sh, ...)` -- it grepped ship.py's SOURCE
+# for a string. `jhw.cmd_deploy` HAS NEVER EXISTED, so that check passed for years while the line
+# it "verified" crashed on every run. FOUR of the five `jhw.<attr>` references in ship.py were
+# imaginary: _check_requirements, _commit_and_push, cmd_deploy, py. This project's ONE command had
+# never once run to completion, and nothing noticed because the only tests of it were greps.
+#
+# So: RESOLVE every attribute ship.py reaches for against what jhw.py actually DEFINES. A grep
+# proves a string is present; this proves the call can be made.
+_jhw_src = io.open(os.path.join(ROOT, "jhw.py"), encoding="utf-8").read()
+_jhw_tree = ast.parse(_jhw_src)
+_defined = {n.name for n in _jhw_tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+_defined |= {t.id for n in _jhw_tree.body if isinstance(n, ast.Assign)
+             for t in n.targets if isinstance(t, ast.Name)}
+# AST, NOT REGEX. The first version matched `jhw.py` inside the STRING LITERAL "jhw.py" (a
+# filename in a file list) and reported it as a missing attribute -- a check aimed at the wrong
+# subject, which is the very defect this block exists to catch. An AST walk sees attribute
+# ACCESSES on the name `jhw` and nothing else.
+def _attrs_on(src, varname):
+    out = set()
+    for n in ast.walk(ast.parse(src)):
+        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == varname:
+            out.add(n.attr)
+    return sorted(out)
+
+_refs = _attrs_on(sh, "jhw")
+_ghosts = [r for r in _refs if r not in _defined]
+check(not _ghosts,
+      "every jhw.<attr> ship.py calls EXISTS in jhw.py (refs=%s%s)"
+      % (", ".join(_refs) or "-", "" if not _ghosts else "  MISSING: " + ", ".join(_ghosts)))
+
+# ...and the same for deploy_direct, which is now the real deploy engine.
+_dd_tree = ast.parse(io.open(os.path.join(ROOT, "deploy_direct.py"), encoding="utf-8").read())
+_dd = {n.name for n in _dd_tree.body
+       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+_dd |= {t.id for n in _dd_tree.body if isinstance(n, ast.Assign)
+        for t in n.targets if isinstance(t, ast.Name)}
+_ddrefs = _attrs_on(sh, "dd")
+_ddghosts = [r for r in _ddrefs if r not in _dd]
+check(not _ddghosts,
+      "every deploy_direct.<attr> ship.py calls EXISTS (refs=%s%s)"
+      % (", ".join(_ddrefs) or "-", "" if not _ddghosts else "  MISSING: " + ", ".join(_ddghosts)))
+
+check("dd.deploy(" in sh, "the deploy is delegated to the deploy ENGINE (deploy_direct.deploy), "
+                          "not reimplemented")
 check("docker compose" not in sh and "tarfile" not in sh and "scp" not in sh,
       "ship.py does NOT reimplement any part of the deploy")
 check("--remove-orphans" not in SHIP_SRC and "--remove-orphans" not in GATE_SRC,
@@ -314,7 +385,12 @@ check("--remove-orphans" not in SHIP_SRC and "--remove-orphans" not in GATE_SRC,
       "shared host)")
 check("-p 8000" not in HEALTH and "0.0.0.0:" not in HEALTH,
       "the gate never publishes a port to probe the app; it uses docker exec")
-check("_commit_and_push" in sh, "push reuses jhw's ONE implementation of the push rules")
+check("git(\"push\"" in _code_only(sh) and "git(\"commit\"" in _code_only(sh),
+      "commit+push is implemented HERE with the one git() helper - jhw.py has NO git helper at "
+      "all, and asserting it did is what let `jhw._commit_and_push` crash on every run")
+check("nothing to commit - pushing anyway" in sh,
+      "the push is UNCONDITIONAL: a commit that never leaves the PC is not a backup, and the "
+      "droplet has no independent history")
 check("tag_known_good" in sh and "last-known-good" in sh and "--rollback" in SHIP_SRC,
       "a verified release writes a safe point, and there is a rollback path to it")
 check(sh.index("tag_known_good()") > sh.index("do_verify()"),

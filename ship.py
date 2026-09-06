@@ -6,7 +6,7 @@
     1/6  TESTS         requirements parse - py_compile - ruff F821/F811/F822 - the test suites
     2/6  COMMIT+PUSH   ALWAYS pushes, even with nothing new to commit (GitHub is the source of truth)
     3/6  STAGING GATE  deploy to the twin - health - REBOOT IT - health - completeness - AI panel
-    4/6  DEPLOY WEB    `jhw.py deploy` (deploy_direct.py: ONE ssh session, builds on the droplet)
+    4/6  DEPLOY WEB    deploy_direct.py (ONE ssh session, builds on the droplet)
     5/6  VERIFY        the public site AND the sha256 of the code INSIDE the running container
     6/6  SAFE POINT    move `last-known-good`, write a dated `good-*` tag, push both
 
@@ -89,18 +89,155 @@ def _pyfiles():
     return out
 
 
+def ensure_app_requirements(py=None):
+    """Install any DECLARED runtime dependency the operator's Python is missing, once.
+
+    WHY, measured on the operator's machine 2026-09-06:
+        FAILED: section 12 could not run: No module named 'docx'
+        FAILED: section 13 could not run: No module named 'httpx'
+        FAILED: section 14 could not run: No module named 'httpx'
+    Three tests reported FAILED while printing SKIP -- and neither was a code defect. Those
+    packages are declared in backend/requirements.txt and installed on the DROPLET by the
+    Dockerfile; nothing ever installed them on the machine that runs the tests. A check that
+    cannot run on the invoking platform is not a check, and one that fails on working code is
+    worse: it trains you to ignore the suite.
+
+    The fix is NOT to tell the operator to run pip -- that is a manual step (operating principle 1)
+    and it will be forgotten by whoever clones this next. This is the SAME helper the sibling repo
+    already uses, ported rather than reinvented.
+
+    DELIBERATELY NARROW: only packages MISSING ENTIRELY are installed, never upgraded. A blanket
+    `pip install -r requirements.txt` on a developer machine can move fastapi or starlette
+    underneath whatever else lives in that interpreter. Version drift is answered by the image
+    build, which installs from a clean base every time.
+    """
+    py = py or sys.executable
+    req = os.path.join(HERE, "backend", "requirements.txt")
+    if not os.path.exists(req):
+        return
+    specs = []
+    for raw in open(req, encoding="utf-8"):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        # "fastapi==0.141.*" / "starlette>=1.3.1" / "uvicorn[standard]==0.30.*" -> the dist name.
+        # No regex: this helper is defined above ship.py's own imports, and depending on `re`
+        # being bound at that point is the kind of assumption the F821 gate exists to catch — it
+        # caught exactly that here.
+        name = line
+        for sep in ("[", "<", ">", "=", "!", "~", ";", " "):
+            name = name.split(sep, 1)[0]
+        name = name.strip()
+        if name:
+            specs.append((name, line))
+    if not specs:
+        return
+
+    # ASK THE INTERPRETER THAT WILL RUN THE TESTS, not this one. The first version of this helper
+    # used importlib.metadata HERE, which measures ship.py's own environment — a different subject.
+    # A negative test in a clean venv proved it: it reported a package missing that was only missing
+    # locally, and MISSED python-multipart, which was the entire point. Same defect class as a
+    # validator run against a temp copy instead of the mounted file.
+    probe = ("import sys\n"
+             "from importlib import metadata as m\n"
+             "out = []\n"
+             "for n in sys.argv[1:]:\n"
+             "    try:\n"
+             "        m.distribution(n)\n"
+             "    except Exception:\n"
+             "        out.append(n)\n"
+             "print('\\n'.join(out))\n")
+    r = subprocess.run([py, "-c", probe] + [n for n, _ in specs],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    if r.returncode != 0:
+        return                                    # a probe we cannot run must not block the ship
+    absent = {ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()}
+    missing = [(n, spec) for n, spec in specs if n in absent]
+    if not missing:
+        return
+    print("  %d declared dependency(ies) missing from this Python: %s"
+          % (len(missing), ", ".join(n for n, _ in missing)))
+    print("  installing them so the tests exercise the same stack the image builds...")
+    for name, spec in missing:
+        r = subprocess.run([py, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
+                            spec], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        if r.returncode != 0:
+            print((r.stdout or "") + (r.stderr or ""))
+            sys.exit("[X] could not install %s, which backend/requirements.txt declares. "
+                     "The tests import the app and would fail for a reason that is not a code "
+                     "defect. Install it and re-run: python ship.py" % spec)
+        print("    installed %s" % spec)
+
+
+ENGINE_FILES = ["scripts/shodan_recon.py", "scripts/run_assessment.py", "scripts/enrich.py",
+                "scripts/compliance_assess.py", "scripts/compliance_enrich.py",
+                "scripts/creed.js", "scripts/group_discovery.py", "scripts/engine_config.py",
+                "scripts/enrich_parallel.py", "scripts/attribution.py",
+                "scripts/model_probe.py", "scripts/demo_build.py",
+                # scope_deny.py is the authoritative shortener/social/platform denylist. It is a
+                # SCOPE-CORRECTNESS file: a container running an older copy would happily admit
+                # wa.me again (the abakus-tk.de failure), so its hash has to be proved deployed.
+                "scripts/scope_deny.py", "scripts/psl.py", "scripts/asn_sources.py", "scripts/clarify.py",
+                # THE TRANSLATION LAYER. None of it was hash-verified, so a stale copy on the
+                # droplet was invisible — and a stale pack is exactly what an English label inside a
+                # German deck looks like. The engine i18n GATE proves the packs are complete in this
+                # repo; only these hashes prove the container is running the packs the gate checked.
+                "scripts/i18n/i18n.py", "scripts/i18n/de.json", "scripts/i18n/ru.json",
+                "scripts/i18n/deck_i18n.js",
+                # White Label. proteus.py decides what a partner's artifacts LOOK like and brand.js
+                # is what applies it at the render boundary; a container running an older copy of
+                # either would silently ship the wrong branding — or our colours — to a partner's
+                # customer, with every check still green. Same reasoning as scope_deny.py: prove
+                # the hash is deployed rather than assuming the image picked it up.
+                # pptx_preview renders the partner's real cover on the White Label page. It is the
+                # ONLY thing standing between a wrong reading and a customer-facing deck, so a
+                # container running a stale copy would show a preview that is not what it builds.
+                "scripts/proteus.py", "scripts/brand.js", "scripts/pptx_preview.py"]
+ENGINE_LOCAL = os.path.join(HERE, "hermes-skills", "shodan-assessment")
+ENGINE_REMOTE = "/opt/shodan-skill"
+
+
 def do_tests() -> bool:
     hr("1/6  TESTS")
     ok = True
+    ensure_app_requirements()
 
     # (a) pip would fail on the droplet three minutes into the build; catching it here is free.
+    #
+    # THIS USED TO CALL `jhw._check_requirements()`, WHICH HAS NEVER EXISTED. jhw.py defines
+    # `ensure_prereqs()` and nothing else of that shape, so ship.py crashed with AttributeError on
+    # its very first step and this project could not be released at all. An assumed helper name,
+    # the same defect class this codebase's sibling has recorded repeatedly -- and it was invisible
+    # because nothing exercised do_tests() until somebody actually ran a release.
+    #
+    # The check is now implemented HERE, where it is used, rather than pointing at a function in
+    # another module that may or may not exist. `packaging` is what pip itself parses with; if it
+    # is not installed the check SKIPS AND SAYS SO rather than passing silently -- a check that
+    # cannot run must never look like a check that passed.
+    req = os.path.join(HERE, "backend", "requirements.txt")
     try:
-        import jhw
-        jhw._check_requirements()
-        say("  backend/requirements.txt parses the way pip parses it       OK")
-    except SystemExit as e:
-        say("  %s" % e)
-        ok = False
+        from packaging.requirements import Requirement, InvalidRequirement
+    except Exception:
+        say("  backend/requirements.txt NOT parsed (packaging not installed here)   SKIPPED")
+    else:
+        bad = []
+        try:
+            for n, raw in enumerate(open(req, encoding="utf-8").read().splitlines(), 1):
+                line = raw.split("#", 1)[0].strip()
+                if not line or line.startswith("-"):     # -r / -e / --flags are pip's, not ours
+                    continue
+                try:
+                    Requirement(line)
+                except InvalidRequirement as e:
+                    bad.append("line %d: %s  (%s)" % (n, line[:60], e))
+        except OSError as e:
+            bad.append("cannot read %s: %s" % (req, e))
+        if bad:
+            for b in bad:
+                say("  [X] requirements.txt: %s" % b)
+            ok = False
+        else:
+            say("  backend/requirements.txt parses the way pip parses it       OK")
 
     # (b) syntax. Cheap, and this repo has a documented history of files being shipped truncated
     #     or null-padded by an editor.
@@ -170,12 +307,37 @@ def do_git(message: str) -> bool:
     ahead, _ = git("rev-list", "--count", "@{u}..HEAD")
     if ahead and ahead != "0":
         say("  %s local commit(s) were not on the remote before this run" % ahead)
-    try:
-        import jhw
-        jhw._commit_and_push(message)                 # ONE implementation of the push rules
-    except SystemExit as e:
-        say("  [X] %s" % e)
+    # `jhw._commit_and_push` HAS NEVER EXISTED. jhw.py has no git helper at all -- ship.py was
+    # written against an imagined API and crashed here on every run. Implemented with the `git()`
+    # helper defined at the top of this file, which is the only git in this project.
+    #
+    # THE PUSH IS UNCONDITIONAL, per the module docstring: a commit that never leaves the PC is not
+    # a backup, and the droplet has no independent history. Push is idempotent; skipping it when
+    # there is nothing new to commit is what let the sibling's PC silently drift ahead of origin.
+    remote, rc = git("remote", "get-url", "origin")
+    if rc != 0 or not remote:
+        say("  [X] no `origin` remote - refusing to continue with an unbacked-up commit")
         return False
+    say("  origin: %s" % remote)
+    dirty0, _ = git("status", "--porcelain")
+    if dirty0:
+        _o, rc = git("add", "-A")
+        if rc != 0:
+            say("  [X] git add failed")
+            return False
+        out, rc = git("commit", "-m", message)
+        if rc != 0:
+            say("  [X] git commit failed: %s" % out[:300])
+            return False
+        say("  committed: %s" % message)
+    else:
+        say("  nothing to commit - pushing anyway (push is idempotent; skipping it breaks the "
+            "source-of-truth promise)")
+    out, rc = git("push", "origin", "HEAD")
+    if rc != 0:
+        say("  [X] git push failed: %s" % out[:300])
+        return False
+    say("  pushed to origin")
     dirty, _ = git("status", "--porcelain")
     if dirty:
         say("  [!] the tree is STILL dirty after commit+push:")
@@ -239,11 +401,14 @@ def do_stage(reboot_test=True):
 
 # ============================================================================ 4/6 + 5/6
 def do_deploy() -> bool:
-    hr("4/6  DEPLOY WEB   (jhw.py deploy -> deploy_direct.py: ONE ssh session, built on the droplet)")
-    import jhw
-    ns = argparse.Namespace(no_caddy=False)
+    hr("4/6  DEPLOY WEB   (deploy_direct.py: ONE ssh session, built on the droplet)")
+    # `jhw.cmd_deploy` HAS NEVER EXISTED either -- and `deploy` is not one of jhw.py's 22
+    # subcommands, which is the same fact from the other side. The real deploy ENGINE is
+    # deploy_direct.py, which this file already imports for the fingerprint check, so nothing is
+    # reimplemented: it is called directly instead of through a verb that was never wired up.
+    import deploy_direct as dd
     try:
-        jhw.cmd_deploy(ns)                  # the EXISTING orchestrator; nothing is reimplemented
+        dd.deploy(with_caddy=True)
     except SystemExit as e:
         if e.code:
             say("  [X] deploy failed: %s" % e)
@@ -301,10 +466,41 @@ def engine_is_current() -> tuple:
     return True, "container runs the shipped backend python (%s files, %s), state=%s" % (na, a, st)
 
 
+def _public_ok() -> bool:
+    """Is the live site actually serving? CODE **AND** BYTES.
+
+    A 200 with an empty body is exactly what a dead upstream behind a healthy proxy looks like --
+    that shape cost the sibling project two "successful" deploys over a blank site. And a browser
+    UA is required: the bot gate serves an unrecognised agent a 404, so a curl-shaped probe would
+    record a working app as broken.
+    """
+    import urllib.request
+    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
+    allok = True
+    for url, want in (("https://jobhuntwow.com/api/health", 200),
+                      ("https://jobhuntwow.com/", 200)):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": ua})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                body = r.read() or b""
+                good = r.status == want and len(body) > 200
+                say("  %-38s %s  %d bytes%s" % (url, r.status, len(body),
+                                                "" if good else "   <-- EMPTY BODY"))
+                allok = allok and good
+        except Exception as e:
+            say("  %-38s FAILED  %r" % (url, e))
+            allok = False
+    return allok
+
+
 def do_verify() -> bool:
     hr("5/6  VERIFY   (the public site AND the code actually inside the container)")
-    import jhw
-    public = jhw.cmd_status()
+    # `jhw.cmd_status` EXISTS but is the wrong subject twice over: it takes an argument
+    # (`def cmd_status(_)`), so calling it with none is a TypeError, and it prints the LOCAL docker
+    # sandbox plus a noVNC URL -- it returns None and says nothing about the public site. So
+    # `bool(public and ok)` could never have been True. Probe the real thing instead.
+    public = _public_ok()
     ok, detail = engine_is_current()
     say("  engine_fresh   %s  %s" % ("OK  " if ok else "FAIL", detail))
     if not public:

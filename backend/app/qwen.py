@@ -1,5 +1,6 @@
 """Thin async client for DigitalOcean Serverless Inference (OpenAI-compatible)."""
 import json
+import time
 import httpx
 from .settings import DO_BASE_URL, DO_KEY, QWEN_MODEL, ELECTRONIC_SYSTEM
 from . import llm
@@ -39,6 +40,8 @@ async def chat_stream(messages, model: str = "", temperature: float = 0.4):
         "temperature": temperature,
         "stream": True,
     }
+    _usage = None
+    _t0 = time.time()
     async with httpx.AsyncClient(timeout=None) as c:
         async with c.stream("POST", f"{DO_BASE_URL}/chat/completions",
                             headers=_headers(), json=payload) as r:
@@ -54,8 +57,24 @@ async def chat_stream(messages, model: str = "", temperature: float = 0.4):
                     break
                 try:
                     obj = json.loads(data)
+                    # Some gateways append a final usage-only chunk (empty `choices`). Keep it if
+                    # it arrives; never require it.
+                    if isinstance(obj.get("usage"), dict):
+                        _usage = obj["usage"]
                     delta = obj["choices"][0]["delta"].get("content")
                     if delta:
                         yield delta
                 except Exception:
                     continue
+    # METER IT. Fourth and last chokepoint in this service. A meter on three of four produces a
+    # confident number that is short by an unknown amount, which is worse than no number: it would
+    # be used to clear this project of spend it had actually made.
+    #
+    # `_usage` stays None on a normal stream, and record() then marks the line tokens_known=false
+    # rather than writing a zero. Zero is a measurement; unknown is not.
+    try:
+        from . import llm_events
+        llm_events.record(mdl, _usage, caller="qwen.chat_stream",
+                          ms=int((time.time() - _t0) * 1000), status="stream")
+    except Exception:
+        pass

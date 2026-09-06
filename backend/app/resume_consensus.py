@@ -247,6 +247,16 @@ async def call_model(model: str, system: str, user: str, *, max_tokens: int, tim
         # ceiling instead of blaming the model.
         print("[warn] tailor %s: OUTPUT TRUNCATED at max_tokens (finish_reason=length, %d chars) - "
               "this is OUR ceiling, not a model fault." % (model, len(txt)), file=sys.stderr)
+    # METER IT, at the SECOND chokepoint. `llm.complete` is the other one; a meter on only one of
+    # them measures half the spend and reports a confident number that is wrong, which is worse than
+    # no number at all. One emitter, called from both -- the "two homes, one wired up" defect has
+    # already cost this codebase's sibling four separate incidents.
+    try:
+        from . import llm_events
+        llm_events.record(model, (d or {}).get("usage"), caller="tailor.call_model",
+                          status=str(finish or "ok"))
+    except Exception:
+        pass
     return txt, (d or {}).get("usage") or {}, finish
 
 

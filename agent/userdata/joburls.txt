@@ -1,0 +1,10 @@
+# joburls.txt -- one job-posting URL per line.
+# Blank lines and '#' comments are ignored, so you can park a job without deleting it.
+# Run everything in this file with ONE command:   python apply_all.py
+
+https://sailpoint.wd1.myworkdayjobs.com/SailPoint/job/Remote-Germany/Agentic-Technology-Specialist-Sales-Executive_R013643?source=LinkedIn
+
+# Toyota Kreditbank -- SAP SuccessFactors. No adapter in flows/ yet, and the form is
+# account-creation-plus-application in one page, so `apply` will not get through it
+# unaided. Left commented until a SuccessFactors adapter exists.
+# https://jobs.toyota-bank-portal.de/tkg/job/K%C3%B6ln-Senior-Manager-%28mwd%29-Data-Management-&-AI-Adoption-%28Europa-Afrika-Region%29-NW-50858/1412262833/

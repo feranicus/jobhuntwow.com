@@ -73,7 +73,9 @@ python ship.py --test           # gates only
 python ship.py --rollback       # back to last-known-good, redeployed
 ```
 
-`jhw.py deploy` is still the deploy verb and `ship.py` calls it — nothing is reimplemented. The check
+`ship.py` calls `deploy_direct.py` directly — nothing is reimplemented. (NOTE: there is no
+`jhw.py deploy` subcommand; this line used to claim there was, and that sent one operator to a
+command that does not exist. `python ship.py` is the deploy verb.) The check
 inventory, the four-model review panel, the governance rules and how to enable the staging droplet
 (one variable: `JHW_STAGING_HOST`) are documented in **[docs/CICD.md](docs/CICD.md)**.
 

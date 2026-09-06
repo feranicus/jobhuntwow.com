@@ -236,99 +236,31 @@ def apply_context(url: str = ""):
 
 
 def _ensure_job_json_for_url(ats_url: str, data: dict) -> None:
-    """For direct ATS applies, seed out/job.json so local tailor can run.
-
-    CRITICAL: never keep a stale JD from another employer (measured 2026-08-18: Cohere apply
-    tailored against leftover GE Vernova Senior Project Manager job.json).
-    """
+    """For direct ATS applies (no LinkedIn scrape), seed out/job.json so local tailor can run."""
     jp = os.path.join(OUT, "job.json")
-    company, title, location = "", "", ""
+    # Keep existing scrape if present and non-empty
+    if os.path.isfile(jp):
+        try:
+            cur = json.load(open(jp, encoding="utf-8"))
+            if (cur.get("title") or cur.get("company") or cur.get("description")):
+                return
+        except Exception:
+            pass
+    # Derive company from ashby/greenhouse URL path when possible
+    company, title = "", ""
     u = (ats_url or "").lower()
-    raw = ats_url or ""
     m = re.search(r"ashbyhq\.com/([^/]+)", u)
     if m:
         company = m.group(1).replace("-", " ").strip()
     m = re.search(r"greenhouse\.io/([^/]+)", u)
     if m:
         company = m.group(1).replace("-", " ").strip()
-    # Workday: https://smithnephew.wd5.myworkdayjobs.com/External/job/UK---Central-London/IT-Director--SAP-S-4HANA-..._R90869
-    m = re.search(r"https?://([a-z0-9-]+)\.wd\d+\.myworkdayjobs\.com", u)
-    if m:
-        slug = m.group(1).replace("-", " ").strip()
-        # common brand fixes
-        brand = {
-            "smithnephew": "Smith & Nephew",
-            "intive": "Intive",
-            "gevernova": "GE Vernova",
-        }.get(slug.replace(" ", ""), slug.title())
-        company = brand
-        m2 = re.search(r"/job/([^/]+)/([^/?#]+)", raw, re.I)
-        if m2:
-            location = m2.group(1).replace("---", " - ").replace("-", " ").strip()
-            title_slug = m2.group(2)
-            # strip job id suffix _R90869
-            title_slug = re.sub(r"_R\d+$", "", title_slug)
-            # preserve SAP S/4HANA style before dash→space
-            title_slug = title_slug.replace("S-4HANA", "S/4HANA").replace("S4HANA", "S/4HANA")
-            title = title_slug.replace("--", " — ").replace("-", " ").strip()
-            title = re.sub(r"\s+", " ", title)
-            title = title.replace("S/4HANA", "S/4HANA")  # keep slash
-    company = company or "Employer"
-
-    if os.path.isfile(jp):
-        try:
-            cur = json.load(open(jp, encoding="utf-8"))
-            cur_co = str(cur.get("company") or "").lower()
-            cur_url = str(cur.get("url") or "").lower()
-            same_employer = (
-                company.lower() in cur_co
-                or company.lower().replace(" & ", "") in cur_co.replace(" & ", "")
-                or company.lower() in cur_url
-                or (company.split()[0].lower() in cur_url if company else False)
-            )
-            same_url = (ats_url or "").split("?")[0].lower() in cur_url
-            if same_employer and same_url and (cur.get("title") or cur.get("description")):
-                return
-            if same_employer and (cur.get("title") or cur.get("description")) and (
-                same_url or cur.get("source") != "direct_ats_seed"
-            ):
-                return
-            print(f"[i] replacing stale out/job.json ({cur.get('company')!r} / {cur.get('title')!r}) "
-                  f"for this apply ({company!r})", flush=True)
-        except Exception:
-            pass
-
-    if not title:
-        title = "Application"
-        if company and company != "Employer":
-            title = f"Role at {company}"
-    # Role-aware seed description so local tailor is not stuck on sales-only framing
-    role_hint = title.lower()
-    if any(k in role_hint for k in ("sap", "s/4", "s4hana", "supply chain", "transformation", "it director")):
-        focus = (
-            "Tailor to IT leadership, SAP S/4HANA, supply-chain transformation, ERP program delivery, "
-            "enterprise architecture, vendor governance, and multi-country rollout. "
-            "Emphasize 20+ years leading complex technology and digital transformations across EMEA."
-        )
-    elif any(k in role_hint for k in ("sales", "commercial", "revenue", "account")):
-        focus = (
-            "Tailor to senior enterprise sales / commercial leadership; "
-            "20+ years, DACH/EMEA, cyber/cloud/AI, MEDDPICC."
-        )
-    else:
-        focus = (
-            "Tailor to the posted role using senior leadership experience across technology, "
-            "cybersecurity, cloud, and enterprise transformation in EMEA."
-        )
+    # Prefer resume headline as soft title context only — real title unknown
+    title = (data.get("basics") or {}).get("headline") or "Application"
     seed = {
         "title": title,
-        "company": company,
-        "location": location,
-        "description": (
-            f"{title} at {company}"
-            + (f" ({location})" if location else "")
-            + f". Source: {ats_url}. {focus}"
-        ),
+        "company": company or "Employer",
+        "description": f"Application for {company or 'this role'} via {ats_url}",
         "url": ats_url,
         "apply_type": "external",
         "source": "direct_ats_seed",
@@ -554,17 +486,8 @@ async def run_apply(jid):
     # not be turned loose on it). flows/workday.py -- built from the candidate's own recording --
     # is the DEFAULT; JHW_WD_EXPERIMENTAL=1 opts into the unverified workday_wd.py instead.
 
-    # Greenhouse boards OR company career pages that embed GH via ?gh_jid=
-    # Measured WEKA 2026-08-18: https://www.weka.io/careers/?gh_jid=5159915007 was treated as
-    # Unknown ATS -> Stagehand 500 -> llm_driver wandered off clicking "Careers"/"WEKA home".
-    _is_gh = (
-        "greenhouse.io" in ats
-        or "gh_jid=" in ats
-        or "gh_jid=" in (prep.get("ats_url") or "").lower()
-        or bool(__import__("re").search(r"[?&]gh_jid=\d+", prep.get("ats_url") or "", re.I))
-    )
-    if prep["apply_type"] == "external" and _is_gh:
-        print("[i] Greenhouse — recorded adapter (incl. company pages with gh_jid) ...")
+    if prep["apply_type"] == "external" and "greenhouse.io" in ats:
+        print("[i] Greenhouse — recorded adapter ...")
         # TWO DIFFERENT THINGS, deliberately: `llm_answer` writes free-text prose with a model,
         # `ask.ask_human` asks the CANDIDATE. Passing the model in as the human rung would let it
         # answer a veteran/disability declaration on his behalf — which is the exact behaviour he
@@ -669,8 +592,6 @@ async def run_apply(jid):
     # URL derivation, the account gate and Workday's button->listbox portal dropdowns, then hands
     # the rest of the form to the generic driver.
     if workday_wd.is_workday(target) or workday_wd.is_workday_gateway(target):
-        # Seed JD + local tailor for THIS Workday posting (SAP/S&N etc.), not leftover Cohere/Ashby PDFs.
-        resume_path = _ensure_fresh_docs(prep.get("ats_url") or target or "", data, block) or resume_path
         # ROUTING CORRECTED 2026-08-16. flows/workday.py is built from the CANDIDATE'S OWN
         # Playwright recording of the full Accenture wd103 lifecycle (recordings/workday.py,
         # documented in RECORDINGS_FINDINGS.md): Accept Cookies -> Use My Last Application ->

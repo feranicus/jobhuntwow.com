@@ -6,7 +6,8 @@ droplet builds the image itself (`docker compose build`), exactly like cybergod'
 Reason: the GitHub round-trip added a 2-minute wait, a second source of truth and a failure mode
 that had nothing to do with the app.
 
-Driven by `python jhw.py deploy` — you do not run this file yourself.
+Driven by `python ship.py` — you do not run this file yourself. (There is no `jhw.py deploy`
+subcommand; that name appeared in the docs and never in the argparse.)
 
 Env (all optional): DROPLET_HOST (default 64.225.108.200) · DROPLET_USER (root) · SSH_KEY (path)
 """

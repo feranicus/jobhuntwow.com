@@ -234,181 +234,6 @@ def apply_context(url: str = ""):
     return candidate_block(data), files, creds
 
 
-
-def _ensure_job_json_for_url(ats_url: str, data: dict) -> None:
-    """For direct ATS applies, seed out/job.json so local tailor can run.
-
-    CRITICAL: never keep a stale JD from another employer (measured 2026-08-18: Cohere apply
-    tailored against leftover GE Vernova Senior Project Manager job.json).
-    """
-    jp = os.path.join(OUT, "job.json")
-    company, title, location = "", "", ""
-    u = (ats_url or "").lower()
-    raw = ats_url or ""
-    m = re.search(r"ashbyhq\.com/([^/]+)", u)
-    if m:
-        company = m.group(1).replace("-", " ").strip()
-    m = re.search(r"greenhouse\.io/([^/]+)", u)
-    if m:
-        company = m.group(1).replace("-", " ").strip()
-    # Workday: https://smithnephew.wd5.myworkdayjobs.com/External/job/UK---Central-London/IT-Director--SAP-S-4HANA-..._R90869
-    m = re.search(r"https?://([a-z0-9-]+)\.wd\d+\.myworkdayjobs\.com", u)
-    if m:
-        slug = m.group(1).replace("-", " ").strip()
-        # common brand fixes
-        brand = {
-            "smithnephew": "Smith & Nephew",
-            "intive": "Intive",
-            "gevernova": "GE Vernova",
-        }.get(slug.replace(" ", ""), slug.title())
-        company = brand
-        m2 = re.search(r"/job/([^/]+)/([^/?#]+)", raw, re.I)
-        if m2:
-            location = m2.group(1).replace("---", " - ").replace("-", " ").strip()
-            title_slug = m2.group(2)
-            # strip job id suffix _R90869
-            title_slug = re.sub(r"_R\d+$", "", title_slug)
-            # preserve SAP S/4HANA style before dash→space
-            title_slug = title_slug.replace("S-4HANA", "S/4HANA").replace("S4HANA", "S/4HANA")
-            title = title_slug.replace("--", " — ").replace("-", " ").strip()
-            title = re.sub(r"\s+", " ", title)
-            title = title.replace("S/4HANA", "S/4HANA")  # keep slash
-    company = company or "Employer"
-
-    if os.path.isfile(jp):
-        try:
-            cur = json.load(open(jp, encoding="utf-8"))
-            cur_co = str(cur.get("company") or "").lower()
-            cur_url = str(cur.get("url") or "").lower()
-            same_employer = (
-                company.lower() in cur_co
-                or company.lower().replace(" & ", "") in cur_co.replace(" & ", "")
-                or company.lower() in cur_url
-                or (company.split()[0].lower() in cur_url if company else False)
-            )
-            same_url = (ats_url or "").split("?")[0].lower() in cur_url
-            if same_employer and same_url and (cur.get("title") or cur.get("description")):
-                return
-            if same_employer and (cur.get("title") or cur.get("description")) and (
-                same_url or cur.get("source") != "direct_ats_seed"
-            ):
-                return
-            print(f"[i] replacing stale out/job.json ({cur.get('company')!r} / {cur.get('title')!r}) "
-                  f"for this apply ({company!r})", flush=True)
-        except Exception:
-            pass
-
-    if not title:
-        title = "Application"
-        if company and company != "Employer":
-            title = f"Role at {company}"
-    # Role-aware seed description so local tailor is not stuck on sales-only framing
-    role_hint = title.lower()
-    if any(k in role_hint for k in ("sap", "s/4", "s4hana", "supply chain", "transformation", "it director")):
-        focus = (
-            "Tailor to IT leadership, SAP S/4HANA, supply-chain transformation, ERP program delivery, "
-            "enterprise architecture, vendor governance, and multi-country rollout. "
-            "Emphasize 20+ years leading complex technology and digital transformations across EMEA."
-        )
-    elif any(k in role_hint for k in ("sales", "commercial", "revenue", "account")):
-        focus = (
-            "Tailor to senior enterprise sales / commercial leadership; "
-            "20+ years, DACH/EMEA, cyber/cloud/AI, MEDDPICC."
-        )
-    else:
-        focus = (
-            "Tailor to the posted role using senior leadership experience across technology, "
-            "cybersecurity, cloud, and enterprise transformation in EMEA."
-        )
-    seed = {
-        "title": title,
-        "company": company,
-        "location": location,
-        "description": (
-            f"{title} at {company}"
-            + (f" ({location})" if location else "")
-            + f". Source: {ats_url}. {focus}"
-        ),
-        "url": ats_url,
-        "apply_type": "external",
-        "source": "direct_ats_seed",
-    }
-    os.makedirs(OUT, exist_ok=True)
-    json.dump(seed, open(jp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
-    print(f"[i] seeded out/job.json for tailor (company={seed['company']!r}) — "
-          "run scrape for a richer JD when possible", flush=True)
-
-
-def _run_local_tailor() -> bool:
-    """Generate out/resume.pdf + cover_letter.pdf from templates/resume_data.json + out/job.json."""
-    import subprocess as _sp
-    try:
-        p = _sp.run(["python3", "/agent/tailor.py"], capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=240)
-        out = (p.stdout or "") + (p.stderr or "")
-        for line in out.strip().splitlines()[-12:]:
-            print(line)
-        ok = p.returncode == 0 and os.path.isfile(os.path.join(OUT, "resume.pdf"))
-        if ok:
-            print("[OK] local tailor wrote out/resume.pdf + cover_letter.pdf", flush=True)
-        else:
-            print(f"[warn] local tailor exit={p.returncode}", flush=True)
-        return ok
-    except Exception as e:
-        print(f"[warn] local tailor failed: {type(e).__name__}: {e}", flush=True)
-        return False
-
-
-def _ensure_fresh_docs(ats_url: str, data: dict, block: str) -> str:
-    """Always prefer per-posting docs. Local tailor is the reliable path; Electronic is optional cache.
-
-    Ashby/Greenhouse used to early-return BEFORE any tailoring, so they sprayed weeks-old PDFs.
-    """
-    import hashlib as _hl
-    resume_path = ""
-    _stamp = os.path.join(OUT, ".tailored_for")
-    _key = _hl.sha1((ats_url or "local").encode()).hexdigest()[:16]
-    _have = all(os.path.isfile(os.path.join(OUT, f)) for f in ("resume.pdf", "cover_letter.pdf"))
-    _same = False
-    if os.path.isfile(_stamp):
-        try:
-            _same = open(_stamp, encoding="utf-8").read().strip() == _key
-        except Exception:
-            _same = False
-    if _have and _same and os.getenv("JHW_FRESH_DOCS", "").lower() not in ("1", "true", "yes"):
-        age = int(time.time() - os.path.getmtime(os.path.join(OUT, "resume.pdf")))
-        print(f"[i] reusing documents already tailored for THIS posting ({age // 60}m old) "
-              "- set JHW_FRESH_DOCS=1 to rebuild", flush=True)
-        return os.path.join(OUT, "resume.pdf")
-
-    # 1) Local tailor from resume_data.json (must be the real Evgeny master, not Alex Example)
-    _ensure_job_json_for_url(ats_url, data)
-    if _run_local_tailor():
-        try:
-            open(_stamp, "w", encoding="utf-8").write(_key)
-        except Exception:
-            pass
-        return os.path.join(OUT, "resume.pdf")
-
-    # 2) Optional Electronic backend
-    try:
-        tail = None
-        try:
-            tail = __import__("asyncio").get_event_loop()
-        except Exception:
-            pass
-        # electronic.tailor_for is async — caller is async run_apply; we invoke from there
-    except Exception:
-        pass
-
-    if os.path.isfile(os.path.join(OUT, "resume.pdf")):
-        print("[warn] using existing out/resume.pdf (may be stale)", flush=True)
-        return os.path.join(OUT, "resume.pdf")
-    print("[WARN] no resume.pdf available — upload will be skipped", flush=True)
-    return ""
-
-
-
 SCRAPE_TASK = ("Go to {url} . You are logged in. Read the full LinkedIn job, expanding any 'see more'. "
  "Finish by outputting ONLY a JSON object: title, company, location, workplace_type, "
  "apply_type ('easy_apply'|'external'), description (full role text). Empty strings if not shown; no invention.")
@@ -554,31 +379,22 @@ async def run_apply(jid):
     # not be turned loose on it). flows/workday.py -- built from the candidate's own recording --
     # is the DEFAULT; JHW_WD_EXPERIMENTAL=1 opts into the unverified workday_wd.py instead.
 
-    # Greenhouse boards OR company career pages that embed GH via ?gh_jid=
-    # Measured WEKA 2026-08-18: https://www.weka.io/careers/?gh_jid=5159915007 was treated as
-    # Unknown ATS -> Stagehand 500 -> llm_driver wandered off clicking "Careers"/"WEKA home".
-    _is_gh = (
-        "greenhouse.io" in ats
-        or "gh_jid=" in ats
-        or "gh_jid=" in (prep.get("ats_url") or "").lower()
-        or bool(__import__("re").search(r"[?&]gh_jid=\d+", prep.get("ats_url") or "", re.I))
-    )
-    if prep["apply_type"] == "external" and _is_gh:
-        print("[i] Greenhouse — recorded adapter (incl. company pages with gh_jid) ...")
+    if prep["apply_type"] == "external" and "greenhouse.io" in ats:
+        print("[i] Greenhouse — recorded adapter ...")
         # TWO DIFFERENT THINGS, deliberately: `llm_answer` writes free-text prose with a model,
         # `ask.ask_human` asks the CANDIDATE. Passing the model in as the human rung would let it
         # answer a veteran/disability declaration on his behalf — which is the exact behaviour he
         # suspected on the OKX run and which must never be possible.
-        resume_path = _ensure_fresh_docs(prep.get("ats_url") or "", data, block) or resume_path
         await _report("greenhouse", await greenhouse.drive(
             data, resume_path, prep.get("ats_url", ""), answer_fn=llm_answer,
             asker=ask.ask_human)); return
 
     if prep["apply_type"] == "external" and "ashbyhq.com" in ats:
-        # ASHBY, FROM HIS RECORDING. Documents MUST be tailored for THIS posting first —
-        # previously this branch returned before any tailor and sprayed a weeks-old PDF.
+        # ASHBY, FROM HIS RECORDING. Before this the URL fell through to "Unknown ATS" -> Stagehand
+        # (which answered HTTP 500 and did nothing, ~40s) -> the generic driver, which filled ONE field
+        # of fourteen and pressed Submit. The recording is the ground truth; a generic agent must not
+        # be turned loose on a form with a mandatory consent box.
         print("[i] Ashby — recorded adapter (upload -> location -> salary/notice -> radios -> essays)")
-        resume_path = _ensure_fresh_docs(prep.get("ats_url") or "", data, block) or resume_path
         await _report("ashby", await ashby.drive(
             data, resume_path, answer_fn=llm_answer, asker=ask.ask_human,
             ats_url=prep.get("ats_url", ""))); return
@@ -669,8 +485,6 @@ async def run_apply(jid):
     # URL derivation, the account gate and Workday's button->listbox portal dropdowns, then hands
     # the rest of the form to the generic driver.
     if workday_wd.is_workday(target) or workday_wd.is_workday_gateway(target):
-        # Seed JD + local tailor for THIS Workday posting (SAP/S&N etc.), not leftover Cohere/Ashby PDFs.
-        resume_path = _ensure_fresh_docs(prep.get("ats_url") or target or "", data, block) or resume_path
         # ROUTING CORRECTED 2026-08-16. flows/workday.py is built from the CANDIDATE'S OWN
         # Playwright recording of the full Accenture wd103 lifecycle (recordings/workday.py,
         # documented in RECORDINGS_FINDINGS.md): Accept Cookies -> Use My Last Application ->

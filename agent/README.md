@@ -171,3 +171,35 @@ noVNC window. The agent never auto-submits (project standing rule).
   login wall; 2FA/CAPTCHA is routed to the candidate via ask_human. (Google discouraged: master
   account, blocks automation, and creds reach the LLM API when a login page is read.)
 - 2026-07-14  Human-in-the-loop
+## Applying to a whole list of jobs — `python apply_all.py`
+
+`python jhw.py apply <url>` takes exactly ONE job. Applying to twenty postings therefore
+meant twenty commands, which is the "talmud command blob" the standing rules forbid.
+`apply_all.py` is the one command for a batch:
+
+```
+python apply_all.py                      # reads userdata/joburls.txt
+python apply_all.py mylist.txt           # reads a file you name
+python apply_all.py <url> <url> ...      # or URLs straight on the command line
+```
+
+`userdata/joburls.txt` is plain text, one URL per line. Blank lines and lines starting
+with `#` are ignored, so a job can be parked without being deleted.
+
+It is deliberately dumb: it only sequences. Every safety property of `jhw.py apply` is
+untouched — the presubmit audit still blocks an incomplete form, `flows/conduct.py` still
+paces requests per host, the 3-LLM panel still handles stalls, and Telegram still gets the
+questions nobody else can answer. A failure on one job is logged and the run continues to
+the next; the summary at the end names every job and its return code, and the full
+transcript lands in `out/apply_all.log`.
+
+`subprocess.Popen` is opened with `encoding="utf-8", errors="replace"` — mandatory on
+Windows, where the default cp1252 dies on any non-latin1 byte in docker output and takes
+the reader thread with it.
+
+### What still has no adapter
+SAP **SuccessFactors** (e.g. Toyota Kreditbank via `career5.successfactors.eu`) is not yet
+covered by `flows/`. Its apply page is account-creation-and-application in one form, so the
+engine cannot get through it unaided. Record it (`python jhw.py record <url>`) and the
+compiled knowledge becomes the first rung of the answer ladder, the same way Greenhouse and
+Workday were solved.

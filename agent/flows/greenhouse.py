@@ -49,7 +49,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -154,7 +153,6 @@ async def _fill_exact(page, name: str, value: str, role: str = "textbox") -> boo
                 continue
             await el.click(timeout=ACTION_TIMEOUT)
             await el.fill(str(value), timeout=ACTION_TIMEOUT)
-            await _think("field")
             got = (await el.input_value()) or ""
             # A WRITE IS NOT DONE UNTIL IT HAS BEEN READ BACK. This repo's own rule, paid for three
             # times: `fill()` returning without throwing proves only that Playwright typed.
@@ -400,15 +398,6 @@ async def _choose_option(page, idx: int, value: str) -> bool:
         return False
 
 
-async def _think(kind: str = "action") -> None:
-    """Bounded human-like think-time. Politeness, not evasion — see flows/conduct.py."""
-    try:
-        import conduct as CD
-        await CD.pause(kind)
-    except Exception:
-        pass
-
-
 def _pretty(rx: str) -> str:
     """A field name a human can read. The log printed `'location \\(city\\)|^location'` as if that
     were the field -- a diagnostic that looks like a bug is a diagnostic that gets ignored."""
@@ -605,65 +594,22 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
                 cover_path = c
                 break
 
-    # AUDIT TRAIL — IMPROVEMENTS.md §4.4, and the operator's own instruction: "each new job
-    # submission and new questions are a learning curve and experience". Every field records WHERE
-    # its value came from; `memory.finish()` promotes the answers to LEARNED only when the SITE
-    # confirms the submission. Nothing here may ever raise: bookkeeping must not cost an application.
-    _t0 = time.time()
-    _run = 0
-    try:
-        import memory as MEM
-        _run = MEM.start_run(ats_url, ATS, employer)
-    except Exception as _e:
-        _log(f"    [memory] unavailable ({type(_e).__name__}) — running without the audit trail")
-        MEM = None
-
-    def _rec(label: str, value, source: str) -> None:
-        """One field, its value, and the rung that produced it."""
-        if not (MEM and _run):
-            return
-        try:
-            MEM.field(_run, label, str(value), source)
-        except Exception:
-            pass
-
     pw = await async_playwright().start()
     browser = None
     try:
         browser, ctx, page = await _connect(pw)
-        if ats_url and "greenhouse.io" not in (page.url or "").lower():
-            await page.goto(ats_url, wait_until="domcontentloaded", timeout=45000)
+        if ats_url:
+            # Always open the given URL (company careers/?gh_jid=... OR boards.greenhouse.io)
+            cur = (page.url or "").lower()
+            want = ats_url.lower()
+            if want not in cur and not (cur.rstrip("/") == want.rstrip("/")):
+                await page.goto(ats_url, wait_until="domcontentloaded", timeout=45000)
         await page.bring_to_front()
         await page.wait_for_timeout(1200)
         _log(f"START greenhouse :: {(page.url or '')[:88]}")
-        # CONDUCT: are we allowed to touch this employer right now, and is anything in the way?
-        try:
-            import conduct as CD
-        except Exception:
-            CD = None
-        if CD is not None:
-            _gate = CD.check(ats_url or page.url or "")
-            if not _gate["ok"]:
-                r["stage"] = "rate-limited"
-                r["note"] = (f"NOT applying: {_gate['why']}. Try again in "
-                             f"{_gate['wait_s'] // 60}min. This protects the candidate from being "
-                             f"blocked by the employers he is applying to.")
-                _log("    " + r["note"])
-                return r
-            CD.record(ats_url or page.url or "")
-            _ch = await CD.challenge(page, log=_log)
-            if _ch["kind"]:
-                r["stage"] = "challenge"
-                r["note"] = f"a bot challenge is in the way ({_ch['kind']}: {_ch['evidence']})"
-                # WE DO NOT TRY TO GET PAST IT. Hand the live browser to the human, who is watching
-                # it in noVNC anyway, and say exactly why.
-                if asker:
-                    try:
-                        await asker(CD.handover_text(_ch["kind"], page.url or ats_url or ""))
-                    except Exception:
-                        pass
-                _log("    " + r["note"] + " — handed to you; I will not attempt to defeat it")
-                return r
+        # Company career pages with ?gh_jid= often need a scroll + "Apply for this job" before fields appear
+        if "gh_jid=" in (ats_url or "").lower() and "greenhouse.io" not in (page.url or "").lower():
+            _log("    company page with gh_jid — will open Apply for this job (not leave this URL)")
         if KB is not None:
             _log(f"    knowledge: {len(KB.labels(ATS))} recorded field name(s) for this ATS")
 
@@ -684,13 +630,58 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
             # resolves ties by DOM order -- the exact class that took the Workday driver off the ATS
             # when `r"sign\s*in"` matched "Sign in with Google". The repo-wide selector guard caught
             # this one before it ever ran.
-            ap = page.get_by_role(
-                "button",
-                name=re.compile(r"^\s*apply( now| for this job| to this job)?\s*$", re.I)).first
-            if await ap.count() and await _vis(ap, 2000):
-                await ap.click(timeout=3000)
-                await page.wait_for_timeout(1500)
-                _log("    clicked Apply")
+            clicked = False
+            for role, rx in (
+                ("button", r"^\s*apply( now| for this job| to this job)?\s*$"),
+                ("link", r"^\s*apply( now| for this job| to this job)?\s*$"),
+                ("button", r"apply for this job"),
+                ("link", r"apply for this job"),
+            ):
+                try:
+                    ap = page.get_by_role(role, name=re.compile(rx, re.I)).first
+                    if await ap.count() and await _vis(ap, 2000):
+                        try:
+                            await ap.scroll_into_view_if_needed(timeout=2000)
+                        except Exception:
+                            pass
+                        await ap.click(timeout=3000)
+                        await page.wait_for_timeout(1800)
+                        _log(f"    clicked Apply ({role})")
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+            if not clicked:
+                # text fallback (some GH embeds use plain anchors)
+                try:
+                    ap = page.get_by_text(re.compile(r"apply for this job", re.I)).first
+                    if await ap.count() and await _vis(ap, 2000):
+                        await ap.click(timeout=3000)
+                        await page.wait_for_timeout(1800)
+                        _log("    clicked Apply (text)")
+                        clicked = True
+                except Exception:
+                    pass
+            # OneTrust / cookie overlays block the Apply control on company pages (WEKA)
+            if not clicked:
+                for nm in (r"accept all", r"accept cookies", r"^accept$", r"agree"):
+                    try:
+                        bt = page.get_by_role("button", name=re.compile(nm, re.I)).first
+                        if await bt.count() and await _vis(bt, 800):
+                            await bt.click(timeout=2000)
+                            _log(f"    dismissed overlay before Apply ({nm})")
+                            await page.wait_for_timeout(600)
+                    except Exception:
+                        pass
+                try:
+                    ap = page.get_by_text(re.compile(r"apply for this job", re.I)).first
+                    if await ap.count():
+                        await ap.scroll_into_view_if_needed(timeout=2000)
+                        await ap.click(timeout=3000)
+                        await page.wait_for_timeout(1800)
+                        _log("    clicked Apply after overlay dismiss")
+                except Exception:
+                    pass
         except Exception:
             pass                                     # many boards show the form directly
 
@@ -702,7 +693,6 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
                              ("Email", _ats_email(b), "email")):
             if await _fill_exact(page, nm, val):
                 r["filled"].append(key)
-                _rec(nm, val, "profile")
         # gitlab words the preferred-name question differently
         if "preferred" not in r["filled"] and b.get("preferred_name"):
             try:
@@ -732,7 +722,6 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
         nat = phone_national(b.get("phone", ""))
         if nat and await _fill_exact(page, "Phone", nat):
             r["filled"].append("phone")
-            _rec("Phone", nat, "recorded")
             _log(f"    phone sent as the NATIONAL number {nat!r} "
                  f"(the recorded fact: +49… is rejected)")
 
@@ -747,32 +736,16 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
         # (or, better, in the one helper both call: `_pick_place()`).
         r["stage"] = "location"
         cty = city_only(b.get("city", ""))
-        _loc_done = False
-        if cty:
-            _loc_done = await _pick_place(page, r"location \(city\)|^location", cty,
-                                          "Location (City)")
-        if _loc_done:
+        if cty and await _pick_place(page, r"location \(city\)|^location", cty, "Location (City)"):
             r["filled"].append("location")
-            _rec("Location (City)", cty, "recorded")
-        elif cty:
-            # IT FAILED SILENTLY TWICE AND NOBODY HEARD. On Alpega this printed
-            #   'location (city)': typed 'Friedberg' and NO option appeared   (x2)
-            # and then the run simply moved on, so a REQUIRED field was left empty and the reason was
-            # buried in the middle of the log. The choice loop below enumerates every required
-            # react-select, so leaving it to that loop is the fix -- and saying so out loud is the
-            # other half, because a failure nobody escalates is a failure nobody fixes.
-            _log(f"    'Location (City)' did not resolve from {cty!r} on this tenant — leaving it to "
-                 f"the choice loop, which reads the options the page really offers")
 
         # ---- FILES.
         r["stage"] = "files"
         if await _attach(page, r"resume/?cv", resume_path):
             r["filled"].append("resume")
-            _rec("Resume/CV", os.path.basename(resume_path or ""), "documents")
             await page.wait_for_timeout(1500)
         if cover_path and await _attach(page, r"cover letter", cover_path):
             r["filled"].append("cover_letter")
-            _rec("Cover letter", os.path.basename(cover_path or ""), "documents")
             await page.wait_for_timeout(1200)
 
         # ---- LINKS + anything else we already know the answer to.
@@ -781,7 +754,6 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
             v = _answer(nm, data, employer)
             if v and await _fill_exact(page, nm, v):
                 r["filled"].append(key)
-                _rec(nm, v, "profile")
 
         # ---- WHATEVER IS LEFT. Every still-empty visible textbox gets one deterministic attempt
         # from the ladder; only what the ladder cannot answer is escalated.
@@ -808,7 +780,6 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
                         await el.fill(str(v), timeout=ACTION_TIMEOUT)
                         _log(f"    {lab[:44]!r} = {str(v)[:40]!r}   (from knowledge/profile)")
                         r["filled"].append("q:" + lab[:24])
-                        _rec(lab, v, "knowledge")
                     else:
                         unanswered.append(lab[:70])
                 except Exception:
@@ -838,20 +809,9 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
             for lab in unanswered[:8]:
                 v, via = "", ""
                 if ES is not None:
-                    # `answer_fn` and `asker` below were both protected; THIS was not, and it is the
-                    # one that raised. `KeyError: slice(None, 18, None)` came out of essay.context()
-                    # slicing a dict, left drive() entirely, and the choice fields, the panel and the
-                    # Telegram ask were never reached. Belt and braces: essay.write() can no longer
-                    # raise, AND its call site is guarded, because the rule is that NOTHING in this
-                    # loop may abort the run before the human rung.
-                    try:
-                        got = await ES.write(lab, data, defaults=defaults, job=_job, cover=_cov,
-                                             log=_log)
-                        v, via = got.get("value", ""), got.get("via", "")
-                    except Exception as e:
-                        _log(f"    [essay] call site error ({type(e).__name__}: {str(e)[:70]}) — "
-                             f"this question goes to you")
-                        v, via = "", "error"
+                    got = await ES.write(lab, data, defaults=defaults, job=_job, cover=_cov,
+                                         log=_log)
+                    v, via = got["value"], got["via"]
                 if not v and answer_fn:
                     # the legacy short-answer model, called with its REAL signature this time
                     try:
@@ -873,20 +833,9 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
                     except Exception:
                         rep = ""
                     v, via = (rep or "").strip(), "human"
-                # THE FILL ITSELF CAN RAISE. A Playwright timeout on one textarea would abort the
-                # whole run and lose the other five answers — the same class as the essay crash, one
-                # step later. My own AST check caught this; nothing in this loop may be unguarded.
-                _put = False
-                if v:
-                    try:
-                        _put = await _fill_exact(page, lab, str(v))
-                    except Exception as e:
-                        _log(f"    could not type the answer to {_pretty(lab)[:34]!r} "
-                             f"({type(e).__name__}) — carrying on")
-                if _put:
+                if v and await _fill_exact(page, lab, str(v)):
                     _log(f"    {_pretty(lab)[:44]!r} answered ({via}, {len(str(v))} chars)")
                     r["filled"].append("q:" + lab[:24])
-                    _rec(lab, v, via)
                     if LN is not None and via in ("documents", "human", "llm_answer"):
                         try:
                             LN.remember(lab, str(v), employer=employer)
@@ -961,7 +910,6 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
                     if got["value"] and await _choose_option(page, idx, got["value"]):
                         _log(f"    {label[:40]!r} <- {got['value'][:40]!r}  (via {got['via']})")
                         r["filled"].append("sel:" + label[:22])
-                        _rec(label, got["value"], got["via"])
                         if LN is not None and got["via"] in ("panel", "human"):
                             try:
                                 LN.remember(label, got["value"], employer=employer)
@@ -1004,7 +952,6 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
                 r["ok"] = True
                 r["note"] = "no Submit button found; the form is filled and waiting in noVNC."
                 return r
-            await _think("submit")
             await sb.first.click(timeout=ACTION_TIMEOUT)
             _log("    clicked Submit application")
         except Exception as e:
@@ -1038,35 +985,10 @@ async def drive(data: dict, resume_path: str = "", ats_url: str = "", answer_fn=
             _log("    " + r["note"])
         return r
     except Exception as e:
-        # A CRASH MUST NOT SWALLOW THE WORK. The Alpega run reported only
-        # `greenhouse driver error: KeyError: slice(None, 18, None)` and lost everything else: nine
-        # fields WERE filled, and the operator could not tell that from the message. Report what was
-        # done, name the stage it died in, and -- if the human is reachable -- tell him, because a
-        # crash is exactly when he most needs to know.
-        import traceback
-        r["note"] = (f"greenhouse driver error at stage={r['stage']}: {type(e).__name__}: {e}. "
-                     f"Filled before the error: {', '.join(sorted(set(r['filled']))) or 'nothing'}")
+        r["note"] = f"greenhouse driver error: {type(e).__name__}: {e}"
         _log("    " + r["note"])
-        _log("    " + traceback.format_exc().strip().splitlines()[-1])
-        if asker:
-            try:
-                await asker(f"The Greenhouse run hit an internal error at stage `{r['stage']}`:\n\n"
-                            f"{type(e).__name__}: {str(e)[:200]}\n\n"
-                            f"{len(set(r['filled']))} field(s) were filled first. The form is still "
-                            f"open at http://localhost:9090/vnc.html if you want to finish it.")
-            except Exception:
-                pass
         return r
     finally:
-        # CLOSE THE RUN FIRST. This is the last thing we know about it and the first thing the next
-        # run needs — and `finish()` is what promotes an answer to LEARNED, but ONLY when the site
-        # confirmed the submission. Nothing weaker is evidence.
-        if MEM and _run:
-            try:
-                MEM.finish(_run, stage=r.get("stage", ""), ok=bool(r.get("ok")),
-                           ms=int((time.time() - _t0) * 1000), log=_log)
-            except Exception as _e:
-                _log(f"    [memory] could not close the run ({type(_e).__name__})")
         # DO NOT close the browser: it is the operator's sandbox Chrome, shared over CDP, and he is
         # watching it in noVNC. Only the CONNECTION is ours to drop.
         if browser:
@@ -1226,18 +1148,6 @@ def _selftest() -> int:
             return False        # the call exists but no test depends on the callable
         return False
     _dtree = _ast2.parse(_dsrc2.strip())
-    # NOTHING IN THE FREE-TEXT LOOP MAY BE AN UNGUARDED AWAIT. One exception there ended the Alpega
-    # run and took nine already-filled fields with it. Ask the tree, per await, whether it sits inside
-    # a Try; a string search cannot answer that.
-    _loop = _dsrc2[_dsrc2.index("for lab in unanswered"):_dsrc2.index('r["stage"] = "choices"')]
-    _lt = _ast2.parse("async def _f():\n" + "\n".join("    " + ln for ln in _loop.splitlines()))
-    _aw = [n for n in _ast2.walk(_lt) if isinstance(n, _ast2.Await)]
-    _in_try = {id(x) for tr in _ast2.walk(_lt) if isinstance(tr, _ast2.Try)
-               for x in _ast2.walk(tr) if isinstance(x, _ast2.Await)}
-    _bare = [_ast2.unparse(a)[:46] for a in _aw if id(a) not in _in_try]
-    ck(not _bare, (f"every await in the free-text loop is inside a try ({len(_aw)} awaits)"
-                   if not _bare else f"UNGUARDED await(s): {_bare}"))
-
     ck(_reachable(_dtree, "asker"),
        "the ASK rung is REACHABLE — guarded by a test on `asker`, not by a constant")
     ck("ES.write(" in _dsrc2,

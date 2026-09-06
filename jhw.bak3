@@ -25,47 +25,11 @@ except OSError:
     # WSL+Docker can replace the CWD inode, killing getcwd(); recover via $PWD (same path, new inode)
     os.chdir(os.environ.get("PWD", "/"))
     _SELF = os.path.abspath(__file__)
-_DIR = os.path.dirname(_SELF)
-
-# LAYOUT DETECTION — two valid placements of this file:
-#   A) agent/jhw.py              → sandbox compose is next to this file
-#   B) jobhuntwow-app/jhw.py     → sandbox compose is in agent/docker-compose.local.yml
-# Measured 2026-08-18: operator runs `python jhw.py` from jobhuntwow-app; the old code assumed
-# HERE always meant agent/, looked for docker-compose.local.yml in the app root, and every
-# apply died with "The system cannot find the file specified" + "no such service: backend".
-def _has_compose(d):
-    return os.path.isfile(os.path.join(d, "docker-compose.local.yml"))
-
-if _has_compose(_DIR):
-    HERE = _DIR                                                    # agent/
-    ROOT = os.path.abspath(os.path.join(_DIR, ".."))               # jobhuntwow-app/
-elif _has_compose(os.path.join(_DIR, "agent")):
-    ROOT = _DIR                                                    # jobhuntwow-app/
-    HERE = os.path.join(_DIR, "agent")                             # agent/
-else:
-    # last resort: walk up one level
-    parent = os.path.abspath(os.path.join(_DIR, ".."))
-    if _has_compose(os.path.join(parent, "agent")):
-        ROOT = parent
-        HERE = os.path.join(parent, "agent")
-    elif _has_compose(parent):
-        HERE = parent
-        ROOT = os.path.abspath(os.path.join(parent, ".."))
-    else:
-        HERE = _DIR
-        ROOT = os.path.abspath(os.path.join(_DIR, ".."))
-        print("[WARN] docker-compose.local.yml not found next to jhw.py or under ./agent/")
-        print(f"       jhw.py is at: {_SELF}")
-        print(f"       looked in:    {_DIR}")
-        print(f"                     {os.path.join(_DIR, 'agent')}")
-        print("       Put jhw.py in jobhuntwow-app/ (preferred) or agent/, with compose in agent/.")
-
+HERE = os.path.dirname(_SELF)                              # .../agent
+ROOT = os.path.abspath(os.path.join(HERE, ".."))            # .../jobhuntwow-app (backend compose)
 NOVNC = "http://localhost:9090/vnc.html"
 COOKIES = os.path.join(HERE, "linkedin_cookies.json")
-# cookies also live one or two levels up depending on layout
-COOKIES_SRC = os.path.abspath(os.path.join(ROOT, "..", "linkedin_cookies.json"))
-if not os.path.isfile(COOKIES_SRC):
-    COOKIES_SRC = os.path.abspath(os.path.join(ROOT, "linkedin_cookies.json"))
+COOKIES_SRC = os.path.abspath(os.path.join(HERE, "..", "..", "linkedin_cookies.json"))
 
 
 def sh(*args, cwd=HERE, check=True):
@@ -78,32 +42,7 @@ def dc(*args, cwd=HERE, check=True):
 
 
 def ensure_prereqs():
-    # One-time layout confirmation so a wrong cwd is obvious
-    if not getattr(ensure_prereqs, "_said", False):
-        print(f"[i] layout: agent={HERE}")
-        print(f"           app ={ROOT}")
-        ensure_prereqs._said = True
     os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
-    # Common Windows mistake: master JSON saved as resume_datajson (no dot)
-    bad = os.path.join(HERE, "templates", "resume_datajson")
-    good = os.path.join(HERE, "templates", "resume_data.json")
-    if os.path.isfile(bad) and not os.path.isfile(good):
-        try:
-            os.rename(bad, good)
-            print(f"[OK] renamed templates/resume_datajson -> resume_data.json")
-        except Exception as e:
-            print(f"[WARN] templates/resume_datajson exists but resume_data.json does not. "
-                  f"Rename it manually ({e}).")
-    # same class of bug in out/
-    for stem in ("job", "fields", "learned_answers", "conduct", "ats_accounts"):
-        b = os.path.join(HERE, "out", stem + "json")
-        g = os.path.join(HERE, "out", stem + ".json")
-        if os.path.isfile(b) and not os.path.isfile(g):
-            try:
-                os.rename(b, g)
-                print(f"[OK] renamed out/{stem}json -> {stem}.json")
-            except Exception:
-                pass
     if not os.path.exists(COOKIES):
         if os.path.exists(COOKIES_SRC):
             shutil.copy(COOKIES_SRC, COOKIES); print(f"[OK] copied LinkedIn cookies from {COOKIES_SRC}")

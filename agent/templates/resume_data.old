@@ -1,0 +1,238 @@
+{
+  "meta": {
+    "note": "Canonical master data for JobHuntWOW. The LLM tailors a COPY of this per position (reorder/emphasise bullets, rewrite summary, pick relevant skills) then renders resume.html / cover_letter.html. Keep facts here true; never invent.",
+    "updated": "2026-07-14"
+  },
+  "basics": {
+    "name": "Jev Vainsteins",
+    "legal_name": "Evgeny Vainshtein",
+    "headline": "Principal Cyber Security Architect & Strategic Development — DACH",
+    "tagline": "Turning cyber risk into business value",
+    "location": "Frankfurt Rhine-Main, Germany",
+    "address": "Hermann-J.-Bach-Weg 16, 61169 Friedberg (Hessen)",
+    "phone": "+49 157 85541545",
+    "email": "feranicus@s4biz.io",
+    "linkedin": "linkedin.com/in/feranicus",
+    "websites": [
+      "cybergod.ai",
+      "itzen.ai"
+    ],
+    "languages": [
+      {
+        "name": "English",
+        "level": "Native / Bilingual"
+      },
+      {
+        "name": "German",
+        "level": "Native / Bilingual"
+      },
+      {
+        "name": "Russian",
+        "level": "Native / Bilingual"
+      },
+      {
+        "name": "Hebrew",
+        "level": "Native / Bilingual"
+      }
+    ],
+    "city": "Friedberg",
+    "country": "Germany",
+    "preferred_name": "Jev",
+    "website": "itzen.ai",
+    "gender": "Male",
+    "phone_national": "15785541545",
+    "work_authorisation": "EU citizen (Latvia) — no sponsorship required",
+    "relocate": "No",
+    "travel": "Yes",
+    "notice_period": "1 month"
+  },
+  "summary": "Cybersecurity, Cloud & Digital-Transformation leader with 20+ years building, securing and scaling technology across telecom, defense and enterprise. Blends executive engagement (CIO/CISO) with hands-on product creation — from SASE/SD-WAN and Zero Trust to LLM-powered security tooling. Proven at multi-million-euro transformations (AWS, Azure, GCP), 10,000-node edge rollouts, and turning cyber risk into board-ready business value.",
+  "expertise": {
+    "Cybersecurity": [
+      "Offensive & Defensive Ops",
+      "Zero Trust / ZTNA",
+      "SASE / SSE / SD-WAN",
+      "Threat Intelligence",
+      "SIEM / XDR / MDR",
+      "CSPM / CWPP",
+      "IAM / PAM",
+      "DevSecOps",
+      "DORA · NIS2 · CRA · GDPR"
+    ],
+    "AI & Automation": [
+      "LLM Agents / Tooling",
+      "OpenAI · Gemini · Anthropic · Llama",
+      "AWS Bedrock",
+      "GenAI Automation",
+      "Python"
+    ],
+    "Cloud & Infrastructure": [
+      "AWS · Azure · GCP",
+      "Kubernetes (EKS/AKS) · Rancher",
+      "OpenStack · Edge",
+      "Terraform · Ansible",
+      "FinOps · CAF / CCoE"
+    ],
+    "Leadership": [
+      "Enterprise Sales · MEDDPICC",
+      "Strategic Accounts · Deal Leadership",
+      "Program & T&T Management",
+      "Executive Engagement",
+      "Product Creation"
+    ]
+  },
+  "experience": [
+    {
+      "company": "Colt Technology Services",
+      "title": "Cyber Security Client Partner",
+      "location": "Frankfurt, DACH",
+      "start": "Feb 2026",
+      "end": "Present",
+      "summary": "Drive enterprise growth across Germany, Switzerland & Austria through Network & Cybersecurity transformation (SD-WAN / SASE / SSE). Matrix responsibility for 35+ Account Executives, advising CIOs, CISOs and executives from discovery to close.",
+      "highlights": [
+        "Built Stratos — a passive external-attack-surface platform that maps a customer's real internet-facing estate before the first meeting, turning discovery into hard evidence.",
+        "Created C-BIQ (Cyber Business Impact Quantification) — a board-ready model that prices cyber risk in euros, moving the conversation from fear to finance.",
+        "Built GEOPOL — a national-authority-grade geopolitical cyber-threat assessment naming adversaries, CVEs and geopolitics, feeding DORA / TIBER-EU testing.",
+        "Shipped ELECTRONIC LLM — two zero-trust AI agents that put Stratos, C-BIQ and GEOPOL in every AE's hands: one command runs recon, prices risk and generates four board-ready decks in minutes.",
+        "Own technology strategy, solutioning, pricing and commercials; orchestrate Sales, Product, Delivery and Partners (Fortinet, Zscaler, Versa, Cisco, Palo Alto) into winning proposals."
+      ]
+    },
+    {
+      "company": "Stars4Business OÜ (S4biz)",
+      "title": "Founder & Principal Developer / T&T Director",
+      "location": "EU",
+      "start": "2016",
+      "end": "Present",
+      "summary": "Founder-led technology consultancy and product studio spanning cloud transformation, edge and cybersecurity.",
+      "highlights": [
+        "Led global rollout of the Volkswagen D³ Edge Box to 10,000+ dealerships across 140+ countries (Fortinet vFirewall, K3s/Rancher, ZEDEDA Edge Cloud, containerised apps).",
+        "Architected 'Perseus Shield' / Cybergod — an open-source endpoint cybersecurity product for a major European bank (C#, Python, Scala/Akka, LXC).",
+        "Directed technical support for the viral AIHAWK GenAI project — 280k+ users; featured in Business Insider, MSN, 404 Media.",
+        "Delivered offensive-cyber and nationwide DPI programs for government agencies (national security & intelligence)."
+      ]
+    },
+    {
+      "company": "Amazon Web Services — for Telefónica Germany",
+      "title": "Transition & Transformation Director (account COO)",
+      "location": "Germany",
+      "start": "",
+      "end": "",
+      "summary": "Owned 20+ digital-transformation programs for Telefónica Germany, >€100M scope, B2B & B2C.",
+      "highlights": [
+        "Drove AWS migrations, Oracle & data-centre exits, Kubernetes and FinOps optimisation, GenAI, Big Data and CCaaS/Salesforce solutions.",
+        "Embedded cloud security & compliance (GDPR, confidential computing, IAM, incident-response simulation, CloudTrail, partner cyber solutions)."
+      ]
+    },
+    {
+      "company": "TOSCA LTD",
+      "title": "Post-M&A Transition & Transformation Director",
+      "location": "EU",
+      "start": "",
+      "end": "",
+      "summary": "Consolidated three companies' IT into a single pane of glass on Microsoft Azure (end customer: ALDI Group).",
+      "highlights": [
+        "Merged 3 ERP systems toward Microsoft Dynamics; delivered IoT / Industry 4.0 and Windows deployment automation."
+      ]
+    },
+    {
+      "company": "Luxair (Airline)",
+      "title": "Project Manager — Cloud Adoption & IAM",
+      "location": "Luxembourg",
+      "start": "",
+      "end": "",
+      "summary": "Led Cloud Adoption Framework and Identity & Access Management strategy (Azure, MS IAM) with Telindus Advisory Services.",
+      "highlights": []
+    },
+    {
+      "company": "Huawei",
+      "title": "IT Solutions Sales Director",
+      "location": "",
+      "start": "2014",
+      "end": "2016",
+      "summary": "Senior sales leadership for enterprise IT and data-centre solutions.",
+      "highlights": []
+    },
+    {
+      "company": "NetApp · Red Hat · Canonical · Cogent · Verint · Mobotix · D-Link · Bezeq International · LR Group",
+      "title": "Earlier Senior Technical, Sales & Leadership Roles",
+      "location": "",
+      "start": "",
+      "end": "",
+      "summary": "Two decades of cloud, open-source and cybersecurity roles for top-tier tech vendors and service providers.",
+      "highlights": []
+    }
+  ],
+  "education": [
+    {
+      "credential": "B.Sc. Computer Science",
+      "org": "Champlain College",
+      "years": "2000–2003"
+    }
+  ],
+  "certifications": [
+    "AWS Certified Cloud Practitioner",
+    "ZEDEDA Certified Edge Computing Associate (ZCEA)",
+    "ZEDEDA Certified Edge Administration Specialist (ZCES)",
+    "ZEDEDA Certified Sales Associate (ZCSA)"
+  ],
+  "awards": [
+    "Future Star Award",
+    "WEU DC Multi Intensive Award 2015"
+  ],
+  "skills_flat": [
+    "SASE",
+    "SD-WAN",
+    "SSE",
+    "Zero Trust",
+    "ZTNA",
+    "Offensive Cyber",
+    "MITRE ATT&CK",
+    "Threat Intelligence",
+    "SIEM",
+    "XDR",
+    "MDR",
+    "EDR",
+    "CSPM",
+    "CWPP",
+    "IAM",
+    "PAM",
+    "DLP",
+    "CASB",
+    "SWG",
+    "FWaaS",
+    "Micro-Segmentation",
+    "Container Security",
+    "API Security",
+    "DevSecOps",
+    "Vulnerability Management",
+    "IDPS",
+    "Encryption",
+    "UEBA",
+    "OT Security",
+    "DORA",
+    "NIS2",
+    "CRA",
+    "GDPR",
+    "AWS",
+    "Azure",
+    "GCP",
+    "Kubernetes",
+    "OpenStack",
+    "Rancher",
+    "Terraform",
+    "Ansible",
+    "Edge",
+    "FinOps",
+    "OpenAI",
+    "Gemini",
+    "Anthropic",
+    "Llama",
+    "AWS Bedrock",
+    "Python",
+    "Go",
+    "Rust",
+    "Scala",
+    "MEDDPICC",
+    "Enterprise Sales"
+  ]
+}

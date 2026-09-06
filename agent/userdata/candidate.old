@@ -174,9 +174,7 @@
 - github: https://github.com/feranicus
 
 ## documents
-- resume_default: "C:\\Users\\feran\\Downloads\\Resumes and positions\\Evgeny Vainshtein - CV 2026.pdf"
-- resume_master_html: "agent/templates/resume.html"  # CSS source; facts in resume_data.json
-- cover_master_html: "agent/templates/cover_letter.html"
+- resume_default: "C:\\Users\\feran\\Downloads\\Resumes and positions\\jevpreDE2025_updated.pdf"
 - resume_tailored: ""
 - cover_letter_tailored: ""
 - note: "Tailored files are regenerated per job description; paths written back here."

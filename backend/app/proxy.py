@@ -16,6 +16,7 @@ import json
 import os
 
 import re
+import time
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -88,12 +89,70 @@ async def models(authorization: str | None = Header(default=None)):
     return JSONResponse(body, status_code=r.status_code)
 
 
+# THE ALLOWLIST. A model the proxy may forward is one WE chose, measured, and priced. Anything
+# else is refused with the list, so a legitimate client learns what to ask for in one round trip.
+#
+# WHY THIS EXISTS (2026-09-01/03). `_resolve_model` passed any CONCRETE slug straight through to
+# DigitalOcean on OUR key. Two ids that appear in no configuration in any project we own --
+# `deepseek-v4-pro-0813` and `glm-5.3-flash`, both exact catalog slugs with snapshot suffixes, the
+# shape a client sends after listing /v1/models -- then accounted for >96% of the account's tokens
+# across two multi-hour bursts. Whoever held the proxy token could spend on any model in the
+# catalog and did. A proxy on a shared key with no model policy is an open wallet.
+# Env override JHW_PROXY_ALLOW (comma list) for a deliberate, named exception.
+def _allowed_models() -> set:
+    env = os.getenv("JHW_PROXY_ALLOW", "")
+    extra = {m.strip() for m in env.split(",") if m.strip()}
+    return set(DEFAULT_MODELS.values()) | extra
+
+
+def _client_ip(request: Request) -> str:
+    # ONE proxy (caddy) sits in front; the first X-Forwarded-For entry is the client. Attacker-
+    # controlled text, so it is logged, never trusted for authorisation.
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()[:64]
+    return (request.client.host if request.client else "")[:64]
+
+
 @router.post("/chat/completions")
 async def chat_completions(request: Request, authorization: str | None = Header(default=None)):
     _check_auth(authorization)
     payload = await request.json()
-    payload["model"] = await _resolve_model_checked(payload.get("model", "jhw-driver"))
+    requested = payload.get("model", "jhw-driver")
+    payload["model"] = await _resolve_model_checked(requested)
+    ip = _client_ip(request)
+    if payload["model"] not in _allowed_models():
+        # REFUSED, RECORDED, AND ALERTED. The refusal line is the evidence -- who asked, from
+        # where, for what -- and it is the single event this whole investigation has been waiting
+        # for. Somebody spent >96% of the account's tokens on two models that appear in no
+        # configuration we own, across two multi-hour sessions. The moment they try again they are
+        # named. A log line nobody is watching would waste that; this pages immediately.
+        #
+        # NO MARKDOWN: the model id and the address are attacker-controlled text, and one stray
+        # underscore makes Telegram reject the whole message as malformed entities -- which would
+        # silently lose the one alert that matters most.
+        try:
+            from . import llm_events
+            llm_events.record(payload["model"], None, caller="proxy.REFUSED", status="403",
+                              user=ip)
+        except Exception:
+            pass
+        try:
+            from . import notify
+            notify.telegram(
+                "AI PROXY REFUSED A MODEL\n\n"
+                "requested : %s\nresolved  : %s\nfrom IP   : %s\nallowed   : %s\n\n"
+                "This is the caller that has been spending on the shared DigitalOcean key. The "
+                "request was BLOCKED and cost nothing. The address above is the lead."
+                % (str(requested)[:80], payload["model"][:80], ip or "unknown",
+                   ", ".join(sorted(_allowed_models()))[:200]))
+        except Exception:
+            pass
+        raise HTTPException(403, {"error": "model not permitted through this proxy",
+                                  "requested": str(requested)[:80],
+                                  "allowed": sorted(_allowed_models())})
     stream = bool(payload.get("stream"))
+    _t0 = time.time()
 
     if not stream:
         async with httpx.AsyncClient(timeout=180) as c:
@@ -126,7 +185,28 @@ async def chat_completions(request: Request, authorization: str | None = Header(
                 else:
                     print(f"[proxy] {payload.get('model')} 400 and nothing named to fix: {body[:160]}",
                           flush=True)
-        return JSONResponse(r.json(), status_code=r.status_code)
+        # METER IT. THIS ENDPOINT IS THE ONE THAT MOST NEEDS IT: it forwards to DigitalOcean using
+        # OUR key, so any client holding the proxy token spends on this account without a key of
+        # its own. That is exactly the shape of the 2026-09-01 incident, where two model ids that
+        # appear in no configuration anywhere accounted for >96% of the account's tokens and no
+        # amount of reading our own code could attribute them. An external caller is invisible
+        # until the thing it comes through writes a line.
+        try:
+            _body = r.json()
+        except Exception:
+            # PRESERVE THE ORIGINAL FAILURE MODE. This line used to be `JSONResponse(r.json(), ...)`,
+            # so a non-JSON body raised. Swallowing that now to return an empty 200-shaped object
+            # would be a behaviour change smuggled in under a logging patch.
+            raise
+        try:
+            from . import llm_events
+            llm_events.record(payload.get("model"), (_body or {}).get("usage"),
+                              caller="proxy.chat_completions",
+                              ms=int((time.time() - _t0) * 1000),
+                              status=str(r.status_code), user=ip)
+        except Exception:
+            pass
+        return JSONResponse(_body, status_code=r.status_code)
 
     async def gen():
         # RAW passthrough: preserve DO's exact SSE bytes and framing. Reframing line-by-line and
@@ -137,4 +217,19 @@ async def chat_completions(request: Request, authorization: str | None = Header(
                                 headers=_do_headers(), json=payload) as r:
                 async for chunk in r.aiter_raw():
                     yield chunk
+        # RECORD THE CALL, AND DO NOT INVENT THE TOKENS. A streamed response carries no `usage`
+        # block unless the request asked for `stream_options.include_usage`, and adding that here
+        # would change the bytes a client receives -- on an endpoint whose comment three lines up
+        # says never to reframe SSE by hand, because doing so already broke Hermes once.
+        #
+        # So the honest record is: this model was called, by this caller, for this long, and the
+        # token count is NOT KNOWN. Logging zero would be a confident wrong number and would make
+        # a busy external client look free -- the same defect as pricing an unknown model cheaply.
+        # "Which model, how often, from where" is most of the attribution question anyway.
+        try:
+            from . import llm_events
+            llm_events.record(payload.get("model"), None, caller="proxy.chat_completions.stream",
+                              ms=int((time.time() - _t0) * 1000), status="stream", user=ip)
+        except Exception:
+            pass
     return StreamingResponse(gen(), media_type="text/event-stream")
