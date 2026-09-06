@@ -142,6 +142,13 @@ def test_generate_binds_the_body_email_to_the_session(monkeypatch):
         assert "stop-here" in str(e); r = {"status": "stopped", "body": b""}
     assert seen.get("email") == "wallet-test@example.com", (seen, r["status"], r["body"][:120])
 
+def test_the_api_schema_is_not_published():
+    """authz_audit found /openapi.json live on jobhuntwow.com: the whole route list, every
+    parameter name, every schema -- including the `model` field and the `email` query parameter
+    that were the two exposed doors. FastAPI ships /docs, /redoc and /openapi.json ON by default."""
+    for p in ("/openapi.json", "/docs", "/redoc"):
+        assert _call("GET", p)["status"] == 404, "%s is published" % p
+
 
 if __name__ == "__main__":
     from _mini import run_module

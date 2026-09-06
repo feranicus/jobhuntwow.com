@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -10,7 +12,19 @@ from .auth import router as auth_router, require_user
 from .electronic import router as electronic_router
 from .settings import CORS_ORIGINS
 
-app = FastAPI(title="JobHuntWOW API", version="0.1.0")
+# NO PUBLIC API DOCUMENTATION IN PRODUCTION (2026-09-06). `authz_audit.py` found
+# https://jobhuntwow.com/openapi.json serving the complete route list, parameter names and schemas
+# to anyone -- including, until today, `/api/chat`'s `model` field and `/api/electronic/*`'s
+# `email` query parameter. That is the map an attacker would otherwise have to guess at, and it is
+# how the two exposed doors were found by whoever found them. FastAPI enables /docs, /redoc and
+# /openapi.json by DEFAULT; disabling them is one argument each. Set JHW_API_DOCS=1 in a dev
+# environment to get them back. (Hiding docs is not a control -- the locks are the control, and
+# they are asserted by tests/test_chat_open_wallet.py -- but publishing the map is a gift.)
+_DOCS = os.getenv("JHW_API_DOCS", "") == "1"
+app = FastAPI(title="JobHuntWOW API", version="0.1.0",
+              docs_url="/docs" if _DOCS else None,
+              redoc_url="/redoc" if _DOCS else None,
+              openapi_url="/openapi.json" if _DOCS else None)
 _DEFAULT_ORIGINS = ["https://jobhuntwow.com", "https://www.jobhuntwow.com",
                     "http://localhost:5173", "http://127.0.0.1:5173",
                     "http://localhost:8090", "http://127.0.0.1:8090"]
