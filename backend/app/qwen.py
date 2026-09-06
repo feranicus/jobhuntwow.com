@@ -25,7 +25,7 @@ async def list_models():
     # Use the role router, whose slugs were picked from the measured bake-off.
     return {"models": ids, "default": QWEN_MODEL or llm.model_for("chat")}
 
-async def chat_stream(messages, model: str = "", temperature: float = 0.4):
+async def chat_stream(messages, model: str = "", temperature: float = 0.4, user: str = ""):
     """Yield text chunks from a streaming chat completion."""
     mdl = model or QWEN_MODEL or llm.model_for("chat")
     if not DO_KEY:
@@ -74,7 +74,7 @@ async def chat_stream(messages, model: str = "", temperature: float = 0.4):
     # rather than writing a zero. Zero is a measurement; unknown is not.
     try:
         from . import llm_events
-        llm_events.record(mdl, _usage, caller="qwen.chat_stream",
+        llm_events.record(mdl, _usage, caller="qwen.chat_stream", user=user,
                           ms=int((time.time() - _t0) * 1000), status="stream")
     except Exception:
         pass

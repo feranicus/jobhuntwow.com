@@ -11,6 +11,17 @@ import httpx
 from .settings import DO_BASE_URL, DO_KEY
 
 # role -> DO model slug (env override: JHW_MODEL_<ROLE>)
+def allowed_models() -> set:
+    """THE ONE MODEL ALLOWLIST for every path that forwards a caller-chosen model id to DigitalOcean
+    on our key: the OpenAI-compatible proxy AND the cabinet chat. A model we may forward is one WE
+    chose, measured and priced -- DEFAULT_MODELS -- plus a deliberate, named exception in
+    JHW_PROXY_ALLOW. Two allowlists would drift; the 2026-09-01 spend came through the door that
+    had none."""
+    env = os.getenv("JHW_PROXY_ALLOW", "")
+    extra = {m.strip() for m in env.split(",") if m.strip()}
+    return set(DEFAULT_MODELS.values()) | extra
+
+
 DEFAULT_MODELS = {
     # CHOSEN FROM EVIDENCE (compare_models bake-off on our real action-JSON task, 2026-07):
     # all candidates passed the JSON contract, so latency + vendor-diversity decided (MODEL_SELECTION.md).

@@ -15,6 +15,7 @@ import hashlib, json, os, re, time
 
 EVENTS_LOG   = os.environ.get("EVENTS_LOG", "")
 SERVICE      = os.environ.get("SERVICE", "jhw-web")
+_EVENTS_LOG_FAILED = []      # set once the first append fails, so the warning prints ONCE
 HASH_IPS     = os.environ.get("TELEMETRY_HASH_IPS", "0") == "1"
 IP_SALT      = os.environ.get("TELEMETRY_IP_SALT", "colt-cybergod")
 # static assets would drown the log and tell us nothing about a visitor
@@ -100,7 +101,17 @@ def emit(**k):
     if EVENTS_LOG:
         try:
             with open(EVENTS_LOG, "a") as fh: fh.write(line + "\n")
-        except Exception: pass
+        except Exception as e:
+            # LOUD, ONCE. This container runs as UID 10001 and the shared events.log is created by
+            # cybergod's containers as root 0644, so for the whole life of the project every append
+            # raised PermissionError here and was swallowed -- jobhuntwow never wrote ONE line to
+            # the file promtail tails, and the spend investigation was blind to it for a week.
+            # A silent failure in an observability path is the worst kind: it looks like quiet.
+            if not _EVENTS_LOG_FAILED:
+                _EVENTS_LOG_FAILED.append(1)
+                print(json.dumps({"evt": "events_log_unwritable", "service": SERVICE,
+                                  "path": EVENTS_LOG, "err": repr(e)[:160],
+                                  "ts": time.time()}), flush=True)
 
 
 def install(app, session_email_fn=None):

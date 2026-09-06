@@ -287,6 +287,7 @@ def do_tests() -> bool:
     # (d) the suites. Standalone scripts, stdlib only, no pytest: they must run on the operator's
     #     own machine with no setup, which is the platform five wasted ships were spent relearning.
     for rel in ("tests/test_gate_governance.py", "tests/test_gate_integrity.py",
+                "tests/test_chat_open_wallet.py", "tests/test_llm_events_write.py",
                 "backend/tests/test_resume_consensus.py"):
         p = os.path.join(HERE, rel)
         if not os.path.exists(p):

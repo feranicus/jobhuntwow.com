@@ -35,6 +35,7 @@ import os
 import time
 
 EVENTS_LOG = os.environ.get("EVENTS_LOG", "")
+_EVENTS_LOG_FAILED = []      # first failed append prints once; never raises
 SERVICE = os.environ.get("SERVICE", "electronic-backend")
 
 # Per-million-token rates, input and output SEPARATELY. A single blended rate is wrong by a factor
@@ -89,8 +90,13 @@ def _write(payload):
         try:
             with open(EVENTS_LOG, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
-        except Exception:
-            pass
+        except Exception as e:
+            # Same PermissionError class as telemetry.emit (UID 10001 vs a root-owned file). Say so
+            # once on stdout; a metered call that silently never reaches the file is unmetered.
+            if not _EVENTS_LOG_FAILED:
+                _EVENTS_LOG_FAILED.append(1)
+                print(json.dumps({"evt": "events_log_unwritable", "caller": "llm_events",
+                                  "path": EVENTS_LOG, "err": repr(e)[:160]}), flush=True)
 
 
 def record(model, usage, *, caller="", ms=0, status="ok", role="", user=""):

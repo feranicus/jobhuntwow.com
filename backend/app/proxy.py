@@ -22,7 +22,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from .settings import DO_BASE_URL, DO_KEY
-from .llm import verified_model_for, model_for, DEFAULT_MODELS
+from .llm import verified_model_for, model_for, DEFAULT_MODELS, allowed_models
 
 router = APIRouter(prefix="/v1", tags=["proxy"])
 
@@ -100,9 +100,7 @@ async def models(authorization: str | None = Header(default=None)):
 # catalog and did. A proxy on a shared key with no model policy is an open wallet.
 # Env override JHW_PROXY_ALLOW (comma list) for a deliberate, named exception.
 def _allowed_models() -> set:
-    env = os.getenv("JHW_PROXY_ALLOW", "")
-    extra = {m.strip() for m in env.split(",") if m.strip()}
-    return set(DEFAULT_MODELS.values()) | extra
+    return allowed_models()          # ONE list, shared with /api/chat (llm.allowed_models)
 
 
 def _client_ip(request: Request) -> str:

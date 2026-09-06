@@ -148,6 +148,13 @@ def remote_script(with_caddy: bool) -> str:
              "echo -n 'jhw-web nets  : '; docker inspect jhw-web -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'; echo",
              "echo '== wait for the container to answer =='",
              "for i in $(seq 1 30); do docker exec jhw-web curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1 && break; sleep 2; done",
+             # THE SHARED EVENTS FILE MUST BE WRITABLE BY UID 10001. cybergod's containers create
+             # /var/log/colt/events.log as root 0644; this container runs as `jhw` (Dockerfile.web),
+             # so every append silently failed and jobhuntwow never wrote a line to the file promtail
+             # tails. Any container on the volume could already write it, so a+w widens nothing.
+             "echo '== events.log: writable by the jhw user, PROVEN by writing one line =='",
+             "docker exec -u root jhw-web sh -c 'touch /var/log/colt/events.log && chmod a+w /var/log/colt/events.log'",
+             "docker exec jhw-web sh -c 'echo \"{\\\"evt\\\": \\\"deploy_probe\\\", \\\"service\\\": \\\"jhw-web\\\"}\" >> /var/log/colt/events.log' && echo 'events.log: jhw can write' || echo 'EVENTS_LOG_UNWRITABLE: jhw still cannot append to /var/log/colt/events.log'",
              ]
     if with_caddy:
         lines += [

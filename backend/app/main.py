@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from . import qwen, store, scout, llm
 from .proxy import router as proxy_router
-from .auth import router as auth_router
+from .auth import router as auth_router, require_user
 from .electronic import router as electronic_router
 from .settings import CORS_ORIGINS
 
@@ -118,8 +118,18 @@ def health():
     return {"ok": True, "qwen_configured": qwen.configured(), "models": llm.routing_table()}
 
 @app.get("/api/models")
-async def models():
-    return await qwen.list_models()
+async def models(user: str = Depends(require_user)):
+    # THE OPEN WALLET (2026-09-01/03, found 2026-09-06). This endpoint was PUBLIC and returned
+    # DigitalOcean's ENTIRE catalogue -- 75 ids including deepseek-v4-pro-0813 and glm-5.3-flash --
+    # and /api/chat below was public too and forwarded whatever model the caller named, on our
+    # key, with no allowlist. Anyone who found the endpoint had free inference on every model DO
+    # sells. Both ids that spent >96% of the account's tokens are exact catalogue slugs, which is
+    # precisely what a caller gets from this listing. Now: session required, allowlist only.
+    d = await qwen.list_models()
+    allow = llm.allowed_models()
+    if isinstance(d, dict) and d.get("models"):
+        d["models"] = [m for m in d["models"] if m in allow]
+    return d
 
 @app.get("/api/connections")
 def connections():
@@ -139,10 +149,32 @@ def set_connection(req: ConnReq):
 
 # ---------- Hermes chat (real Qwen, streamed) ----------
 @app.post("/api/chat")
-async def chat(req: ChatReq):
+async def chat(req: ChatReq, request: Request, user: str = Depends(require_user)):
+    # Session required (see /api/models). And the model is checked against the ONE allowlist BEFORE
+    # anything is forwarded; a refusal is recorded with who asked and from where, and pages, exactly
+    # like the proxy's -- because this door and the proxy are the same door in different clothes.
+    mdl = (req.model or "").strip()
+    if mdl and mdl not in llm.allowed_models():
+        ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+              or (request.client.host if request.client else ""))[:64]
+        try:
+            from . import llm_events
+            llm_events.record(mdl, None, caller="chat.REFUSED", status="403", user=user or ip)
+        except Exception:
+            pass
+        try:
+            from . import notify
+            notify.telegram("CABINET CHAT REFUSED A MODEL\n\nrequested : %s\nuser      : %s\n"
+                            "from IP   : %s\nallowed   : %s\n\nBLOCKED, cost nothing."
+                            % (mdl[:80], (user or "?")[:80], ip or "unknown",
+                               ", ".join(sorted(llm.allowed_models()))[:200]))
+        except Exception:
+            pass
+        raise HTTPException(403, {"error": "model not permitted", "requested": mdl[:80],
+                                  "allowed": sorted(llm.allowed_models())})
     msgs = [m.model_dump() for m in req.messages]
     async def gen():
-        async for chunk in qwen.chat_stream(msgs, model=req.model):
+        async for chunk in qwen.chat_stream(msgs, model=mdl, user=user):
             yield chunk
     return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
 
