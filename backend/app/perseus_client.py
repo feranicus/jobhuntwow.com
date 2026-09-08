@@ -102,8 +102,21 @@ def _beat(cycle):
             json.dump({"service": SERVICE, "ts": int(now), "cycle": cycle,
                        "checks": _CACHE["checks"], "pid": os.getpid()}, fh)
         os.replace(tmp, os.path.join(BEAT_DIR, "%s.json" % SERVICE))
-    except Exception:
-        pass
+    except Exception as exc:
+        # SAY SO ONCE. A swallowed heartbeat failure is indistinguishable from "this project never
+        # deployed the sidecar", and that is exactly what the Fleet page showed for jobhuntwow after
+        # a PERFECT deploy: the container runs as uid 10001 and os.makedirs() inside a root-owned
+        # 0755 directory on the shared volume raises PermissionError. Silence sent the operator
+        # looking for a deploy bug that did not exist. Same rule observe() already follows.
+        if not _CACHE.get("beat_warned"):
+            _CACHE["beat_warned"] = True
+            try:
+                # NOTE: no os.getuid() here -- it is POSIX-only and this module is imported by the
+                # test suite, which runs on Windows. The directory and the error name the fault.
+                print(json.dumps({"evt": "perseus_beat_unwritable", "service": SERVICE,
+                                  "dir": BEAT_DIR, "err": repr(exc)[:160]}), flush=True)
+            except Exception:
+                pass
 
 
 def check(ip, path):
