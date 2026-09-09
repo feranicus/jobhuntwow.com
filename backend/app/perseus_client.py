@@ -29,11 +29,23 @@ BLOCKLIST = os.environ.get("PERSEUS_BLOCKLIST", "/var/log/colt/perseus_blocklist
 RELOAD_S = int(os.environ.get("PERSEUS_RELOAD_S", "30"))
 ENABLED = os.environ.get("PERSEUS_ENABLED", "1") != "0"
 
-BEAT_DIR = os.environ.get("PERSEUS_BEATS", "/var/log/colt/perseus_beats")
-BEAT_S = int(os.environ.get("PERSEUS_BEAT_S", "60"))
 SERVICE = os.environ.get("SERVICE") or os.environ.get("PERSEUS_SERVICE") or "unknown"
 
 EVENTS = os.environ.get("EVENTS_LOG", "/var/log/colt/events.log")
+
+# ASK WHERE THE LOG ACTUALLY IS -- NEVER ASSUME THE PATH.
+# BEAT_DIR used to be hardcoded to "/var/log/colt/perseus_beats". jev-api mounts the shared
+# colt_events volume at **/coltevents** (EVENTS_LOG=/coltevents/events.log), so that hardcoded path
+# is backed by NO VOLUME there: os.makedirs() SUCCEEDED into the container's own ephemeral overlay,
+# the beat was written where nobody reads, and `perseus_beat_unwritable` never fired because nothing
+# errored. A silent write to the wrong place is worse than a permission error -- the Fleet page read
+# "UNGUARDED" for a project whose middleware was running perfectly.
+# The event log is the one path every project has already told us is on the shared volume, so the
+# beat belongs beside it. Same rule dbbackup and logship already learned the hard way.
+BEAT_DIR = (os.environ.get("PERSEUS_BEATS")
+            or os.path.join(os.path.dirname(EVENTS) or "/var/log/colt", "perseus_beats"))
+BEAT_S = int(os.environ.get("PERSEUS_BEAT_S", "60"))
+
 HASH_IPS = os.environ.get("PERSEUS_HASH_IPS", "0") == "1"
 _SALT = os.environ.get("PERSEUS_SALT", "")
 
@@ -95,12 +107,24 @@ def _beat(cycle):
     if now - _CACHE["beat"] < BEAT_S:
         return
     _CACHE["beat"] = now
+    rec = {"evt": "perseus_beat", "service": SERVICE, "ts": int(now), "cycle": cycle,
+           "checks": _CACHE["checks"], "pid": os.getpid(), "dir": BEAT_DIR}
+    # STDOUT FIRST, so a project whose beat lands on its OWN volume is still observable.
+    # klima writes to polara_events and s4biz to s4biz_events; colt-web mounts neither, and must not
+    # -- that external-volume coupling is exactly what the staging gate refused, and a status page is
+    # never worth making cybergod's deploy depend on a sibling project. Their beats are therefore
+    # structurally unreachable from the Fleet page's directory read. But every container on this box
+    # has its stdout scraped by the docker json-file driver and shipped to Loki, which is the same
+    # accident that made the jobhuntwow abuse reconstructable -- used deliberately this time.
+    try:
+        print(json.dumps(rec), flush=True)
+    except Exception:
+        pass
     try:
         os.makedirs(BEAT_DIR, exist_ok=True)
         tmp = os.path.join(BEAT_DIR, ".%s.%d" % (SERVICE, os.getpid()))
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"service": SERVICE, "ts": int(now), "cycle": cycle,
-                       "checks": _CACHE["checks"], "pid": os.getpid()}, fh)
+            json.dump(rec, fh)
         os.replace(tmp, os.path.join(BEAT_DIR, "%s.json" % SERVICE))
     except Exception as exc:
         # SAY SO ONCE. A swallowed heartbeat failure is indistinguishable from "this project never
