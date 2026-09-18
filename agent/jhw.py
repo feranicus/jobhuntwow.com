@@ -17,7 +17,7 @@ Wraps Docker so operations are re-runnable and documented. The sandbox compose l
 the backend compose lives in the repo root (agent/..). Run from anywhere.
 """
 from __future__ import annotations
-import argparse, glob, io, os, re, shutil, subprocess, sys
+import argparse, glob, io, json, os, re, shutil, subprocess, sys
 
 try:
     _SELF = os.path.abspath(__file__)
@@ -102,6 +102,10 @@ _SELFTESTS = [
      "Workday: URL derivation, routing precedence, answers from candidate.md"),
     (["/agent/flows/learned.py", "--logic"], "ALL LEARNED-ANSWER CONTRACTS HOLD",
      "learned answers: recalled across employers, secrets refused"),
+    (["/agent/backend/app/tracker.py"], "ALL TRACKER CONTRACTS HOLD",
+     "the Tailor correlation: one row says which resume went to which job description"),
+    (["/agent/backend/app/digest.py"], "ALL DIGEST CONTRACTS HOLD",
+     "the digest: a day we sent resumes is mailed, and so is a week with none"),
     (["/agent/flows/memory.py", "--logic"], "ALL MEMORY CONTRACTS HOLD",
      "the one store: nothing is learned until the SITE confirms the submission"),
     (["/agent/flows/ashby.py", "--logic"], "ALL ASHBY CONTRACTS HOLD",
@@ -197,13 +201,71 @@ def _compile_knowledge():
               f"the knowledge files already on disk are still used")
 
 
-def _dom_selftest():
+def _run_suites_batched(suites):
+    """Run many --logic suites in ONE `docker exec`, because the EXEC is what costs the time.
+
+    Measured shape of the problem: each `docker compose exec` on Windows Docker Desktop costs far
+    more than the suite it runs (they are pure-Python contract checks, milliseconds each), so 20+
+    execs is the bulk of the wait before a run even starts. Inside the container a subprocess is
+    ordinary and cheap, so one exec runs them all and delimits the output.
+
+    Returns {script: (returncode, output)} or {} when the batch could not run at all, in which case
+    the caller falls back to one exec per suite. A batch that half-works is reported per suite, so a
+    suite the batch never reached is NOT counted as a pass -- the missing-section case is a failure,
+    not silence."""
+    runner = (
+        "import json,subprocess,sys\n"
+        "for a in json.loads(sys.argv[1]):\n"
+        "    try:\n"
+        "        p=subprocess.run(['python3']+a,capture_output=True,text=True,timeout=120)\n"
+        "        rc,out=p.returncode,(p.stdout or '')+(p.stderr or '')\n"
+        "    except Exception as e:\n"
+        "        rc,out=97,'%s: %s' % (type(e).__name__, e)\n"
+        "    print('<<<JHWSUITE %s rc=%d>>>' % (a[0], rc))\n"
+        "    print(out)\n")
+    payload = json.dumps([list(x[0]) for x in suites])
+    try:
+        p = subprocess.run(["docker", "compose", "-f", "docker-compose.local.yml", "exec", "-T",
+                            "jhw-agent", "python3", "-c", runner, payload],
+                           cwd=HERE, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=420)
+    except Exception:
+        return {}
+    text = (p.stdout or "") + (p.stderr or "")
+    if "<<<JHWSUITE" not in text:
+        return {}
+    out, cur, buf = {}, None, []
+    for line in text.splitlines():
+        m = re.match(r"^<<<JHWSUITE (\S+) rc=(-?\d+)>>>$", line)
+        if m:
+            if cur:
+                out[cur[0]] = (cur[1], "\n".join(buf))
+            cur, buf = (m.group(1), int(m.group(2))), []
+        elif cur:
+            buf.append(line)
+    if cur:
+        out[cur[0]] = (cur[1], "\n".join(buf))
+    return out
+
+
+def _dom_selftest(fast: bool = False):
     """~5s regression guard, inside the ONE command. The DOM contracts these drivers depend on
     (which field owns a validation error; a suggestion list that is not the page navigation; a
     Workday dropdown whose value silently reverts) broke silently four times and each break cost a
     full application run. Never a separate command the human has to remember - it runs here or it
     does not exist."""
-    for suite in _SELFTESTS:
+    # THE BROWSER SUITES ARE THE SLOW ONES: each launches Chrome inside the container. JHW_FAST=1
+    # (a SEQUENCE of applies against a stack that already ran them) skips exactly those and keeps
+    # every pure-logic contract, so the thing that is skipped is named rather than silent.
+    todo = list(_SELFTESTS)
+    if fast:
+        browser = [x for x in todo if x[0][0].endswith("_dom.py")]
+        todo = [x for x in todo if not x[0][0].endswith("_dom.py")]
+        print(f"[i] JHW_FAST=1 — skipping {len(browser)} browser suite(s); "
+              f"{len(todo)} logic contract(s) still run")
+    batch = _run_suites_batched([x for x in todo
+                                 if (len(x) < 4 or x[3] == "jhw-agent") and "--logic" in x[0]])
+    for suite in todo:
         # A suite may name the CONTAINER it belongs to. jhw_bot.py is only present in the jhw-bot
         # image (its Dockerfile COPYs that one file), so running it in jhw-agent would report
         # "could not run" forever -- a check that cannot execute is not a check.
@@ -211,12 +273,16 @@ def _dom_selftest():
         svc = suite[3] if len(suite) > 3 else "jhw-agent"
         name = os.path.basename(args[0]) + ("".join(" " + a for a in args[1:]))
         try:
-            p = subprocess.run(
-                ["docker", "compose", "-f", "docker-compose.local.yml", "exec", "-T", svc,
-                 "python3"] + args,
-                cwd=HERE, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=120)
-            out = (p.stdout or "") + (p.stderr or "")
+            if args[0] in batch:
+                rc, out = batch[args[0]]
+                p = type("P", (), {"returncode": rc})()
+            else:
+                p = subprocess.run(
+                    ["docker", "compose", "-f", "docker-compose.local.yml", "exec", "-T", svc,
+                     "python3"] + args,
+                    cwd=HERE, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=120)
+                out = (p.stdout or "") + (p.stderr or "")
             # BOTH conditions: a marker without exit 0 means checks failed after it printed, and
             # exit 0 without the marker means the script died before it ever asserted anything.
             if p.returncode == 0 and marker in out:
@@ -264,10 +330,13 @@ def _safepoint(when: str, note: str = ""):
 
 
 def cmd_apply(a):
-    if not _ensure_stack():               # ONE command: backend + sandbox + BRAIN, then apply
+    if not _ensure_stack(build=bool(getattr(a, "rebuild", False))):
         return 2                          # brain unreachable -> do NOT burn a run (and the documents)
     _compile_knowledge()                  # his recordings ARE the first rung of the answer ladder
-    _dom_selftest()
+    # JHW_FAST=1 skips the DOM suites for a SEQUENCE of applies on a stack that just ran them. The
+    # skip is PRINTED, because a check that silently stops running is the defect this repo keeps
+    # paying for -- and the pure-logic suites are cheap, so only the browser ones are skipped.
+    _dom_selftest(fast=os.getenv("JHW_FAST", "").strip().lower() in ("1", "true", "yes"))
     # BEFORE the run: whatever we are about to execute is what gets saved, so a crash mid-run leaves
     # a commit describing the code that produced it, not the code as it was afterwards.
     _safepoint("before apply", a.job)
@@ -374,6 +443,35 @@ def cmd_git(a):
     print()
     print(G.audit())
     return 0
+
+
+def cmd_digest(a):
+    """WHAT WENT OUT — the application digest, on demand.
+
+    The scheduler inside the backend sends it by itself (evening of any day we actually sent
+    resumes, once a week when we did not). This verb exists so the thing can be PROVEN rather than
+    trusted: it decides and sends exactly as the scheduler would, and prints the mail it produced.
+    Runs where the tracker database lives -- the backend container -- and falls back to this machine
+    when the stack is down, because a verb that only works while a container happens to be running
+    is not a verb."""
+    args = ["--now"] + (["--force", "weekly" if getattr(a, "weekly", False) else "daily"]
+                        if getattr(a, "force", False) or getattr(a, "weekly", False) else [])
+    try:
+        p = subprocess.run(["docker", "compose", "exec", "-T", "backend",
+                            "python", "/app/app/digest.py"] + args,
+                           cwd=ROOT, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=180)
+        if (p.stdout or "").strip():
+            print(p.stdout)
+            return p.returncode
+        print((p.stderr or "").strip()[:400])
+    except FileNotFoundError:
+        pass
+    here = os.path.join(os.path.dirname(HERE), "backend", "app", "digest.py")
+    p = subprocess.run([sys.executable, here] + args, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    print((p.stdout or "") + (p.stderr or ""))
+    return p.returncode
 
 
 def cmd_memory(a):
@@ -782,10 +880,43 @@ def _port_busy(port: int) -> bool:
         s_.close()
 
 
+def _stack_already_hot() -> bool:
+    """Is the sandbox ALREADY serving? Then `apply` must not pay for a rebuild.
+
+    Measured on his machine: `docker compose up -d --build` costs 30-60s of the wall clock of every
+    single apply, even when every layer is cached, because Windows Docker Desktop still resolves,
+    exports and recreates. On a warm stack that is pure overhead -- `./flows` is BIND-MOUNTED, so an
+    edit to an adapter is live in the container with no build at all.
+
+    THE TEST IS THE THING WE ACTUALLY NEED, not the thing that is easy to ask: the browser container
+    running is not enough (Chrome can be dead inside a healthy container), so this asks CDP whether it
+    answers. Any doubt returns False and the full path runs -- a fast path that guesses wrong costs a
+    whole run, which is the trade this file records again and again."""
+    try:
+        if not _container_running("jhw-browser"):
+            return False
+        if not (_container_running("jhw-agent-local") or _container_running("jhw-agent")):
+            return False
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=2) as rr:
+            return rr.status == 200
+    except Exception:
+        return False
+
+
 def _ensure_stack(build=False):
     """One command: ensure backend + /v1 proxy + browser sandbox are up AND Chrome is actually
-       listening on CDP, then return."""
+       listening on CDP, then return.
+
+    `build` (from `--rebuild` / JHW_FORCE_BUILD=1) forces the image build. Without it, a stack that
+    is already hot is REUSED: see _stack_already_hot()."""
     ensure_prereqs()
+    force = bool(build) or os.getenv("JHW_FORCE_BUILD", "").strip().lower() in ("1", "true", "yes")
+    if not force and _stack_already_hot():
+        print("[OK] sandbox already hot (Chrome CDP answers) — skipping the docker build")
+        if _ensure_brain():
+            return True
+        print("[i] the brain is unreachable on the hot stack — doing the full bring-up after all")
     _drop_hermes()
     # PORT CONFLICT SELF-HEAL: the hybrid local stack (docker-compose.local.yml -> jhw-browser,
     # jhw-stagehand, jhw-bot) and this single-container sandbox BOTH bind 9090/9222/5900. If the
@@ -801,11 +932,12 @@ def _ensure_stack(build=False):
         dc("down", check=False)
 
     _ensure_shared_net()          # both compose projects join it; must exist before either `up`
-    flags = ["up", "-d"] + (["--build", "--force-recreate"] if build else [])
+    flags = ["up", "-d"] + (["--build", "--force-recreate"] if force else [])
     dc(*(flags + ["backend"]), cwd=ROOT, check=False)   # backend holds the DO key + model routing
     # --build every time: the stagehand service COMPILES server.ts into its image, so without it
     # code changes silently never reach the container. Docker layer cache makes this ~1s no-op.
-    lflags = flags if "--build" in flags else flags + ["--build"]
+    # --build is already in `flags` when forced; a warm stack must not rebuild stagehand every run.
+    lflags = list(flags)
     dc("-f", "docker-compose.local.yml", *lflags, check=False)   # unified sandbox
     # OBSERVABILITY comes up with the stack — one command, no separate step. Idempotent + instant once
     # running (restart: unless-stopped). Loki + Promtail + Grafana on 127.0.0.1:3000.
@@ -1005,7 +1137,10 @@ def main():
     sub.add_parser("status").set_defaults(fn=cmd_status)
     sub.add_parser("logs").set_defaults(fn=cmd_logs)
     s = sub.add_parser("scrape"); s.add_argument("job"); s.set_defaults(fn=cmd_scrape)
-    a = sub.add_parser("apply"); a.add_argument("job"); a.set_defaults(fn=cmd_apply)
+    a = sub.add_parser("apply"); a.add_argument("job")
+    a.add_argument("--rebuild", action="store_true",
+                   help="force `docker compose --build` (after editing a Dockerfile or stagehand)")
+    a.set_defaults(fn=cmd_apply)
     sub.add_parser("tailor").set_defaults(fn=cmd_tailor)
     sub.add_parser("telegram").set_defaults(fn=cmd_telegram)
     sub.add_parser("models").set_defaults(fn=cmd_models)
@@ -1021,6 +1156,10 @@ def main():
     g.set_defaults(fn=cmd_git)
     mm = sub.add_parser("memory"); mm.add_argument("--forget", default="")
     mm.set_defaults(fn=cmd_memory)
+    dg = sub.add_parser("digest")
+    dg.add_argument("--force", action="store_true", help="send even if nothing is due")
+    dg.add_argument("--weekly", action="store_true", help="send the weekly one")
+    dg.set_defaults(fn=cmd_digest)
     sub.add_parser("inspect").set_defaults(fn=cmd_inspect)
     rc = sub.add_parser("record"); rc.add_argument("url")
     rc.add_argument("--name", default=""); rc.set_defaults(fn=cmd_record)
@@ -1032,7 +1171,9 @@ def main():
     sub.add_parser("local").set_defaults(fn=cmd_local)
     sub.add_parser("local-down").set_defaults(fn=cmd_local_down)
     args = p.parse_args()
-    args.fn(args)
+    # THE VERB'S EXIT CODE IS THE ANSWER. `args.fn(args)` threw it away, so `python jhw.py apply`
+    # exited 0 on a refused submit, a dead brain and a crashed adapter alike -- unusable in a loop.
+    sys.exit(int(args.fn(args) or 0))
 
 
 if __name__ == "__main__":

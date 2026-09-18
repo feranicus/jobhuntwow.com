@@ -2,10 +2,15 @@
 
 COPY THIS, NOT THE BRAIN. Everything that LEARNS -- the four-model panel, rule promotion, abuse
 reporting, the ruleset history -- lives in the hub, in one place, and changes there. This file
-carries two things and nothing else:
+carries three things and nothing else:
 
   1. THE HUB'S PUBLISHED BLOCKLIST, read from a file on a volume every project already mounts. A
      file cannot be down, cannot rate-limit us, and needs no token.
+  1b. THE OPERATOR'S HOLDS, read from a SECOND file on that same volume, because the hub REWRITES
+     the blocklist on every nightly cycle and an operator line written there would be erased
+     within 24 hours. Two writers, two files, one reader. A hold is about an ADDRESS, is always
+     short-lived, and can never be permanent, wide, unbounded in number, or applied to a
+     never-block prefix or an authenticated session. See SECTION C2.
   2. THE LOCAL SHIELD -- the same deterministic detection and enforcement cybergod.ai has run since
      10 Aug 2026, so that a project is defended on its FIRST hostile request instead of waiting for
      a nightly cycle to publish a pattern about it. Until this existed, four of the five sites ran
@@ -71,6 +76,16 @@ EVENTS = os.environ.get("EVENTS_LOG", "/var/log/colt/events.log")
 BEAT_DIR = (os.environ.get("PERSEUS_BEATS")
             or os.path.join(os.path.dirname(EVENTS) or "/var/log/colt", "perseus_beats"))
 BEAT_S = int(os.environ.get("PERSEUS_BEAT_S", "60"))
+
+# TWO WRITERS, TWO FILES, ONE READER.
+# perseus_blocklist.json is REWRITTEN by the hub on every nightly cycle, so an operator decision
+# written there is silently erased inside 24 hours. Operator holds therefore get their own file,
+# written by a different producer, on the same volume every project already mounts. Same mechanism,
+# same absence of a network call or a token; a separate lifetime.
+# Derived from the event log's directory for the reason BEAT_DIR is: jev-api mounts the shared
+# volume at /coltevents, and a hardcoded /var/log/colt would be a silent write to nowhere.
+HOLDS = (os.environ.get("PERSEUS_HOLDS")
+         or os.path.join(os.path.dirname(EVENTS) or "/var/log/colt", "perseus_holds.json"))
 
 HASH_IPS = os.environ.get("PERSEUS_HASH_IPS", "0") == "1"
 _SALT = os.environ.get("PERSEUS_SALT", "")
@@ -1031,6 +1046,8 @@ def shield_state():
         "served_routes": len(_served), "authed_sessions": len(_authed),
         "blast_cap_pct": BLAST_CAP, "max_blocks": MAX_BLOCKS,
         "tarpits_in_flight": _tarpits[0],
+        # The operator's own channel, beside the automatic one. Two writers, two files, one reader.
+        "holds": holds_state(),
     }
 
 
@@ -1070,6 +1087,396 @@ def _load():
         except Exception:
             pass                    # keep whatever we had; never clear on a read failure
     return _CACHE
+
+
+# =============================================================================================
+# SECTION C2 -- OPERATOR HOLDS. A short-lived, operator-placed refusal of an ADDRESS or a NETWORK,
+# delivered by the same file-on-a-shared-volume mechanism as the blocklist.
+#
+# WHY THIS EXISTS. Until now `check()` took an `ip` argument and never looked at it: every decision
+# this file could make was about a PATH. So when the operator watched a source hammering
+# jobhuntwow.com from his phone there was no channel at all by which "hold that /24 for an hour"
+# could reach the four sibling projects. The hub can publish a PATTERN tonight; it cannot publish a
+# decision about an address now.
+#
+# WHY A SEPARATE FILE AND NOT perseus_blocklist.json. The hub REWRITES the blocklist on every
+# nightly cycle from its own ruleset. An operator line written into it would be erased within 24
+# hours, silently, and the operator would conclude the shield had ignored him. Two writers, two
+# files, one reader.
+#
+# WHAT A HOLD CAN NEVER DO, and every one of these is asserted in tests/test_perseus_holds.py:
+#   · it cannot touch iptables, nft or ufw, and it cannot make a network call, because this module
+#     still imports nothing that could (Amnezia VPN shares this host: StGB §202a-§303b, EU 2013/40,
+#     CFAA §1030 -- enforcement is HTTP-layer inside our own process or it does not happen);
+#   · it cannot refuse /.well-known/ or /api/, whatever it says, so it can never become a
+#     certificate outage or hide the one prefix every deploy verifier probes;
+#   · it cannot refuse an authenticated session;
+#   · it cannot be permanent -- `until` is mandatory, must be in the future, and may not be more
+#     than HOLD_MAX_S ahead, which is the same 24-hour ceiling BOUNDS["block_s"] already commits to;
+#   · it cannot be wide -- an automatic control that can refuse everybody is worse than no control,
+#     so a prefix broader than HOLD_MIN_PREFIX is refused and SAID OUT LOUD;
+#   · it cannot be unbounded in number -- at most MAX_HOLDS are honoured and the cap announces
+#     itself when it bites;
+#   · and it cannot fail closed. A missing file, a corrupt file, a permission error, a malformed
+#     entry, an unexpected exception: every one of them serves the request.
+# =============================================================================================
+
+# The cap on how many holds this worker will honour at once. Bounded for the same two reasons
+# MAX_BLOCKS is: memory, and blast radius. Past it we honour the first MAX_HOLDS and SAY SO --
+# silently honouring a prefix of the file would be a control that quietly stopped working.
+MAX_HOLDS = _i("PERSEUS_MAX_HOLDS", 256)
+
+# THE 24-HOUR CEILING. `until` is mandatory, but "mandatory" alone does not prevent a permanent
+# hold: `until = now + 10 years` is permanent wearing a costume. This is the same maximum
+# BOUNDS["block_s"] already commits to for an automatic block, and it is committed in code rather
+# than read from the environment, because a ceiling the environment can raise is not a ceiling.
+HOLD_MAX_S = 86400
+
+# THE NARROWEST A HOLD MAY BE WRITTEN, per address family. The producer's unit is a single address
+# or a /24; a /8 is sixteen million strangers and 0.0.0.0/0 is everybody. Refusing here costs the
+# operator a second, more specific hold; not refusing costs a customer their site. Committed, for
+# the same reason HOLD_MAX_S is.
+HOLD_MIN_PREFIX = {4: 16, 6: 32}
+
+_HOLD_LOCK = threading.Lock()
+_HOLDS = {"mtime": 0.0, "loaded": 0.0, "holds": [], "generated": 0, "dropped": 0,
+          "refused": {}, "reported": None}
+
+_HEX = "0123456789abcdefABCDEF"
+_DEC = "0123456789"
+
+
+def _v4_int(text):
+    """Dotted-quad -> int, or None. Deliberately as strict as the stdlib `ipaddress` module.
+
+    NO `int()` SHORTCUT. `int("٣")` is 3 and `"٣".isdigit()` is True, so a Unicode digit would
+    parse an address that `ipaddress` refuses -- and a hold that matches an address the operator
+    did not write is the one outcome worth more than the parser's brevity. Leading zeros are
+    refused for the same reason `ipaddress` refuses them: "010.1.1.1" is ambiguously octal.
+    """
+    parts = text.split(".")
+    if len(parts) != 4:
+        return None
+    n = 0
+    for p in parts:
+        if not p or len(p) > 3 or any(c not in _DEC for c in p):
+            return None
+        if len(p) > 1 and p[0] == "0":
+            return None
+        v = int(p)
+        if v > 255:
+            return None
+        n = n * 256 + v
+    return n
+
+
+def _v6_groups(part, allow_v4):
+    """The 16-bit groups of one half of an IPv6 literal, or None. A trailing dotted-quad counts
+    as two groups (::ffff:1.2.3.4), and it is only ever legal at the very end of the address."""
+    if part == "":
+        return []
+    out = []
+    chunks = part.split(":")
+    for i, c in enumerate(chunks):
+        if allow_v4 and i == len(chunks) - 1 and "." in c:
+            v4 = _v4_int(c)
+            if v4 is None:
+                return None
+            out.append((v4 >> 16) & 0xFFFF)
+            out.append(v4 & 0xFFFF)
+            continue
+        if not c or len(c) > 4 or any(ch not in _HEX for ch in c):
+            return None
+        out.append(int(c, 16))
+    return out
+
+
+def _v6_int(text):
+    """IPv6 literal -> int, or None. `::` compression and an embedded dotted-quad are handled.
+
+    A SCOPE ID IS REFUSED. `fe80::1%eth0` is meaningful only on the interface that named it, it
+    cannot be the source address of a request arriving over the internet, and `ipaddress` will not
+    build a NETWORK from one either. Refusing is the fail-open direction: an unparseable hold holds
+    nobody.
+    """
+    if "%" in text or text.count("::") > 1:
+        return None
+    head, sep, tail = text.partition("::")
+    if sep:
+        h = _v6_groups(head, False)
+        t = _v6_groups(tail, True)
+        if h is None or t is None or len(h) + len(t) > 7:
+            return None                          # `::` must stand for at least one zero group
+        groups = h + [0] * (8 - len(h) - len(t)) + t
+    else:
+        groups = _v6_groups(text, True)
+        if groups is None or len(groups) != 8:
+            return None
+    n = 0
+    for g in groups:
+        n = (n << 16) | g
+    return n
+
+
+def _ip_int(ip):
+    """(version, integer) for an address literal, or None. Never raises."""
+    try:
+        s = str(ip or "").strip()
+        if not s:
+            return None
+        if ":" in s:
+            n = _v6_int(s)
+            return None if n is None else (6, n)
+        n = _v4_int(s)
+        return None if n is None else (4, n)
+    except Exception:
+        return None
+
+
+def _parse_cidr(text):
+    """(version, network int, mask int, prefix length) for "a.b.c.d/nn", or None. Never raises.
+
+    A BARE ADDRESS IS A /32 OR A /128 -- one host, which is the commonest hold there is. Host bits
+    set below the prefix are MASKED OFF rather than refused (`ipaddress.ip_network(strict=False)`):
+    an operator who types the address he was looking at with /24 after it means that /24, and
+    refusing his intent over a pedantic detail is how a control gets worked around.
+    """
+    try:
+        txt = str(text or "").strip()
+        if not txt:
+            return None
+        addr, slash, plen = txt.partition("/")
+        got = _ip_int(addr)
+        if got is None:
+            return None
+        ver, n = got
+        bits = 32 if ver == 4 else 128
+        if slash:
+            if not plen or any(c not in _DEC for c in plen):
+                return None
+            p = int(plen)
+            if p > bits:
+                return None
+        else:
+            p = bits
+        mask = ((1 << bits) - 1) ^ ((1 << (bits - p)) - 1)
+        return ver, n & mask, mask, p
+    except Exception:
+        return None
+
+
+def _parse_hold(row, now):
+    """(entry, refusal kind) for one row of the holds file. entry is None when it cannot be used.
+
+    The kind is "" for a row that is simply not ours to act on -- another project's hold, or one
+    that has run out -- because neither is a defect and counting them as one would fire a warning
+    on every ordinary file. Anything else is a row the producer got WRONG, and those are counted
+    and reported, once per version of the file.
+    """
+    if not isinstance(row, dict):
+        return None, "not an object"
+
+    # SCOPE FIRST. A hold for another service can never apply here, whatever else is wrong with it,
+    # and dropping it here is what keeps MAX_HOLDS a cap on OUR holds rather than on the file.
+    svc = row.get("service")
+    if not isinstance(svc, str) or not svc:
+        return None, "no service"
+    if svc != "*" and svc != SERVICE:
+        return None, ""
+
+    # `until` IS MANDATORY AND THERE IS NO WAY TO WRITE A PERMANENT HOLD.
+    # A bool is an int in Python, so it is excluded explicitly: `{"until": true}` must not read as
+    # "until epoch 1".
+    until = row.get("until")
+    if isinstance(until, bool) or not isinstance(until, (int, float)):
+        return None, "until missing or not a number"
+    until = float(until)
+    # NaN COMPARES FALSE AGAINST EVERYTHING, so it would slip past both bounds below and become a
+    # hold that occupies a slot and can never match. Refused by name, and counted.
+    if until != until:
+        return None, "until is not a number"
+    if until <= now:
+        return None, ""                          # ran out; the normal end of a hold's life
+    if until > now + HOLD_MAX_S:
+        return None, "until is more than %dh ahead" % (HOLD_MAX_S // 3600)
+
+    net = _parse_cidr(row.get("cidr"))
+    if net is None:
+        return None, "unparseable cidr %r" % (str(row.get("cidr"))[:40],)
+    ver, base, mask, prefix = net
+    if prefix < HOLD_MIN_PREFIX[ver]:
+        return None, "/%d is broader than the /%d floor" % (prefix, HOLD_MIN_PREFIX[ver])
+
+    return {"cidr": str(row.get("cidr"))[:64], "ver": ver, "net": base, "mask": mask,
+            "prefix": prefix, "until": until, "service": svc,
+            "why": str(row.get("why") or "")[:160], "by": str(row.get("by") or "")[:40]}, ""
+
+
+def _load_holds():
+    """Re-read only when the file changed, and at most every RELOAD_S -- the same discipline as
+    `_load()`, for the same reason: a list consulted on every request must never become a disk read
+    on every request. Keeps the previous value on any read failure and never clears on an error.
+
+    A MALFORMED ENTRY IS SKIPPED ALONE, never taken as a reason to discard the file: one bad row in
+    an operator's hold list must not release the other addresses he held, exactly as one bad
+    pattern does not discard the hub's other patterns.
+    """
+    now = time.time()
+    if now - _HOLDS["loaded"] < RELOAD_S:
+        return _HOLDS
+    notice = None
+    with _HOLD_LOCK:
+        _HOLDS["loaded"] = now
+        try:
+            st = os.stat(HOLDS)
+            if st.st_mtime == _HOLDS["mtime"]:
+                return _HOLDS
+            with open(HOLDS, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            rows, refused = [], {}
+            for row in (doc.get("holds") or []):
+                try:
+                    entry, kind = _parse_hold(row, now)
+                except Exception as exc:         # a row shaped like nothing we imagined
+                    entry, kind = None, "unreadable row (%s)" % type(exc).__name__
+                if entry is not None:
+                    rows.append(entry)
+                elif kind:
+                    refused[kind] = refused.get(kind, 0) + 1
+            dropped = max(0, len(rows) - MAX_HOLDS)
+            rows = rows[:MAX_HOLDS]
+            _HOLDS.update(mtime=st.st_mtime, holds=rows, dropped=dropped, refused=refused,
+                          generated=doc.get("generated") or 0)
+            # ONCE PER VERSION OF THE FILE. A warning that fires on every reload trains the
+            # operator to read past the one that matters; a warning that fires never is not a
+            # warning. The mtime is the edge.
+            if (refused or dropped) and _HOLDS["reported"] != st.st_mtime:
+                _HOLDS["reported"] = st.st_mtime
+                notice = {"honoured": len(rows), "refused": refused, "over_cap": dropped,
+                          "cap": MAX_HOLDS, "file": HOLDS}
+        except Exception:
+            pass                    # keep whatever we had; never clear on a read failure
+    if notice:                      # emitted OUTSIDE the lock: the writer touches the disk
+        _emit("perseus_holds_refused", **notice)
+    return _HOLDS
+
+
+def active_holds(now=None):
+    """The holds that apply to THIS service and have not run out. Never raises.
+
+    Expiry is re-checked HERE and not only at parse time. The file is cached until its mtime
+    changes, which on a quiet day is hours, so a hold that expires between two reads would
+    otherwise keep refusing an address the operator released.
+    """
+    try:
+        now = now or time.time()
+        return [h for h in _load_holds()["holds"] if h["until"] > now]
+    except Exception:
+        return []
+
+
+def hold_for(ip, now=None):
+    """The operator hold covering this address, or None. Pure lookup, no enforcement, never raises.
+
+    ALLOW_IPS IS NOT CONSULTED HERE. Whether we may ACT on a hold is `_hold_check`'s question, and
+    keeping the two apart is what lets the exemption be ANNOUNCED instead of silently erasing the
+    finding -- the hiding place this codebase has already paid for three times.
+    """
+    try:
+        rows = _load_holds()["holds"]
+        if not rows:
+            return None                          # the common case costs one dict lookup
+        got = _ip_int(ip)
+        if got is None:
+            return None                          # an address we cannot parse is held by nobody
+        ver, n = got
+        now = now or time.time()
+        for h in rows:
+            if h["ver"] == ver and h["until"] > now and (n & h["mask"]) == h["net"]:
+                return h
+        return None
+    except Exception:
+        return None                              # fail OPEN, always
+
+
+def is_held(ip):
+    """Is this address covered by a live operator hold? A measured fact, for anything that asks."""
+    return hold_for(ip) is not None
+
+
+def _hold_check(ip, path, authed=False):
+    """(allowed, retry_after, reason) when a hold refuses this request, else None. Never raises.
+
+    THE THREE EXEMPTIONS ARE THE SAME THREE THE REST OF THIS FILE ALREADY HONOURS, and each one is
+    announced rather than applied in silence:
+
+      1. /.well-known/ and /api/ are served whatever a hold says. Blocking the first turns a hold
+         into a CERTIFICATE outage for every domain on the box; blocking the second breaks the 401
+         probe every deploy verifier makes. NEVER_BLOCK_PREFIXES is the one list, here as there.
+      2. A PROVEN authenticated session is served. `authed` means this address presented a
+         credential and the APPLICATION ITSELF answered 2xx to it; a scanner spraying Authorization
+         headers collects 401s and never earns it.
+      3. An address in ALLOW_IPS is served -- the operator's own, and whatever the project added.
+
+    AND ONE THAT IS DELIBERATELY ABSENT. `decide()` downgrades a BLOCK to a TARPIT for an UNPROVEN
+    credential, so a real customer whose address was blocked while they were away can get back in.
+    A hold does NOT do that, because a cookie is trivially forged and a hold an attacker can shrug
+    off by sending one is not a hold. The cost is real and is named: a logged-OUT person inside a
+    held network is refused until the hold runs out, which is why a hold is short-lived by
+    construction and why the operator, not this file, decides when to place one.
+    """
+    try:
+        h = hold_for(ip)
+        if h is None:
+            return None
+        ev = {"cidr": h["cidr"], "scope": h["service"], "by": h["by"], "why": h["why"],
+              "path": norm_path(path)[:120]}
+        if str(path or "").lower().startswith(NEVER_BLOCK_PREFIXES):
+            _once("perseus_shield_hold_exempt", ip,
+                  reason="never-block prefix (ACME / security.txt / API)", **ev)
+            return None
+        if authed:
+            _once("perseus_shield_hold_exempt", ip,
+                  reason="authenticated session - never blocked or slowed", **ev)
+            return None
+        if str(ip) in ALLOW_IPS:
+            _once("perseus_shield_hold_exempt", ip, reason="address is in PERSEUS_ALLOW_IPS", **ev)
+            return None
+        if not ENFORCE:
+            # The same state `perseus_shield_would_block` reports: a project being watched before
+            # it is armed. Visible, not silent.
+            _once("perseus_shield_would_hold", ip, reason="enforcement off", **ev)
+            return None
+        secs = max(1, min(HOLD_MAX_S, int(h["until"] - time.time())))
+        _once("perseus_shield_hold", ip, seconds=secs, **ev)
+        return False, secs, "operator hold on %s for %ds (%s)" % (
+            h["cidr"], secs, h["why"] or h["by"] or "no reason given")
+    except Exception:
+        return None                              # fail OPEN, always
+
+
+def holds_state():
+    """What the hold channel currently believes. THE OBSERVER MUST BE OBSERVED: a mechanism nobody
+    has seen working is off, so this is reported beside the shield's own state and in the beat."""
+    try:
+        st = _load_holds()
+        now = time.time()
+        live = active_holds(now)
+        try:
+            gen = int(st["generated"] or 0)
+        except Exception:
+            # A COSMETIC FIELD MAY NEVER DECIDE THE ANSWER. `generated` is the producer's stamp and
+            # nothing depends on it; letting a string in it raise here would drop this whole
+            # function into its fallback and report ZERO active holds while addresses are held --
+            # a status that is worse than no status.
+            gen = 0
+        return {"file": HOLDS, "generated": gen, "active": len(live),
+                "cap": MAX_HOLDS, "over_cap": st["dropped"], "refused": dict(st["refused"]),
+                "cidrs": [h["cidr"] for h in live[:16]],
+                "age_s": int(now - st["mtime"]) if st["mtime"] else None}
+    except Exception:
+        return {"file": HOLDS, "active": 0, "cap": MAX_HOLDS, "over_cap": 0, "refused": {},
+                "cidrs": [], "age_s": None, "generated": 0}
 
 
 def _write(rec):
@@ -1161,7 +1568,10 @@ def _beat(cycle):
            # heartbeat carries whether it is armed and what it has done -- otherwise the Fleet page
            # would show a connected sidecar and say nothing about whether it can act.
            "local": LOCAL, "enforcing": ENFORCE, "catchall": _catchall[0],
-           "blocked": len(_blocked), "watching": len(_hits)}
+           "blocked": len(_blocked), "watching": len(_hits),
+           # THE OPERATOR'S CHANNEL REPORTS ITSELF TOO. Absence of this number on the Fleet page
+           # then means exactly one thing: that project is not running a version that has holds.
+           "holds": len(active_holds(now))}
     try:
         print(json.dumps(rec), flush=True)
     except Exception:
@@ -1189,12 +1599,24 @@ def _beat(cycle):
                 pass
 
 
-def check(ip, path):
+def check(ip, path, authed=False):
     """(allowed, retry_after, reason). Never raises, never blocks on IO, fails OPEN.
 
-    The HUB's published patterns only. The local shield is `decide()`, and the middleware asks both
-    -- the hub first, because a rule that four models agreed on and a promotion gate approved is a
-    stronger statement than anything one worker's memory can hold.
+    TWO PUBLISHED CHANNELS, IN THIS ORDER, and the order is the design:
+
+      1. THE HUB'S PATTERNS, about a PATH. Four models agreed on the rule and a promotion gate
+         approved it, which is a stronger statement than anything one worker's memory can hold.
+         This half is unchanged, deliberately and to the letter: same evaluation, same order, same
+         retry window, same reason string.
+      2. THE OPERATOR'S HOLDS, about an ADDRESS. `ip` was accepted by this function since the day
+         it was written and NEVER ONCE READ, so an operator decision about an address had no
+         channel to the four sibling projects at all. It has one now. See SECTION C2.
+
+    `authed` is passed in rather than looked up, so the hold path and `decide()` judge one request
+    against ONE snapshot of who this caller is. Reading it twice inside one request lets an
+    authentication land in between and the two halves then describe different moments.
+
+    The LOCAL shield is still `decide()`, and the middleware asks all three.
     """
     if not ENABLED:
         return True, 0, ""
@@ -1205,6 +1627,9 @@ def check(ip, path):
         for rid, rx in c["patterns"]:
             if rx.search(path or ""):
                 return False, 60, "perseus rule %s (cycle %s)" % (rid, c.get("cycle"))
+        held = _hold_check(ip, path, authed)
+        if held is not None:
+            return held
     except Exception:
         return True, 0, ""
     return True, 0, ""
@@ -1293,9 +1718,13 @@ class Middleware:
               or ((scope.get("client") or ("", 0))[0]))
         ua = hdr.get("user-agent", "")
         cred = credential_hint(hdr)
+        # ONE SNAPSHOT, READ ONCE, PASSED DOWN. Both the hold path and the local shield must judge
+        # this request against the same answer to "is this caller authenticated"; reading it twice
+        # lets a session land between the two and the halves then describe different moments.
+        authed = _authed.get(ip, 0) > time.time() - AUTH_TTL_S
 
         try:
-            allowed, retry, why = check(ip, path)
+            allowed, retry, why = check(ip, path, authed)
         except Exception:
             allowed, retry, why = True, 0, ""
         if not allowed:
@@ -1305,8 +1734,7 @@ class Middleware:
             return
 
         try:
-            verdict, why2 = decide(ip, path, authed=_authed.get(ip, 0) > time.time() - AUTH_TTL_S,
-                                   credential=cred)
+            verdict, why2 = decide(ip, path, authed=authed, credential=cred)
         except Exception:
             verdict, why2 = "ALLOW", ""
         if verdict == "BLOCK":

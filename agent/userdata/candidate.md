@@ -187,7 +187,11 @@
 # exactly the standard `flows/choose.py` requires before a self-declaration may be answered without
 # asking him. A model is never allowed to decide any of these; without this block the engine asks.
 - how did you hear about us: LinkedIn
+- how_heard: LinkedIn
 - source: LinkedIn
+# Ashby asks this as a radio on most boards; answering it from here is what keeps it off Telegram.
+- years_account_executive: "7+"
+- years_experience: "20+"
 - legal gender: Male
 - gender: Male
 - pronoun: He/Him

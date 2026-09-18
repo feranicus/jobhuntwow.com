@@ -599,6 +599,16 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
     _write_json(os.path.join(outdir, "job.json"), manifest)
     _write_json(os.path.join(outdir, "tailored.json"),
                 {"resume": resume_struct, "cover": cover_struct})
+    # THE CORRELATION, IN A ROW THAT CAN BE QUERIED. The manifest is one file in one folder; the
+    # tracker is what the digest, the Pipeline and the CRM read -- and it is the only place the
+    # PASTED job description is kept, which until now was not kept anywhere at all.
+    # Best-effort by construction: bookkeeping must never cost him a tailored resume.
+    try:
+        from . import tracker as _tracker
+        _tracker.record_tailored(manifest, jd_text=str(jd.get("text") or ""),
+                                 files=manifest.get("files") or [])
+    except Exception as _e:                       # pragma: no cover - never breaks the request
+        print("[tracker] record_tailored skipped: %r" % (_e,), flush=True)
     return manifest
 
 
@@ -747,6 +757,15 @@ def mark_applied(req: AppliedReq, _user: str = Depends(require_user)):
     man["applied"] = {"at": int(time.time()), "status": req.status or "applied",
                       "note": (req.note or "")[:500], "url": req.url or ""}
     _write_json(mp, man)
+    # The SAME row the Tailor page created now carries the submission, so one application is one
+    # record from job description to sent — which is what the daily digest reports.
+    try:
+        from . import tracker as _tracker
+        _tracker.record_sent(jid, email=req.email, url=req.url or "", employer=req.company or "",
+                             title=req.title or "", status=(req.status or "applied"),
+                             note=req.note or "", ats=_tracker.ats_of(req.url or ""))
+    except Exception as _e:                       # pragma: no cover - never breaks the request
+        print("[tracker] record_sent skipped: %r" % (_e,), flush=True)
     return {"ok": True, "job_id": jid, "status": man["applied"]["status"]}
 
 

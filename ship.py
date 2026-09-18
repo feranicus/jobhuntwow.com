@@ -288,7 +288,10 @@ def do_tests() -> bool:
     #     own machine with no setup, which is the platform five wasted ships were spent relearning.
     for rel in ("tests/test_gate_governance.py", "tests/test_gate_integrity.py",
                 "tests/test_chat_open_wallet.py", "tests/test_llm_events_write.py",
-                "backend/tests/test_resume_consensus.py"):
+                "backend/tests/test_resume_consensus.py",
+                # The Tailor correlation and the digest that reports it. Standalone, stdlib only,
+                # and they write to a temp database -- never to his real pipeline.
+                "backend/app/tracker.py", "backend/app/digest.py"):
         p = os.path.join(HERE, rel)
         if not os.path.exists(p):
             say("  [X] MISSING test file %s - a suite that is absent cannot pass" % rel)

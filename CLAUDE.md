@@ -2575,3 +2575,97 @@ same group; a fallback tries any file input with no file yet and checks `e.files
 says `COULD NOT ATTACH`, and a missing file on disk is named rather than silently skipped.
 AND SUBMIT NOW REFUSES when no upload was confirmed on a page that has a file input at all — a
 required CV that never arrived is a blocker, not a detail. Six contracts, negative-tested.
+
+## THE ORCHESTRATOR HAD TWO HOMES, AND HE RUNS THE STALE ONE (2026-09-18, measured)
+`jobhuntwow-app/jhw.py` was a COPY of `agent/jhw.py` — and the copy is the one his prompt shows him
+typing (`PS C:\...\jobhuntwow-app> python jhw.py apply ...`). They drifted, and the older copy won:
+no `git` verb (so the safepoint that commits before/after every apply never ran from his command),
+no `memory` verb, FIVE suites unregistered (memory · ashby · workday_questions · conduct ·
+test_docker), and it still printed `python jhw.py adapt <name>`, a verb that has never existed.
+`flows/test_docker.py` §8 is what caught it — the guard that asserts every `python jhw.py <verb>`
+we PRINT exists in the entry point that would run it. It had been failing against the root copy the
+whole time; running the suites locally is what surfaced it.
+FIX: the root file is now a 40-line LAUNCHER that forwards argv and the exit code to
+`agent/jhw.py` (which already locates itself and works from either directory). `deploy_direct.py`
+did `import jhw; jhw.cmd_status(None)` and now loads the real module BY PATH — a cross-file call
+resolved by import name is exactly how the duplicate survived.
+RULE (again, one level up): ONE ORCHESTRATOR. A copy of the entry point is the same defect as
+ENRICH_MODELS having four homes, except it is the thing the operator types.
+
+## THE WARM STACK — a rebuild on every apply was 30-60s of nothing (2026-09-18)
+`_ensure_stack()` ran `docker compose up -d --build` every single time. `./flows` is BIND-MOUNTED,
+so an adapter edit needs no build at all. `_stack_already_hot()` now asks **CDP** whether Chrome
+answers (a running container is not a running browser — that distinction is why it asks the port and
+not `docker ps` alone) and skips the build when it does. `--rebuild` / `JHW_FORCE_BUILD=1` force it.
+`JHW_FAST=1` skips the three `*_dom.py` BROWSER suites and says how many it skipped — the pure-logic
+contracts still run, because a check that silently stops running is this file's most expensive
+recurring defect.
+AND THE EXEC WAS THE COST, NOT THE SUITES: 20+ `docker compose exec` round trips on Windows dwarf
+the millisecond checks they run. `_run_suites_batched()` runs every `--logic` suite in ONE exec and
+delimits the output; a suite the batch never reached is reported as a FAILURE, never as silence.
+ALSO FIXED: `main()` did `args.fn(args)` and threw the exit code away, so `python jhw.py apply`
+exited 0 on a dead brain, a refused submit and a crashed adapter alike. `sys.exit(int(... or 0))`.
+
+## TWO UPLOAD CONTRACTS FAILED AGAINST CODE THAT DEMONSTRABLY WORKS (2026-09-18)
+`[warn] ashby.py --logic did not pass — FAIL attaches to the GROUP ... FAIL the filename is READ
+BACK` on a run that attached BOTH documents ("verified") and submitted to ElevenLabs. The checks
+grepped for the OLD implementation's spelling (`has_text=re.compile(label_rx`, `base in shown`);
+the upload had been rewritten around a file-chooser + a section-scoped `files.length` read. **A
+check pinned to a call's exact spelling breaks the moment the call improves.** Both are now measured
+on the AST of `_upload_files`: (1) `_section_for()` resolves the group BEFORE the first
+`set_input_files` — so a blind `input[type=file].first` can never be the first write; (2) a call to
+`evaluate` whose code reads `files.length` exists AND every `filled.append("upload:…")` sits under a
+conditional that depends on it — no unguarded success. Four mutations, all caught.
+A THIRD CHECK WAS VACUOUS: `_up2.split("LAST RESORT")[0]` — that marker does not exist in the code,
+so the split returned the WHOLE function and the check could not fail. The marker is asserted first
+now. AND MY FIRST MUTATION OF IT PASSED BECAUSE I REPLACED THE MARKER IN THE CHECK TOO (the builder
+agreeing with itself, the make_dist defect): mutate the SHIPPING SLICE ONLY.
+
+## HE WAS WOKEN ON TELEGRAM FOR A URL THAT WAS IN candidate.md (2026-09-18, ElevenLabs)
+```
+[escalate] jhw-answer2 -> fill[0] 'https://github.com/username'   <- INVENTED
+[escalate] QUORUM 2/3 -> ask_human
+[ask_human/bridge] What is your GitHub URL?
+```
+`- github: https://github.com/feranicus` has been in `candidate.md` the whole time. The github rule
+had FOUR copies in `ashby.py` — and the heal loop, the one rung that reaches the panel, was the copy
+that did not have it. CLAUDE.md already carries "the engine must never ASK for a fact it already
+owns"; the rule was not the problem, the four homes were.
+`ashby.known_link()` is now the one home (github · linkedin · twitter · website/portfolio), PURE, and
+it returns a link ONLY when it points at the host the label asked about — so a LinkedIn URL can never
+be typed into a GitHub box. Four call sites delegate. Contracts: his real label
+("Link to your Github profile") resolves; the github rule has ONE home (AST over the shipping slice,
+so a comment cannot satisfy it); and `known_link` is consulted BEFORE `import escalate` in `drive()`.
+All three negative-tested — answering after the panel is the same as not answering.
+
+## THE TAILOR CORRELATION — one row says which resume went to which job description (2026-09-18)
+His request: *"in the Tailor part there would be a clear database correlation for this job
+description either with link or with pasted job description ... we sent this and that resume ...
+those db details later would be used for the CRM part inside the pipeline part"*.
+What existed: `DATA_DIR/users/<hash>/<job_id>/job.json` — one file per job, no index, and **the
+PASTED job description was never stored at all** (the manifest keeps `jd.url` and `jd.title`). A
+posting he pasted left no record of what we applied to.
+`backend/app/tracker.py` is the store (SQLite, `DATA_DIR/tracker.sqlite`, WAL because the portal and
+the apply engine both write). ONE ROW PER APPLICATION: created when the documents are tailored,
+UPDATED when the application is sent, so the job description, the exact files and the submission are
+the same record. `jd_fingerprint()` makes a link and a paste of the same posting one job (utm/case/
+trailing slash normalised). `correlation_ok()` is the property that makes a row worth having — a JD
+AND a document — and a row that fails it is NAMED in the digest and flagged on the Pipeline card,
+never counted as a success. `/api/applications` (+ `PATCH` for stage) is what the CRM reads.
+WIRING IS A CONTRACT, NOT A COMMENT: the suite asserts by AST that `generate` calls
+`record_tailored` and `/applied` calls `record_sent`, each inside a `try` (bookkeeping must never
+cost him a tailored resume), that the router is mounted and that the digest scheduler is started.
+Both wiring assertions were negative-tested — shield.py was once fully tested while nothing called it.
+THE PIPELINE PAGE WAS FICTION: hardcoded "Delivery Hero / N26 / €104k". It now renders these rows.
+A funnel that shows invented data is worse than an empty one.
+
+## THE DIGEST — the evening of a day we sent resumes, and once a week when we did not (2026-09-18)
+`backend/app/digest.py`. `due()` is PURE, so the cadence he asked for is a test and not a hope:
+a day with sends → the daily mail, once (a restart recomputes from what is recorded and cannot
+double-send); a quiet day → nothing; a full week with nothing sent → ONE message saying exactly
+that. A brand-new store does not mail about a week that never happened — it records the baseline and
+starts the clock. The body is DETERMINISTIC TEXT (asserted: no model touches it), so an employer can
+never be invented into a report of what he actually applied to. A send that FAILS is not recorded as
+sent, so the next run tries again — verified with the mailer forced down.
+`python jhw.py digest --now` runs the same decision and prints the mail; it runs in the backend
+container (where the database is) and falls back to this machine when the stack is down.

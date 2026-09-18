@@ -135,6 +135,53 @@ def _linkedin_url(data: dict, defaults: dict) -> str:
     return ""
 
 
+_LINK_KINDS = (
+    ("github",   r"git\s*hub",                                    "github.com"),
+    ("linkedin", r"linked\s*in",                                  "linkedin.com"),
+    ("twitter",  r"\btwitter\b|\bx\.com\b",                     "twitter.com|x.com"),
+    ("website",  r"personal (site|website)|portfolio|home\s*page|\bblog\b|your website", ""),
+)
+
+
+def known_link(label: str, data: dict, defaults: dict | None = None) -> str:
+    """A PROFILE LINK IS A FACT WE ALREADY OWN. Asking him for it is a defect.
+
+    MEASURED (ElevenLabs, 2026-08-18): `Link to your Github profile` reached the 3-LLM panel, one
+    vendor INVENTED `https://github.com/username`, the quorum fell back to ask_human, and he was
+    woken on Telegram -- while `- github: https://github.com/feranicus` sat in candidate.md the
+    whole time. CLAUDE.md already carries the rule ("the engine must never ASK for a fact it
+    already owns") and the github rule had FOUR homes in this one file, so the path that needed it
+    was the path that did not have it.
+
+    ONE home now. Pure, so every wording he actually meets is a test rather than a hope. A link is
+    returned ONLY when it points at the host the label asked about, so a LinkedIn URL can never be
+    typed into a GitHub box; a label we hold nothing for returns "" and the ladder continues."""
+    lab = str(label or "")
+    d = defaults or {}
+    b = data.get("basics") or {} if isinstance(data, dict) else {}
+    prof = data.get("profiles") if isinstance(data, dict) else None
+    prof = prof if isinstance(prof, dict) else {}
+    for kind, rx, hosts in _LINK_KINDS:
+        if not re.search(rx, lab, re.I):
+            continue
+        if kind == "linkedin":                      # one home for LinkedIn stays _linkedin_url
+            return _linkedin_url(data, d)
+        cands = [b.get(kind), b.get(f"{kind}_url"), b.get(f"{kind}_profile"),
+                 d.get(kind), d.get(f"{kind}_url"), d.get(f"{kind}_profile"),
+                 prof.get(kind), b.get("website"), d.get("website")]
+        for c in cands:
+            v = str(c or "").strip().strip('"\'')
+            if not v:
+                continue
+            if hosts and not re.search(hosts, v, re.I):
+                continue                            # a link to the WRONG site is not an answer
+            if not hosts and not re.search(r"\.[a-z]{2,}", v, re.I):
+                continue
+            return v if v.startswith("http") else "https://" + v.lstrip("/")
+        return ""
+    return ""
+
+
 async def _answer_yes_no_near(page, question_rx: str, prefer_yes: bool, tag: str, r: dict) -> bool:
     """Click Yes/No for Ashby custom toggles (buttons, radios, or labeled controls).
 
@@ -1073,21 +1120,9 @@ async def _answer_common_ashby_questions(page, data: dict, defaults: dict, url: 
     if await _click_radio_by_patterns(page, yr_map.get(key, yr_map["7+"]), f"years:{key}", r):
         n += 1
 
-    # GitHub from candidate data (avoid Telegram when we already know it)
-    gh = ""
-    b = data.get("basics") or {}
-    for k in ("github", "github_url", "github_profile"):
-        gh = str(b.get(k) or defaults.get(k) or "").strip()
-        if gh:
-            break
-    if not gh:
-        # website sometimes is github
-        w = str(b.get("website") or "")
-        if "github.com" in w.lower():
-            gh = w
-    if gh and "github.com" in gh.lower():
-        if not gh.startswith("http"):
-            gh = "https://" + gh.lstrip("/")
+    # GitHub from candidate data (avoid Telegram when we already know it) -- ONE home: known_link()
+    gh = known_link("github profile", data, defaults)
+    if gh:
         if await _fill_by_label(page, r"github", gh) or await _fill_role(page, "textbox", r"Github|GitHub", gh):
             r["filled"].append("github")
             n += 1
@@ -1558,11 +1593,8 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                 val = _salary_text(_defaults(data))
             elif re.search(r"linkedin", lab, re.I):
                 val = _linkedin_url(data, defaults)
-            elif re.search(r"github", lab, re.I):
-                b0 = data.get("basics") or {}
-                val = str(b0.get("github") or b0.get("github_url") or defaults.get("github") or "").strip()
-                if val and not val.startswith("http"):
-                    val = "https://" + val.lstrip("/")
+            elif known_link(lab, data, defaults):
+                val = known_link(lab, data, defaults)
             else:
                 val = recorded_essay(lab) or await _ans(lab)
             if val and _is_phone_like(val) and not re.search(r"phone|mobile|tel", lab, re.I):
@@ -1622,8 +1654,10 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                     val = _notice_text(defaults)
                 elif re.search(r"expected yearly|salary|compensation", lab, re.I):
                     val = _salary_text(defaults)
-                elif re.search(r"linkedin", lab, re.I):
-                    val = _linkedin_url(data, defaults)
+                elif known_link(lab, data, defaults):
+                    # github / linkedin / portfolio: OURS. This branch is what the panel was being
+                    # asked to guess at, one rung too late.
+                    val = known_link(lab, data, defaults)
                 elif re.search(r"phone|mobile|tel", lab, re.I):
                     continue  # never invent a phone
                 elif re.search(r"sponsor|visa|authori[sz]ed to work|work eligibility|based in Germany|15\+?\s*years|VP level|enterprise technology sales", lab, re.I):
@@ -1906,12 +1940,7 @@ async def drive(data: dict, resume_path: str = "", answer_fn=None, asker=None,
                 if await _fill_by_label(page, re.escape(lab[:40]), val):
                     r["filled"].append(f"esc-fill:{lab[:16]}")
                     continue
-                val = ""
-                if re.search(r"github", lab, re.I):
-                    b0 = data.get("basics") or {}
-                    val = str(b0.get("github") or defaults.get("github") or "").strip()
-                    if val and not val.startswith("http"):
-                        val = "https://" + val.lstrip("/")
+                val = known_link(lab, data, defaults)
                 if not val and answer_fn:
                     try:
                         val = str(await answer_fn(lab, [], data) or "")
@@ -2073,7 +2102,12 @@ def _selftest() -> int:
     _fbl = _i4.getsource(_fill_by_label)
     ck("_STUB.match" in _fbl, "_fill_by_label — where EVERY path ends — refuses a stub itself")
     _up2 = _i4.getsource(_upload_files)
-    _grp = _up2.split("LAST RESORT")[0]
+    # THE MARKER MUST EXIST OR THE SPLIT IS A NO-OP. It said "LAST RESORT" while the code says
+    # "page-wide empty inputs", so the split returned the WHOLE function and this check could not
+    # fail -- the vacuous-check class this project keeps paying for. Assert the marker first.
+    _MARK = "page-wide empty inputs"
+    ck(_MARK in _up2, "the page-wide fallback is marked, so the GROUP path can be measured alone")
+    _grp = _up2.split(_MARK)[0]
     ck("e.files && e.files.length" in _grp,
        "the GROUP path asks the DOM for files.length, not the group's text")
     ck("[:400]" not in _up2, "no truncated evidence (that is what made a real upload 'FAIL')")
@@ -2085,8 +2119,58 @@ def _selftest() -> int:
     print("\n[the upload claimed success on an EMPTY Resume field]")
     import inspect as _i3
     _up = _i3.getsource(_upload_files)
-    ck("has_text=re.compile(label_rx" in _up, "attaches to the GROUP that asks for it, not input #0")
-    ck("base in shown" in _up, "the filename is READ BACK off the page")
+    # THESE TWO USED TO GREP FOR THE OLD IMPLEMENTATION'S SPELLING ("has_text=re.compile(label_rx",
+    # "base in shown"). The upload was then REWRITTEN -- and demonstrably works, ElevenLabs was
+    # submitted with both documents attached and verified -- so both checks failed against correct
+    # code. A check pinned to a call's exact spelling breaks the moment the call improves; pin it to
+    # the PROPERTY. Both are now measured on the AST, and both are negative-tested.
+    import ast as _ast, textwrap as _tw
+    _upt = _ast.parse(_tw.dedent(_up))
+    _upf = _upt.body[0]
+
+    def _calls(tree, name):
+        out = []
+        for n in _ast.walk(tree):
+            if isinstance(n, _ast.Call):
+                f = n.func
+                if isinstance(f, _ast.Name) and f.id == name:
+                    out.append(n)
+                elif isinstance(f, _ast.Attribute) and f.attr == name:
+                    out.append(n)
+        return out
+
+    _secs = _calls(_upf, "_section_for")
+    _sets = _calls(_upf, "set_input_files") + _calls(_upf, "set_files")
+    # PROPERTY 1: the document is placed into the SECTION THAT ASKS FOR IT. The section is resolved
+    # BEFORE anything is written, so a blind `page.locator("input[type=file]").first` at the top of
+    # the function -- which is what put a CV nowhere on 2026-08-17 -- cannot be the first write.
+    ck(bool(_secs) and bool(_sets) and min(c.lineno for c in _secs) < min(c.lineno for c in _sets),
+       "attaches to the GROUP that asks for it, not input #0")
+    # PROPERTY 2: success is gated on a DOM READ. The evidence must come from the browser
+    # (files.length), not from a string we hope to find in the container's text -- and no `append`
+    # that records an upload may sit outside a conditional.
+    _reads = [c for c in _calls(_upf, "evaluate")
+              if c.args and isinstance(c.args[0], _ast.Constant)
+              and "files.length" in str(c.args[0].value)]
+    _parents = {}
+    for n in _ast.walk(_upf):
+        for ch in _ast.iter_child_nodes(n):
+            _parents[ch] = n
+
+    def _guarded(node):
+        cur = _parents.get(node)
+        while cur is not None:
+            if isinstance(cur, _ast.If):
+                t = _ast.dump(cur.test)
+                if any(w in t for w in ("ok", "placed", "_files_len", "_zone_looks_filled")):
+                    return True
+            cur = _parents.get(cur)
+        return False
+
+    _apps = [c for c in _calls(_upf, "append")
+             if c.args and "upload" in _ast.dump(c.args[0])]
+    ck(bool(_reads) and bool(_apps) and all(_guarded(a) for a in _apps),
+       "the filename is READ BACK off the page (files.length), and no unguarded success")
     ck("COULD NOT ATTACH" in _up, "a failed attach is stated, never silently 'uploaded'")
     ck("NO RESUME FILE at" in _up, "a missing file on disk is named")
     _sb = _i3.getsource(_submit)
@@ -2172,6 +2256,43 @@ def _selftest() -> int:
     ck("is_checked()" in _tk, "a tick is read back")
     ck(_notice_text({"notice_period": "1 month"}) == "one month", "notice normalises to the recording")
     ck(_salary_text({"salary_expectation_eur": "150000"}) == "150000", "salary is plain digits")
+
+    print("\n[he was woken for a GitHub URL that was in candidate.md all along — 2026-08-18]")
+    _D = {"basics": {"github": "https://github.com/feranicus",
+                     "linkedin": "https://linkedin.com/in/feranicus"}}
+    # HIS ACTUAL LABEL from the ElevenLabs run, not a label I invented.
+    ck(known_link("Link to your Github profile", _D, {}) == "https://github.com/feranicus",
+       "the GitHub box is answered from candidate.md, never by the panel or Telegram")
+    ck(known_link("Github", {"basics": {}}, {"github": "github.com/feranicus"})
+       == "https://github.com/feranicus", "a bare handle URL is normalised to https")
+    ck(known_link("Link to your Github profile",
+                  {"basics": {"website": "https://linkedin.com/in/feranicus"}}, {}) == "",
+       "a link to the WRONG site is never typed into a GitHub box")
+    ck(known_link("What is your notice period?", _D, {}) == "",
+       "a label we own nothing for returns nothing, so the ladder continues")
+    # ONE HOME. The github rule had FOUR copies in this file and the path that woke him was the one
+    # copy that did not have it. Measured on the AST of the SHIPPING slice, so a comment quoting
+    # `.get("github")` cannot satisfy or break it.
+    import ast as _ast5, inspect as _i5
+    with open(__file__, encoding="utf-8") as _fh:
+        _self_src = _fh.read()
+    _mod = _ast5.parse(_self_src.split("def _selftest")[0])
+    _stray = []
+    for _fn in [n for n in _ast5.walk(_mod)
+                if isinstance(n, (_ast5.FunctionDef, _ast5.AsyncFunctionDef))
+                and n.name != "known_link"]:
+        for _c in _ast5.walk(_fn):
+            if (isinstance(_c, _ast5.Call) and isinstance(_c.func, _ast5.Attribute)
+                    and _c.func.attr == "get" and _c.args
+                    and isinstance(_c.args[0], _ast5.Constant)
+                    and str(_c.args[0].value).startswith("github")):
+                _stray.append(_fn.name)
+    ck(not _stray, f"the github rule has ONE home (strays: {sorted(set(_stray))})")
+    # AND IT IS CONSULTED BEFORE THE PANEL. Answering after the escalation is the same as not
+    # answering: that is exactly the run that invented `https://github.com/username`.
+    _dr = _i5.getsource(drive)
+    ck("known_link(" in _dr and _dr.index("known_link(") < _dr.index("import escalate"),
+       "a fact we OWN is answered before the 3-LLM panel is consulted")
 
     print("=" * 50)
     if fails:

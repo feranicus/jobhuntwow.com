@@ -279,8 +279,15 @@ def main():
     ap.add_argument("--no-caddy", action="store_true", help="start the app but do not touch the vhost")
     a = ap.parse_args()
     deploy(not a.no_caddy)
-    import jhw
-    jhw.cmd_status(None)
+    # THE ORCHESTRATOR LIVES AT agent/jhw.py; the file beside this one is only a launcher.
+    # `import jhw` used to pick up a COPY that has since been removed, so load the real module by
+    # path -- a cross-file call resolved by import name is exactly how the duplicate survived.
+    import importlib.util
+    _real = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent", "jhw.py")
+    _spec = importlib.util.spec_from_file_location("jhw_agent", _real)
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    _mod.cmd_status(None)
 
 
 if __name__ == "__main__":

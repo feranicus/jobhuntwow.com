@@ -11,6 +11,15 @@ export async function postJSON(path, body) {
   });
   return r.json();
 }
+export async function patchJSON(path, body) {
+  const r = await fetch(path, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
 // stream Electronic chat: onChunk(text) called as tokens arrive
 export async function chatStream(messages, model, onChunk) {
   const r = await fetch("/api/chat", {

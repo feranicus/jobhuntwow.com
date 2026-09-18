@@ -221,6 +221,21 @@ export default function Tailor() {
                  href={dl(result.job_id, f)}>⬇ {f}</a>
             ))}
           </div>
+          {/* THE CORRELATION, SAID OUT LOUD. One row now links this job description — the link you
+              gave, or the text you pasted — to the exact documents built for it. The Pipeline and
+              the end-of-day digest read that same row. */}
+          <p className="muted" style={{ marginTop: 10 }}>
+            Tracked:{" "}
+            {result.jd?.url
+              ? <a href={String(result.jd.url)} target="_blank" rel="noreferrer">this posting</a>
+              : "the job description you pasted"}
+            {" → "}
+            <b>{(result.files || []).filter(f => /resume|cv/i.test(String(f))).join(", ")
+                 || "the documents above"}</b>
+            {" · "}<a href="/pipeline">see it in your pipeline</a>
+            <br />
+            <small>record {String(result.job_id || "")}</small>
+          </p>
           <div className="card" style={{ background: "#f8fafc" }}>
             <h3>Talk to Electronic about this draft</h3>
             <p className="muted">

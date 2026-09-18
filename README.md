@@ -84,6 +84,50 @@ inventory, the four-model review panel, the governance rules and how to enable t
 Runs as Docker on the droplet behind the shared Caddy at **`app.jobhuntwow.com`**.
 Step-by-step (DNS, Caddy vhost, compose) in **[DEPLOY.md](DEPLOY.md)**.
 
+## Applying: one warm stack, many applications
+
+`python jhw.py apply "<url>"` does everything itself, as always. What changed (2026-09-18) is that
+it no longer pays for a docker build it does not need:
+
+```powershell
+cd "C:\Python SW\Linkedin Scraper\jobhuntwow-app"
+python jhw.py up                      # once per session (or after a reboot)
+python jhw.py apply "https://jobs.ashbyhq.com/..."
+python jhw.py apply "https://jobs.ashbyhq.com/..."      # warm: no rebuild, straight to the form
+```
+
+| Switch | What it does |
+|--------|--------------|
+| (default) | If Chrome's CDP already answers, the build is skipped and the running stack is reused. |
+| `--rebuild` / `JHW_FORCE_BUILD=1` | Force `docker compose --build` — after editing a Dockerfile or stagehand's `server.ts`. |
+| `JHW_FAST=1` | Also skip the three browser self-tests. The pure-logic contracts still run, and the skip is printed. |
+
+`agent/flows/*.py` is bind-mounted, so editing an adapter needs no rebuild at all.
+
+**`jhw.py` at the repo root is a LAUNCHER for `agent/jhw.py`.** It used to be a second copy, the two
+drifted, and the copy he actually runs was the stale one (no `git`/`memory` verb, five self-test
+suites unregistered, and it printed a verb that has never existed). One file, invoked from either
+place.
+
+## Your applications: the correlation, and the digest
+
+Every tailored document set is recorded as ONE row that says **which job description** (the link you
+gave, or the text you pasted) produced **which resume and cover letter** — and the same row is
+updated when the application is actually sent, by the portal or by the local apply engine.
+
+* `backend/app/tracker.py` — the store (`DATA_DIR/tracker.sqlite`) and `GET /api/applications`,
+  `PATCH /api/applications/{job_id}` (stage moves). The **Pipeline** page reads it; it used to render
+  invented companies.
+* `backend/app/digest.py` — the e-mail. The evening of **any day an application was sent** you get a
+  digest of what went out; a week with **nothing** sent gets one message saying exactly that, and
+  nothing in between. `JHW_DIGEST_HOUR` (UTC, default 19), `DIGEST_EMAIL`, `JHW_DIGEST=0` to disable.
+* `python jhw.py digest --now` prints and sends the same mail the scheduler would, so it can be
+  proven rather than trusted. `--force` sends even when nothing is due.
+
+A row that cannot prove the correlation — a job description with no document, or documents with no
+job description — is **named** in the digest and flagged on the Pipeline card. It is never counted
+as a success.
+
 ## Repo map
 
 | Path | Purpose |

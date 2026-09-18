@@ -60,6 +60,15 @@ app.include_router(proxy_router)
 app.include_router(auth_router)
 app.include_router(electronic_router)
 
+# The application tracker: /api/applications — one row per application, from the job description to
+# the documents we sent. The Pipeline and the CRM read THIS, not a folder of manifests.
+try:
+    from .tracker import router as _tracker_router
+    if _tracker_router is not None:
+        app.include_router(_tracker_router)
+except Exception as _e:      # a bookkeeping module must never stop the portal from booting
+    print('{"evt":"tracker_init","result":"error","err":"%s"}' % repr(_e)[:160], flush=True)
+
 
 # ---- observability: visitor telemetry + security alerting (observability.py, 1:1 from cybergod.ai)
 # One JSON evt='http' per request (ip/country/device/bot/status/ms/user) -> EVENTS_LOG -> promtail ->
@@ -96,6 +105,17 @@ try:
     async def _start_daily_report():
         import asyncio as _aio
         _aio.create_task(_daily.scheduler())
+
+    # THE APPLICATION DIGEST — the evening of any day we actually sent resumes, and once a week
+    # when we did not. Same reasoning as above: an asyncio task, so there is no cron on the droplet
+    # that can drift out of this repo. The decision is recomputed from the tracker every time, so a
+    # restart can neither double-send nor skip.
+    from . import digest as _digest
+
+    @app.on_event("startup")
+    async def _start_application_digest():
+        import asyncio as _aio
+        _aio.create_task(_digest.scheduler())
 except Exception as _e:      # observability must NEVER stop the app from booting
     print('{"evt":"telemetry_init","result":"error","err":"%s"}' % repr(_e)[:160], flush=True)
 
