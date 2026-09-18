@@ -130,6 +130,12 @@ manifests on disk, so it survives a restart — and "Cisco Systems Inc." and "ci
 same employer. Asking Electronic to revise a draft rewrites the SAME filenames; it never numbers the
 same job twice. Older jobs keep their old names and still download.
 
+## Manuals (Russian)
+
+`docs/manuals/` — **JobHuntWOW_QIG_RU.docx** (4 pages: sign in → tailor → pipeline → digest) and
+**JobHuntWOW_Manual_RU.docx** (8 pages: every page and field, how the employer is resolved, what the
+file names mean, what is still preview). PDF copies sit beside them.
+
 ## The Pipeline board
 
 `/pipeline` reads the same rows. **Drag a card into another column to move it** — the card moves
