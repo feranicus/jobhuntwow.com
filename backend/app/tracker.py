@@ -36,7 +36,32 @@ except Exception:                      # pragma: no cover - selftest path
     DATA_DIR = os.getenv("DATA_DIR", "/data")
 
 JD_TEXT_MAX = 40000                    # a JD is prose; anything past this is a paste accident
-STAGES = ("tailored", "applied", "submitted", "interview", "offer", "rejected", "withdrawn")
+# THE REAL LIFECYCLE (2026-09-18). His words: *"Apply and Submitted is same shit different color.
+# but in the interview process there are at least 3-4-5 stages"*. Right on both counts:
+#   * APPLIED and SUBMITTED were one event wearing two hats. The engine's distinction is real — it
+#     says "submitted" only when the SITE confirmed — but that is EVIDENCE about one event, not a
+#     second step in his funnel. It is kept on the row as `confirmed` and shown as a tick.
+#   * "Interview" is not a stage, it is a SEASON: HR screen, technical, take-home or presentation,
+#     hiring manager, final panel. A funnel that cannot say which round you are in cannot tell you
+#     what to prepare for tonight.
+STAGES = ("tailored", "applied", "hr_screen", "tech", "task", "manager", "final",
+          "offer", "rejected")
+# Old names keep working forever: the apply engine (a different codebase, on his PC) reports
+# `submitted`, and rows already on his board carry the old vocabulary.
+LEGACY_STAGES = {"submitted": "applied", "sent": "applied", "interview": "hr_screen",
+                 "screen": "hr_screen", "phone": "hr_screen", "onsite": "final",
+                 "technical": "tech", "assignment": "task", "presentation": "task",
+                 "hiring manager": "manager", "panel": "final", "withdrawn": "rejected"}
+
+
+def canon_stage(stage: str) -> str:
+    """The canonical stage for any name we have ever used, or '' for one we have not. PURE.
+
+    A rename must never silently drop a row into a column that does not exist."""
+    v = str(stage or "").strip().lower().replace("-", "_")
+    if v in STAGES:
+        return v
+    return LEGACY_STAGES.get(v) or LEGACY_STAGES.get(v.replace("_", " ")) or "" 
 
 
 def db_path() -> str:
@@ -86,6 +111,7 @@ CREATE TABLE IF NOT EXISTS applications(
   sent_url    TEXT NOT NULL DEFAULT '',
   ats         TEXT NOT NULL DEFAULT '',
   stage       TEXT NOT NULL DEFAULT 'tailored',
+  confirmed   INTEGER NOT NULL DEFAULT 0,
   note        TEXT NOT NULL DEFAULT '',
   updated_ts  INTEGER NOT NULL DEFAULT 0
 );
@@ -98,9 +124,27 @@ CREATE TABLE IF NOT EXISTS digests(
 """
 
 
+def _migrate(c) -> None:
+    """Bring an older database up to today's shape. Idempotent, and it never loses a row.
+
+    `confirmed` is added to tables created before it existed, and every legacy stage name is
+    rewritten to its canonical column — `submitted` rows become `applied` AND keep their evidence,
+    because that word had meant "the site confirmed it"."""
+    try:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(applications)").fetchall()}
+        if "confirmed" not in cols:
+            c.execute("ALTER TABLE applications ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0")
+        c.execute("UPDATE applications SET confirmed=1 WHERE stage='submitted'")
+        for old, new in LEGACY_STAGES.items():
+            c.execute("UPDATE applications SET stage=? WHERE stage=?", (new, old))
+    except Exception as e:
+        _log(evt="tracker_error", where="migrate", err=repr(e)[:180])
+
+
 def init() -> None:
     with _conn() as c:
         c.executescript(_SCHEMA)
+        _migrate(c)
 
 
 def jd_fingerprint(url: str = "", text: str = "") -> str:
@@ -260,13 +304,17 @@ def record_sent(job_id: str, email: str = "", url: str = "", employer: str = "",
         if not jid:
             return ""
         now = int(time.time())
-        stage = status if status in STAGES else "applied"
+        raw = str(status or "").strip().lower()
+        stage = canon_stage(raw) or "applied"
+        confirmed = 1 if raw in ("submitted", "confirmed") else 0
         with _conn() as c:
             c.executescript(_SCHEMA)
             cur = c.execute("SELECT job_id, jd_url, jd_text FROM applications WHERE job_id=?",
                             (jid,)).fetchone()
             if cur:
                 jd_url = cur["jd_url"] or url or ""
+                if confirmed:
+                    c.execute("UPDATE applications SET confirmed=1 WHERE job_id=?", (jid,))
                 c.execute("UPDATE applications SET sent_ts=?, sent_url=?, ats=?, stage=?, note=?, "
                           "employer=COALESCE(NULLIF(employer,''),?), "
                           "title=COALESCE(NULLIF(title,''),?), jd_url=?, jd_sha=?, updated_ts=? "
@@ -275,10 +323,10 @@ def record_sent(job_id: str, email: str = "", url: str = "", employer: str = "",
                            jd_url, jd_fingerprint(jd_url, cur["jd_text"] or ""), now, jid))
             else:
                 c.execute("INSERT INTO applications (job_id, email, employer, title, jd_url, jd_sha,"
-                          " jd_source, created_ts, sent_ts, sent_url, ats, stage, note, updated_ts)"
-                          " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          " jd_source, created_ts, sent_ts, sent_url, ats, stage, note, updated_ts,"
+                          " confirmed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                           (jid, email, employer, title, url, jd_fingerprint(url, ""), "link",
-                           now, now, url, ats, stage, (note or "")[:500], now))
+                           now, now, url, ats, stage, (note or "")[:500], now, confirmed))
         return jid
     except Exception as e:
         _log(evt="tracker_error", where="record_sent", err=repr(e)[:180])
@@ -286,7 +334,8 @@ def record_sent(job_id: str, email: str = "", url: str = "", employer: str = "",
 
 
 def set_stage(job_id: str, stage: str, note: str = "") -> bool:
-    if stage not in STAGES:
+    stage = canon_stage(stage)
+    if not stage:
         return False
     try:
         with _conn() as c:
@@ -438,7 +487,7 @@ try:
             raise HTTPException(status_code=404, detail="no such application")
         touched = False
         if req.stage is not None:
-            if req.stage not in STAGES:
+            if not canon_stage(req.stage):
                 raise HTTPException(status_code=400,
                                     detail="stage must be one of: %s" % ", ".join(STAGES))
             touched = set_stage(job_id, req.stage, req.note or "") or touched

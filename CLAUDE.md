@@ -476,3 +476,22 @@ MY OWN CHECK MISSED THE MISSING WRITE: "the card still shows Atera" is true even
 saved, because `get()` also DERIVES the employer on every read — defence in depth hiding the thing
 under test, the fourth time in this project. Re-pinned to `employer_source == "jd"`, which is true
 only when the value is STORED; the mutation is caught now.
+
+## "APPLY AND SUBMITTED IS SAME SHIT DIFFERENT COLOR" — the lifecycle is nine columns now (2026-09-18)
+His words, and both halves were right. **Applied and Submitted were one event in two colours:** the
+apply engine says `submitted` only when the SITE confirmed the send, which is EVIDENCE about that
+event, not a second step in his funnel. It is now `confirmed` on the row — a ✓ on the card and a line
+in the digest — and the column is gone. **"Interview" was a season, not a stage:** HR screen ·
+Technical · Task/presentation · Hiring manager · Final panel. A board that cannot say which round he
+is in cannot tell him what to prepare tonight.
+    tailored → applied → hr_screen → tech → task → manager → final → offer   (rejected from any)
+NOTHING BREAKS AND NOTHING IS LOST: `canon_stage()` is pure and maps every name we have ever used
+(`submitted`→applied, `interview`→hr_screen, `technical`→tech, `panel`→final, …), so the apply engine
+on his PC keeps working WITHOUT being redeployed; `_migrate()` adds the `confirmed` column to an
+older database and rewrites legacy stage names once, idempotently — proven against a database built
+in the OLD shape. The suite also asserts the board renders EVERY stage the store allows, so a stage
+can never exist with no column to hold it. Three mutations, all caught.
+A STALE ASSERTION OF MINE BROKE ON THIS: it demanded `stage == "tailored"` after an unrelated edit,
+which an earlier section legitimately moved. Re-pinned to the property (editing the employer must not
+move the card). The Russian manuals were regenerated in the same change — a manual that describes six
+columns the day nine ship is worse than no manual.

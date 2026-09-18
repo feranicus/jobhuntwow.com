@@ -88,8 +88,9 @@ def render(sent: list, tailored: list, window: str, since_ts: int, now: float) -
             L.append("    job        : %s" % _jd_ref(r))
             L.append("    documents  : %s" % (", ".join(r.get("files") or []) or "NONE ON RECORD"))
             L.append("    resume sent: %s" % (r.get("resume_file") or "NOT RECORDED"))
-            L.append("    stage      : %s via %s at %s" % (r.get("stage") or "?",
-                                                           r.get("ats") or "portal", when))
+            L.append("    stage      : %s via %s at %s%s" % (
+                r.get("stage") or "?", r.get("ats") or "portal", when,
+                "   [the site confirmed it]" if r.get("confirmed") else ""))
             if not r.get("correlated"):
                 # A row that cannot say what went where is REPORTED, never quietly counted.
                 L.append("    ** INCOMPLETE: this row cannot prove which resume went to which "
@@ -203,6 +204,10 @@ def _selftest() -> int:
     s2, b2 = render([pasted], [], "daily", start, t0)
     ck("pasted job description (1840 chars" in b2,
        "a posting he PASTED is identified too — that was the half with no record at all")
+    conf = dict(row, confirmed=1)
+    _, bc = render([conf], [], "daily", start, t0)
+    ck("the site confirmed it" in bc,
+       "a site-confirmed send still says so, now that Submitted is not a column")
     broken = dict(row, correlated=False)
     _, b3 = render([broken], [], "daily", start, t0)
     ck("INCOMPLETE" in b3, "a row that cannot prove the correlation is NAMED, never counted as fine")

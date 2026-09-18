@@ -72,13 +72,13 @@ def main() -> int:
     r = c.patch("/api/applications/nope", json={"stage": "offer"})
     ck(r.status_code == 404, "a card we do not have is 404, never a silent create", r.status_code)
 
-    for st in ("submitted", "interview", "offer", "rejected", "tailored"):
+    for st in ("hr_screen", "tech", "task", "manager", "final", "offer", "rejected", "tailored"):
         rr = c.patch("/api/applications/j-drag", json={"stage": st})
         if rr.status_code != 200 or rr.json().get("stage") != st:
             ck(False, "every column on the board is a legal destination", "%s -> %s" % (st, rr.status_code))
             break
     else:
-        ck(True, "every column on the board is a legal destination (all six)")
+        ck(True, "every column on the board is a legal destination (all nine)")
 
     # ---------------------------------------------------------------- 2) the wiring in the page
     jsx = open(os.path.join(ROOT, "frontend", "src", "pages", "Pipeline.jsx"), encoding="utf-8").read()
@@ -107,6 +107,38 @@ def main() -> int:
     ck("<select" in jsx and "kmove" in jsx,
        "a keyboard/touch path remains (dragging needs a mouse)")
 
+    # ---------------------------------------------------- 2b) THE LIFECYCLE HE ACTUALLY LIVES
+    # *"Apply and Submitted is same shit different color. but in the interview process there are at
+    # least 3-4-5 stages"*.
+    ck("submitted" not in T.STAGES, "Applied and Submitted are ONE column now")
+    for st in ("hr_screen", "tech", "task", "manager", "final"):
+        if st not in T.STAGES:
+            ck(False, "the interview season has its own rounds (%s missing)" % st)
+            break
+    else:
+        ck(True, "the interview season is five real rounds, not one word")
+    # THE OLD VOCABULARY MUST KEEP WORKING: the apply engine on his PC still says "submitted".
+    ck(T.canon_stage("submitted") == "applied" and T.canon_stage("interview") == "hr_screen",
+       "every name we have ever used still lands in a real column")
+    ck(T.canon_stage("president") == "", "...and an invented one lands nowhere")
+    r = c.patch("/api/applications/j-drag", json={"stage": "interview"})
+    ck(r.status_code == 200 and r.json().get("stage") == "hr_screen",
+       "a legacy name sent by an older client is accepted and mapped", r.json().get("stage"))
+    # AND THE EVIDENCE SURVIVES THE MERGE.
+    T.record_sent("j-conf", url="https://jobs.ashbyhq.com/x/1", employer="X", status="submitted")
+    conf = T.get("j-conf")
+    ck(conf.get("stage") == "applied" and conf.get("confirmed") == 1,
+       "a site-confirmed send sits in Applied and KEEPS its confirmation")
+    jsx_cols = open(os.path.join(ROOT, "frontend", "src", "pages", "Pipeline.jsx"),
+                    encoding="utf-8").read()
+    for st in T.STAGES:
+        if ('"%s"' % st) not in jsx_cols:
+            ck(False, "the board renders every stage the store allows (%s missing)" % st)
+            break
+    else:
+        ck(True, "the board renders every stage the store allows — no orphan column, no lost row")
+    ck("r.confirmed ?" in jsx_cols, "...and the confirmation tick is on the card")
+
     # ---------------------------------------------------------------- 3) CLICK A CARD, SEE THE JOB
     # *"if I click on this job in the pipeline it needs to give me its details such as the job
     # description and when exactly It was created time and full date"*.
@@ -125,10 +157,15 @@ def main() -> int:
         ck(True, "...with sent/updated times, the documents, the stage and where the employer came from")
 
     # HIS WORD BEATS OUR GUESS.
+    # ASSERT THE PROPERTY, NOT A LITERAL: this used to demand `stage == "tailored"`, which broke the
+    # moment an earlier section legitimately moved the card. What matters is that editing the
+    # employer does not move it.
+    before_stage = c.get("/api/applications/j-drag").json().get("stage")
     r = c.patch("/api/applications/j-drag", json={"employer": "Cisco Systems Inc"})
     ck(r.status_code == 200 and r.json().get("employer") == "Cisco Systems Inc",
        "he can correct the employer by hand")
-    ck(r.json().get("stage") == "tailored", "...without touching the stage it is in")
+    ck(r.json().get("stage") == before_stage,
+       "...without touching the stage it is in", "%s -> %s" % (before_stage, r.json().get("stage")))
     ck(c.patch("/api/applications/j-drag", json={}).status_code == 400,
        "an empty patch changes nothing and says so")
 

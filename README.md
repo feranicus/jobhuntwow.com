@@ -138,7 +138,18 @@ file names mean, what is still preview). PDF copies sit beside them.
 
 ## The Pipeline board
 
-`/pipeline` reads the same rows. **Drag a card into another column to move it** — the card moves
+`/pipeline` reads the same rows. The columns are the real lifecycle:
+
+    Tailored → Applied → HR screen → Technical → Task / presentation → Hiring manager
+             → Final panel → Offer        (Rejected from any of them)
+
+`Applied` and `Submitted` used to be two columns for one event. The engine's "submitted" means the
+SITE confirmed the send — evidence about that event, not a next step — so it is a ✓ on the card and a
+line in the digest. Old rows migrate themselves: `submitted` → Applied with the tick, `interview` →
+HR screen. Every name we have ever used (including anything the local apply engine sends) still
+resolves to a real column.
+
+**Drag a card into another column to move it** — the card moves
 immediately, the change is saved, and if the server refuses it goes back where it was and says why.
 A `move to …` dropdown on each card does the same thing for keyboard and touch. (The one-click
 `rejected` link is gone: one mis-click is how a live application ended up in Rejected.)

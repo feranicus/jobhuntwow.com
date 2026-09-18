@@ -18,13 +18,21 @@ import { getJSON, patchJSON, postJSON } from "../api.js";
 
    Every value is coerced to text before it renders: a backend shape change must never white-screen
    the cabinet. */
+/* THE LIFECYCLE, as he actually lives it (2026-09-18).
+   `Applied` and `Submitted` were one event in two colours — the engine's "submitted" means the SITE
+   confirmed the send, which is EVIDENCE about that event (a tick on the card), not a second step.
+   And "Interview" is a season, not a stage: a board that cannot say which round you are in cannot
+   tell you what to prepare tonight. */
 const COLS = [
-  ["tailored", "Tailored"],
-  ["applied", "Applied"],
-  ["submitted", "Submitted"],
-  ["interview", "Interview"],
-  ["offer", "Offer"],
-  ["rejected", "Rejected"],
+  ["tailored", "Tailored", "documents ready, not sent"],
+  ["applied", "Applied", "sent to the employer"],
+  ["hr_screen", "HR screen", "recruiter call"],
+  ["tech", "Technical", "technical interview"],
+  ["task", "Task / presentation", "take-home or panel presentation"],
+  ["manager", "Hiring manager", "the manager you would report to"],
+  ["final", "Final panel", "final round"],
+  ["offer", "Offer", "offer on the table"],
+  ["rejected", "Rejected", "closed"],
 ];
 const STAGES = COLS.map(([k]) => k);
 const txt = (v) => (v === null || v === undefined ? "" : typeof v === "string" ? v : String(v));
@@ -175,7 +183,7 @@ export default function Pipeline() {
       {err && <div className="err">{err}</div>}
       {note && <p className="muted">{note}</p>}
       <div className="kan">
-        {COLS.map(([key, label]) => {
+        {COLS.map(([key, label, hint]) => {
           const cards = rows.filter((r) => txt(r.stage) === key);
           return (
             <div
@@ -186,7 +194,7 @@ export default function Pipeline() {
               onDragLeave={() => setOver((o) => (o === key ? "" : o))}
               onDrop={(ev) => onDrop(ev, key)}
             >
-              <h4>{label} {cards.length ? `(${cards.length})` : ""}</h4>
+              <h4 title={hint}>{label} {cards.length ? `(${cards.length})` : ""}</h4>
               {cards.map((r) => {
                 const id = txt(r.job_id);
                 return (
@@ -210,7 +218,8 @@ export default function Pipeline() {
                       setTimeout(() => { didDrag.current = false; }, 0);
                     }}
                   >
-                    <b>{whoFrom(r)}</b>
+                    <b>{whoFrom(r)}{r.confirmed ? <span title="the site confirmed this submission"
+                        style={{ color: "var(--green)", marginLeft: 6 }}>✓</span> : null}</b>
                     <small>{txt(r.title) || "(role not recorded)"}</small>
                     <br />
                     <small>

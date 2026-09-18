@@ -41,8 +41,8 @@ h1,h2,h3,.brand{font-family:'Space Grotesk',sans-serif}
 .msg.bot{align-self:flex-start;background:var(--bg2);border-bottom-left-radius:4px}
 .chat-input{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
 /* kanban */
-.kan{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(210px,1fr);gap:12px;overflow-x:auto;padding-bottom:8px}
-.kcol{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:10px;min-width:210px}
+.kan{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(186px,1fr);gap:10px;overflow-x:auto;padding-bottom:8px}
+.kcol{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:10px;min-width:186px}
 .kcol h4{margin:2px 0 10px;font-size:13px;font-family:'Space Grotesk'}
 .kcard{background:#fff;border:1px solid var(--line);border-left:3px solid var(--sky);border-radius:9px;padding:10px;margin-bottom:8px;box-shadow:var(--shadow)}
 .kcard b{font-size:13px;font-family:'Space Grotesk';display:block}
