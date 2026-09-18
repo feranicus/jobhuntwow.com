@@ -587,7 +587,11 @@ def _selftest() -> int:
     # SENDING updates the SAME row -- one application, not two.
     record_sent(jid, url="https://acme.com/jobs/7", status="submitted", ats="ashby", note="site confirmed")
     r2 = get(jid)
-    ck(r2.get("stage") == "submitted" and r2.get("sent_ts") > 0, "the send lands on the tailored row")
+    # THE DOCTRINE CHANGED, SO THE ASSERTION IS REWRITTEN RATHER THAN DELETED: "submitted" was a
+    # COLUMN until 2026-09-18 and is now the CONFIRMATION on the Applied row. Both halves are pinned
+    # here, because losing the confirmation in the merge would have been the real damage.
+    ck(r2.get("stage") == "applied" and r2.get("sent_ts") > 0, "the send lands on the tailored row")
+    ck(r2.get("confirmed") == 1, "...and a site-confirmed send KEEPS its confirmation")
     ck(len(rows(0)) == 1, "one application is ONE row, however many times it is touched")
     ck(r2.get("ats") == "ashby", "which ATS actually took it")
 
@@ -600,7 +604,9 @@ def _selftest() -> int:
     ck(len(rows(int(time.time()) + 10, sent_only=True)) == 0, "a window in the future is empty")
     ck(all("jd_text" not in x for x in rows(0)), "the list never carries the whole JD (it carries its size)")
 
-    ck(set_stage(jid, "interview") and get(jid)["stage"] == "interview", "the CRM can move a stage")
+    ck(set_stage(jid, "tech") and get(jid)["stage"] == "tech", "the CRM can move a stage")
+    ck(set_stage(jid, "interview") and get(jid)["stage"] == "hr_screen",
+       "...and a caller using the OLD vocabulary still lands in a real column")
     ck(set_stage(jid, "president") is False, "an invented stage is refused")
     ck(set_stage("nope", "offer") is False, "a stage change on a job we do not have is refused")
 
