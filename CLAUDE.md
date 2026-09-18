@@ -371,150 +371,34 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
 
 ---
 
-## TWO PRODUCTS, TWO COMMANDS — do not confuse them again (2026-09-18, he lost time to this)
+---
 
-His words: *"I need you to make changes to https://jobhuntwow.com/tailor ... on our Digital Ocean
-droplet not on docker desktop on my pc!!!"* — after a reply of mine ended with `python jhw.py up`,
-which is the LOCAL APPLY SANDBOX. That verb builds `jhw-browser` FROM ubuntu:24.04, so Docker Desktop
-started and began pulling Ubuntu layers for work that had nothing to do with what he asked for.
+# SEPTEMBER 2026 — the rules earned this month
+*(the incidents, verbatim, are in `docs/decisions/2026-09.md`)*
 
-    THE WEBSITE   jobhuntwow.com · /tailor · /pipeline · the digest · the tracker
-                  -> cd jobhuntwow-app && python ship.py
-                  -> NO Docker on this PC. One ssh session; the DROPLET builds the image.
-
-    THE SANDBOX   Chromium + noVNC filling Workday / Ashby / Greenhouse forms
-                  -> python jhw.py up|apply   -> needs Docker Desktop, by design.
-
-RULES:
-1. **Name the product before naming the command.** A reply that ends in the wrong one costs him a
-   ten-minute image pull and the trust that the last answer was read carefully.
-2. `deploy_direct.py` must never import or call anything from `agent/jhw.py` — a website deploy that
-   ends by demanding Docker Desktop is the same defect from the other side. Asserted by
-   `tests/test_gate_integrity.py` (no `cmd_status`, no `spec_from_file_location`, no local `docker`
-   subprocess in either `deploy_direct.py` or `ship.py`), negative-tested.
-3. `JHW_NO_DOCKER_AUTOSTART=1` stops `jhw.py` from starting Docker Desktop for him, and its refusal
-   message NAMES the website path so the two cannot be confused at the moment it matters.
-
-## THE DOCS NAMED FIVE COMMANDS THAT HAVE NEVER EXISTED (2026-09-18)
-`CLAUDE.md`'s own SETTLED-deploy section described **`jhw.py deploy`** (no such verb), and DEPLOY.md offered
-`push`, `chat`, `diagnose` and `mailcheck` — none of which are verbs of anything. `flows/test_docker.py`
-§8 had been enforcing exactly this property for commands we PRINT AT RUNTIME since 2026-08-17, and
-the markdown had drifted the same way with nobody checking. Now `tests/test_claude_md_size.py` reads
-`agent/jhw.py`'s real verb list and asserts every `python jhw.py <verb>` and every `python <script>.py`
-named in the operator-facing docs exists — resolving each against THE FILE THAT PRINTS IT
-(`agent/README.md` says `python apply_all.py` and the reader is standing in `agent/`; resolving only
-against the repo root flagged a correct line, which is the identical false positive §8 once had).
-Both halves negative-tested. `docs/decisions/` is excluded on purpose: it is a record of what was
-said at the time, not instructions.
-
-## THE BOARD IS DRAGGABLE, AND THE MIS-CLICK THAT PUT A LIVE APPLICATION IN "REJECTED" (2026-09-18)
-He asked for one thing: *"I need to be able to move myself the jobs in pipeline but just moving them
-with my mouse"*. Native HTML5 drag-and-drop in `Pipeline.jsx` — no library. THE MOVE IS OPTIMISTIC
-AND REVERSIBLE: the card lands immediately, the PATCH follows, and a refusal puts it BACK and prints
-why, because a board showing a state the database does not hold is the same defect as a log claiming
-a submit the site never confirmed. The one-click `rejected` link is REMOVED (his screenshot shows a
-real application sitting in Rejected; that link was one mis-click away on every card), and a
-`move to …` select remains for keyboard and touch.
-`tests/test_pipeline_dnd.py` checks BOTH halves: the endpoint over REAL HTTP through the app (legal
-move lands · invented stage 400 · unknown job 404 · **a refused move leaves the stored row
-unchanged**), and the drag contract in the JSX. The contract that matters most is
-`preventDefault` on `dragOver` — without it the browser silently refuses every drop, so the feature
-looks implemented and does nothing. Three mutations, all caught.
-HONEST LIMIT: there are no node_modules in my sandbox, so I did not RENDER the page — the JSX is
-parsed by esbuild and the wiring is asserted, not clicked.
-
-## `(employer not recorded)` AND `resume_job_35.pdf` — the posting's address is a fact (2026-09-18)
-His board showed a card with no employer and a file called `resume_job_35.pdf`, because that JD
-(`https://app.civi.co.il/promo/id=892963`) carried no company name at all. A filename that names
-nobody is useless at the one moment it is read: when he attaches it.
-`docnames.employer_from_url()` reads the employer off the address, and it knows the ATS is not the
-employer: `jobs.ashbyhq.com/elevenlabs/…` → elevenlabs (first path segment on a board host),
-`intive.wd3.myworkdayjobs.com` → intive (the tenant), `app.civi.co.il` → civi (noise labels
-stripped). It is used ONLY when the JD named nobody, it is recorded as `company_source: "url"` so a
-guess is never mistaken for the JD's own word, and **it never reaches the resume or the cover
-letter** — those are written from the JD.
-MY OWN WIRING CHECK BROKE ON THE FIX: it asserted `"company=jd.get" in generate`, the OLD spelling,
-which is precisely the defect that file exists to prevent. Re-pinned to the property (the writer is
-handed company/title/seq).
-
-## "IN EVERY JOB DESCRIPTION THERE IS A NAME OF THE COMPANY" — he is right (2026-09-18)
-His card read `(employer not recorded)`, title **"About the job"**, above 3,623 characters of pasted
-job description. `jd_ingest._guess_title_company` understood a literal `Company:` label — which
-almost no posting uses — and took the FIRST LINE as the title, which on a LinkedIn paste is a
-section header. The name was in the text the whole time; nothing had looked.
-`sniff_title_company()` now reads the shapes postings actually use (`<Company> is looking for`,
-`<Title> at <Company>`, `About <Company>`, `At <Company>, we…`, `Join us at <Company>`, the labels),
-and `_looks_like_name()` refuses a section header, a sentence, a generic noun and anything over six
-words — **a bad guess on a card and in a filename is worse than none**.
-THE LADDER, most certain first, recorded in `company_source`: the JD's own word → **the model,
-reading the posting** → the posting's address → nothing, said plainly. Rung 2 is safe for the same
-structural reason Set-of-Mark and the closed option list are: `jd_ingest.company_in_text()` accepts
-the model's answer ONLY if it appears VERBATIM in the posting, so a hallucinated employer is
-impossible rather than unlikely. None of it reaches the resume or the cover letter — asserted by
-measuring that `_emp` appears only AFTER the consensus wrote them.
-ROWS ALREADY IN THE DATABASE ARE FIXED ON READ (`tracker._derive_employer`), from the text they
-already hold — a labelled derivation beats a migration that rewrites his history.
-`tests/test_employer_ladder.py` runs rung 2 with a STUBBED model (a real one would make the test a
-coin flip; the GUARD is the subject): a name in the posting is accepted, `Coinbase` against a
-Fireblocks posting is REFUSED, an exception costs nothing. Two mutations, both caught — and my first
-two attempts at the last check were a tautology and an empty message, which is the vacuous-check
-defect this file records over and over.
-
-## CLICK A CARD, SEE THE JOB (2026-09-18)
-*"if I click on this job in the pipeline it needs to give me its details such as the job description
-and when exactly It was created time and full date"*. A drawer on `Pipeline.jsx`: the WHOLE pasted
-job description, `created` / `sent` / `last change` as full date + time + TIMEZONE (a relative "2
-days ago" is not an answer to "when exactly"), stage, ATS, the documents as download links, the
-record id, and `employer from` so a derivation is never mistaken for the JD's own word.
-A CLICK MUST NOT BE A DRAG: `didDrag` is set on dragStart and cleared one tick after dragEnd, so
-finishing a drag never also opens the panel. Negative-tested.
-TWO FIELDS ARE EDITABLE — employer and role — because a person knows those better than a guess;
-everything else on a row is EVIDENCE (what was sent, when, which files) and stays read-only.
-`POST /api/applications/{id}/reread` runs the ladder again on demand for cards written before the
-sniff understood postings, with the same verbatim guard on the model rung, and PERSISTS the result.
-MY OWN CHECK MISSED THE MISSING WRITE: "the card still shows Atera" is true even when nothing was
-saved, because `get()` also DERIVES the employer on every read — defence in depth hiding the thing
-under test, the fourth time in this project. Re-pinned to `employer_source == "jd"`, which is true
-only when the value is STORED; the mutation is caught now.
-
-## "APPLY AND SUBMITTED IS SAME SHIT DIFFERENT COLOR" — the lifecycle is nine columns now (2026-09-18)
-His words, and both halves were right. **Applied and Submitted were one event in two colours:** the
-apply engine says `submitted` only when the SITE confirmed the send, which is EVIDENCE about that
-event, not a second step in his funnel. It is now `confirmed` on the row — a ✓ on the card and a line
-in the digest — and the column is gone. **"Interview" was a season, not a stage:** HR screen ·
-Technical · Task/presentation · Hiring manager · Final panel. A board that cannot say which round he
-is in cannot tell him what to prepare tonight.
-    tailored → applied → hr_screen → tech → task → manager → final → offer → negotiation
-             → signed                                                     (rejected from any)
-AND AN OFFER IS NOT THE END (same day, his follow-up): *"where is the stage of Contract negotiations
-and Signed contract?"* — between "they want you" and "you have a job" sit the two weeks that decide
-the money, the start date and the notice period. `negotiation` and `signed` are columns of their own,
-and `contract` / `negotiating` / `hired` / `accepted` / `closed won` all canonicalise into them.
-NOTHING BREAKS AND NOTHING IS LOST: `canon_stage()` is pure and maps every name we have ever used
-(`submitted`→applied, `interview`→hr_screen, `technical`→tech, `panel`→final, …), so the apply engine
-on his PC keeps working WITHOUT being redeployed; `_migrate()` adds the `confirmed` column to an
-older database and rewrites legacy stage names once, idempotently — proven against a database built
-in the OLD shape. The suite also asserts the board renders EVERY stage the store allows, so a stage
-can never exist with no column to hold it. Three mutations, all caught.
-A STALE ASSERTION OF MINE BROKE ON THIS: it demanded `stage == "tailored"` after an unrelated edit,
-which an earlier section legitimately moved. Re-pinned to the property (editing the employer must not
-move the card). The Russian manuals were regenerated in the same change — a manual that describes six
-columns the day nine ship is worse than no manual.
-
-## ANOTHER DOMAIN — jobhw.org, and the half-wiring that would not have been caught (2026-09-18)
-He registered a short domain at Squarespace and asked what to do "in the DNS settings, and on our
-caddy and DO". Two halves, and only one is ours: the Caddy block ships with `python ship.py` and
-Caddy fetches the certificate itself; the DNS is his registrar account and nobody else can touch it.
-`python domains.py` is the honest bridge — it READS the hostnames out of the block we ship (one
-home: what we serve is what we tell him to point), prints the exact records, then MEASURES. **It
-refuses to report a finding it cannot see**: if the canonical host itself does not resolve, DNS is
-unavailable on that machine and it says so and exits 2, rather than sending him to the registrar to
-fix something already correct.
-TWO PERMANENT CONTRACTS, both negative-tested: every hostname the block serves must also be in
-`fix_caddy.OURS` (serving a name we do not CLAIM leaves another vhost free to keep it — exactly how
-the old one-pager held jobhuntwow.com through six "successful" deploys), and every `redir` must
-target the canonical host in ONE hop (pointing jobhw.org at www.jobhuntwow.com would bounce again off
-the www block and cost every visitor a second round trip).
-THE REGISTRAR DETAIL THAT ACTUALLY BITES: Squarespace's "Squarespace Defaults" preset must be
-DELETED, not added to. Its four A records, the `www` CNAME and the HTTPS/SVCB row keep the name
-pointing at Squarespace and win over anything added underneath.
+- **TWO PRODUCTS, TWO COMMANDS.** The WEBSITE is `python ship.py` and needs no Docker on his PC; the
+  LOCAL APPLY SANDBOX is `python jhw.py` and needs Docker Desktop. **Name the product before naming
+  the command** — a reply ending in the wrong one cost him a ten-minute Ubuntu pull.
+  `deploy_direct.py` may never import anything from `agent/jhw.py`; `JHW_NO_DOCKER_AUTOSTART=1`
+  stops the sandbox verbs from launching Docker Desktop.
+- **The docs must name commands that exist.** `tests/test_claude_md_size.py` reads `agent/jhw.py`'s
+  real verb list and checks every `python jhw.py <verb>` and `python <script>.py` in the
+  operator-facing docs — resolved against the FILE THAT PRINTS IT. Five named commands had never
+  existed, one of them in this file.
+- **This file has a size budget (40 KB) and it is enforced.** A rule that is only written down goes
+  stale; the history lives in `docs/decisions/`.
+- **The board is the truth or it is nothing.** Drag-and-drop is optimistic and REVERTS on refusal;
+  `preventDefault` on `dragOver` is the line whose absence makes drag look implemented and do
+  nothing; a click must never be a drag (`didDrag`).
+- **A derived fact is labelled as derived.** The employer ladder is JD text → model (accepted ONLY
+  if the name appears VERBATIM in the posting) → posting URL → nothing, recorded in
+  `company_source`. None of it reaches the resume or the cover letter.
+- **A filename is read at the moment it is attached.** `resume_<employer>_<role>[_N].pdf`, numbered
+  from what is on disk, never from a counter.
+- **The lifecycle is his, not mine:** tailored → applied → hr_screen → tech → task → manager → final
+  → offer → negotiation → signed (rejected from any). `canon_stage()` maps every legacy name so the
+  apply engine keeps working; `_migrate()` moves old rows once; the board must render EVERY stage the
+  store allows.
+- **A hostname we SERVE must be one the deploy CLAIMS** (`fix_caddy.OURS`), and every `redir` lands
+  on the canonical host in ONE hop. `python domains.py` prints the registrar records and measures —
+  and refuses to report a finding when it cannot resolve DNS at all.
