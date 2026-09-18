@@ -158,12 +158,15 @@ def correlation_ok(row: dict) -> bool:
 
 
 def _pick(files, *pats) -> str:
+    """The document of that kind, preferring the PDF — that is the one that gets attached.
+
+    Sorted order alone would report the .docx, and the digest's job is to say what was SENT."""
     import re as _re
-    for f in (files or []):
-        for p in pats:
-            if _re.search(p, str(f), _re.I):
-                return str(f)
-    return ""
+    hits = [str(f) for f in (files or []) if any(_re.search(p, str(f), _re.I) for p in pats)]
+    for h in hits:
+        if h.lower().endswith(".pdf"):
+            return h
+    return hits[0] if hits else ""
 
 
 def record_tailored(manifest: dict, jd_text: str = "", files=None) -> str:

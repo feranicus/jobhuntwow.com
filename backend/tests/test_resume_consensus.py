@@ -810,8 +810,20 @@ try:
     check(man["employers_missing"] == [],
           "after the revision NO employer is missing", man["employers_missing"])
     check(man["audit"]["scores"]["truthfulness"] == 4, "the scores reach the manifest")
-    check(sorted(man["files"]) == ["cover_letter.docx", "cover_letter.pdf", "resume.docx",
-                                   "resume.pdf"], "all four documents were written", man["files"])
+    # THE FOUR NAMES ARE NO LONGER LITERAL. Documents are named after the employer and the role
+    # (`resume_acme_cloud-director.pdf`), so this used to assert a doctrine that has since been
+    # corrected: what matters is that all four exist, in the two kinds and the two formats, and
+    # that each one says which job it was written for.
+    _kinds = sorted((f.split("_")[0], f.rsplit(".", 1)[-1]) for f in man["files"])
+    check(_kinds == [("cover", "docx"), ("cover", "pdf"), ("resume", "docx"), ("resume", "pdf")],
+          "all four documents were written (resume + cover, docx + pdf)", man["files"])
+    check(all(f.startswith(("resume_", "cover_letter_")) and len(f.split("_")) >= 3
+              for f in man["files"]),
+          "every filename carries the employer and the role, so he can tell them apart",
+          man["files"])
+    check(isinstance(man.get("doc_naming"), dict) and man["doc_naming"].get("seq", 0) >= 1,
+          "the manifest records the naming, so a revision rewrites the SAME files",
+          man.get("doc_naming"))
     r1 = man["audit"]["rounds"][0]
     check(r1["counts"]["invented_facts"] == 1 and r1["counts"]["employers_dropped"] == 1,
           "the round records what it acted on", r1["counts"])
@@ -819,7 +831,8 @@ try:
           "both corrections were applied", r1["revisions"])
 
     d = os.path.join(ELE.user_dir("e2e@example.com"), man["job_id"])
-    body = "\n".join(p.text for p in _docx.Document(os.path.join(d, "resume.docx")).paragraphs)
+    _rdocx = [f for f in man["files"] if f.startswith("resume_") and f.endswith(".docx")][0]
+    body = "\n".join(p.text for p in _docx.Document(os.path.join(d, _rdocx)).paragraphs)
     check("Google" not in body, "the RENDERED resume.docx does NOT contain the invented employer")
     check("Verint" in body and "EARLIER EXPERIENCE" in body,
           "the RENDERED resume.docx DOES contain the restored employer, under EARLIER EXPERIENCE")

@@ -17,7 +17,7 @@ Wraps Docker so operations are re-runnable and documented. The sandbox compose l
 the backend compose lives in the repo root (agent/..). Run from anywhere.
 """
 from __future__ import annotations
-import argparse, glob, io, json, os, re, shutil, subprocess, sys
+import argparse, glob, io, json, os, re, shutil, subprocess, sys, time
 
 try:
     _SELF = os.path.abspath(__file__)
@@ -41,7 +41,77 @@ def dc(*args, cwd=HERE, check=True):
     return sh("docker", "compose", *args, cwd=cwd, check=check)
 
 
+class Stop(Exception):
+    """An ENVIRONMENT problem the operator can fix in one step. Never a traceback.
+
+    `python jhw.py up` printed 40 lines of CalledProcessError because Docker Desktop was not
+    running. A traceback for "the daemon is off" teaches nothing and hides the one sentence that
+    matters. Every verb that shells out to docker raises this instead, main() prints it and exits 2.
+    A real programming error still raises normally -- those SHOULD be loud."""
+
+
+def _docker_says_ready() -> bool:
+    """Does the DAEMON answer? `docker` being on PATH proves nothing -- Docker Desktop installs the
+    CLI and the CLI happily reports a broken npipe as a command failure."""
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=25)
+        return r.returncode == 0 and bool((r.stdout or "").strip())
+    except Exception:
+        return False
+
+
+def _desktop_exe() -> str:
+    """Where Docker Desktop is installed on Windows, if it is."""
+    if os.name != "nt":
+        return ""
+    for base in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                 os.environ.get("ProgramW6432", r"C:\Program Files"),
+                 os.environ.get("LOCALAPPDATA", "")):
+        for rel in (r"Docker\Docker\Docker Desktop.exe", r"Docker\Docker Desktop.exe"):
+            exe = os.path.join(base, rel) if base else ""
+            if exe and os.path.isfile(exe):
+                return exe
+    return ""
+
+
+def require_docker(start: bool = True, wait_s: int = 180) -> None:
+    """ONE command means the verb fixes its own prerequisite. So: if the daemon is down we START
+    Docker Desktop and WAIT for it, printing progress -- and if it still will not come up we say so
+    in one sentence and stop. The docker CLI's own error (`npipe:////./pipe/dockerDesktopLinuxEngine
+    ... The system cannot find the file specified`) is what a stopped Docker Desktop looks like; it
+    is not a path problem and the operator should not have to know that."""
+    if _docker_says_ready():
+        return
+    if shutil.which("docker") is None:
+        raise Stop("Docker is not installed (no `docker` on PATH). Install Docker Desktop, "
+                   "then re-run this command.")
+    exe = _desktop_exe()
+    if not (start and exe):
+        raise Stop("Docker is installed but the engine is not running. Start Docker Desktop "
+                   "(wait for the whale icon to stop animating), then re-run this command.")
+    print(f"[i] Docker Desktop is not running — starting it ({os.path.basename(exe)}) …")
+    try:
+        subprocess.Popen([exe], close_fds=True)
+    except Exception as e:
+        raise Stop(f"could not launch Docker Desktop ({type(e).__name__}: {str(e)[:70]}). "
+                   "Start it yourself and re-run this command.")
+    t0 = time.time()
+    while time.time() - t0 < wait_s:
+        time.sleep(5)
+        if _docker_says_ready():
+            print(f"[OK] the Docker engine is up ({int(time.time() - t0)}s).")
+            return
+        if int(time.time() - t0) % 30 < 5:
+            print(f"    still waiting for the engine … {int(time.time() - t0)}s")
+    raise Stop(f"Docker Desktop did not become ready within {wait_s}s. Open it, wait for it to say "
+               "'Engine running', then re-run this command.")
+
+
 def ensure_prereqs():
+    # THE DAEMON FIRST. Everything below is cosmetic if docker cannot answer.
+    require_docker()
     os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
     if not os.path.exists(COOKIES):
         if os.path.exists(COOKIES_SRC):
@@ -63,9 +133,13 @@ def cmd_up(_):
     print(f"\n[OK] Sandbox starting. Watch the browser at: {NOVNC}\n     ~30s, then: python jhw.py status")
 
 
-def cmd_down(_): dc("down")
+def cmd_down(_):
+    require_docker(start=False)          # stopping needs a daemon too, but never starts one
+    dc("down")
 def cmd_watch(_): print(f"Open the browser view here: {NOVNC}")
-def cmd_status(_): dc("ps", check=False); print(f"\nnoVNC (watch/drive): {NOVNC}")
+def cmd_status(_):
+    require_docker(start=False)
+    dc("ps", check=False); print(f"\nnoVNC (watch/drive): {NOVNC}")
 def cmd_logs(_): dc("logs", "-f", check=False)
 
 
@@ -102,6 +176,8 @@ _SELFTESTS = [
      "Workday: URL derivation, routing precedence, answers from candidate.md"),
     (["/agent/flows/learned.py", "--logic"], "ALL LEARNED-ANSWER CONTRACTS HOLD",
      "learned answers: recalled across employers, secrets refused"),
+    (["/agent/backend/app/docnames.py"], "ALL DOCNAME CONTRACTS HOLD",
+     "the file he attaches says which employer and which role it was written for"),
     (["/agent/backend/app/tracker.py"], "ALL TRACKER CONTRACTS HOLD",
      "the Tailor correlation: one row says which resume went to which job description"),
     (["/agent/backend/app/digest.py"], "ALL DIGEST CONTRACTS HOLD",
@@ -1173,7 +1249,23 @@ def main():
     args = p.parse_args()
     # THE VERB'S EXIT CODE IS THE ANSWER. `args.fn(args)` threw it away, so `python jhw.py apply`
     # exited 0 on a refused submit, a dead brain and a crashed adapter alike -- unusable in a loop.
-    sys.exit(int(args.fn(args) or 0))
+    # AND AN ENVIRONMENT PROBLEM IS NOT A CRASH: a stopped Docker Desktop produced 40 lines of
+    # CalledProcessError, which names the npipe and not the fix. One sentence, exit 2.
+    try:
+        sys.exit(int(args.fn(args) or 0))
+    except Stop as e:
+        print(f"\n[X] {e}")
+        sys.exit(2)
+    except subprocess.CalledProcessError as e:
+        cmd = " ".join(str(x) for x in (e.cmd if isinstance(e.cmd, (list, tuple)) else [e.cmd]))
+        print(f"\n[X] `{cmd[:110]}` failed (exit {e.returncode}). The error it printed is above.")
+        if cmd.startswith("docker"):
+            print("    If it mentions the daemon or a pipe: Docker Desktop is not running — "
+                  "`python jhw.py doctor` checks it.")
+        sys.exit(e.returncode or 1)
+    except KeyboardInterrupt:
+        print("\n[i] stopped.")
+        sys.exit(130)
 
 
 if __name__ == "__main__":

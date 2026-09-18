@@ -2669,3 +2669,51 @@ never be invented into a report of what he actually applied to. A send that FAIL
 sent, so the next run tries again — verified with the mailer forced down.
 `python jhw.py digest --now` runs the same decision and prints the mail; it runs in the backend
 container (where the database is) and falls back to this machine when the stack is down.
+
+## `python jhw.py up` ANSWERED A STOPPED DOCKER DESKTOP WITH A TRACEBACK (2026-09-18)
+```
+unable to get image 'agent-jhw-agent': failed to connect to the docker API at
+npipe:////./pipe/dockerDesktopLinuxEngine ... The system cannot find the file specified.
+subprocess.CalledProcessError: Command '('docker','compose','up','-d','--build')' returned 1
+```
+Forty lines naming a named pipe, for "Docker Desktop is not running". `ensure_prereqs()` checked the
+LinkedIn cookie file and the .env and never asked the daemon anything, and `sh(check=True)` raised
+straight past main(). THE ONE-COMMAND RULE APPLIES TO PREREQUISITES: `require_docker()` probes
+`docker info` (the CLI on PATH proves nothing — Docker Desktop installs the CLI), STARTS Docker
+Desktop on Windows and waits up to 180s printing progress, and raises `Stop` — an environment
+problem, not a crash — which main() prints as ONE sentence with exit 2. A real programming error
+still raises normally; those should be loud.
+HONEST LIMIT: I cannot run Windows or Docker here, so the four branches (daemon up · no CLI ·
+engine off with no Desktop · Desktop starts and answers) were proven by substituting the two facts
+the function reads, and the no-CLI branch was run for real. `flows/test_docker.py` §9 now asserts
+by AST that ensure_prereqs asks the daemon, that main() handles `Stop` AND `CalledProcessError`,
+and that the probe itself can never raise. Three mutations, all caught.
+
+## EVERY APPLICATION PRODUCED `resume.pdf` — the name is what he sees when he attaches it (2026-09-18)
+His words: *"each file such as resume.pdf and cover_letter.pdf needs to have some sort of naming
+convention with job title and company name, for example resume_cisco_pm.pdf ... and in case several
+similar positions with same employer then also better to add some sort of numeration"*.
+`backend/app/docnames.py` — PURE, stdlib only, and in its own module because documents.py imports
+python-docx and reportlab, so a rule written there could only be tested where those are installed
+(the "a check that cannot run where it is invoked" defect, six times in this project).
+    resume_cisco_project-manager.pdf · cover_letter_cisco_project-manager.pdf
+    resume_cisco_project-manager_2.pdf        <- the SECOND Cisco project-manager posting
+THE NUMBER IS COUNTED FROM WHAT IS ON DISK (`_prior_jobs()` reads the manifests), never from a
+counter file — a counter would be a second home for a fact the directory already holds. `slug()`
+TRANSLITERATES rather than drops, because `Zürich` and `Zurich` silently collapsing into one slug
+would put two employers in one file; legal suffixes are stripped so `Cisco Systems Inc.` and
+`cisco systems` do not each start their own numbering.
+TWO THINGS THE RENAME BROKE AND THE CONTRACTS CAUGHT:
+  * **the download route had a fixed ALLOWLIST** of six filenames, so a document we had just written
+    could not be fetched. `looks_generated()` is a SHAPE test (a list would go stale on every
+    generate), it still refuses `../../etc/passwd`, `resume.exe` and `.env`, and the six legacy
+    names keep working so old jobs still download.
+  * **`revise` would have renumbered the same job.** The naming is recorded in the manifest
+    (`doc_naming`) and the rebuild reuses it, so a revision overwrites its own files instead of
+    leaving two half-current sets in one folder.
+Also: `tracker._pick` now prefers the PDF, because the digest's job is to name the file that was
+actually attached, not whichever sorts first. Verified end to end with the REAL renderers: eight
+files on disk, all non-empty, correctly named and numbered. Five wiring mutations, all caught.
+MY OWN FIXTURE WAS WRONG ONCE MORE: I asserted that "Cisco Systems Inc" and "Cisco" are one
+employer. They are not — dropping a legal suffix does not make two company NAMES equal — so the
+check failed correct code. The fixture now tests the property it meant (casing and spacing).

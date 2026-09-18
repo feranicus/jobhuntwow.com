@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import documents, jd_ingest, resume_consensus as RC
+from . import docnames, documents, jd_ingest, resume_consensus as RC
 from .settings import DATA_DIR
 from .auth import require_user
 
@@ -51,8 +51,11 @@ router = APIRouter(prefix="/api/electronic", tags=["electronic"],
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
+# THE DOWNLOAD GUARD IS A SHAPE, NOT A LIST. Filenames now carry the employer and the role
+# (`resume_cisco_project-manager.pdf`), so a fixed set could not name them — and a stale allowlist
+# would refuse to serve a document we had just written. docnames.looks_generated() is the one home.
 ALLOWED_FILES = {"resume.docx", "resume.pdf", "cover_letter.docx", "cover_letter.pdf",
-                 "job.json", "tailored.json"}
+                 "job.json", "tailored.json"}          # legacy jobs, generated before the rename
 MIME = {".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".pdf": "application/pdf", ".json": "application/json"}
 
@@ -71,6 +74,34 @@ def job_dir(email: str, job_id: str) -> str:
     if not JOB_ID_RE.match(job_id or ""):
         raise HTTPException(status_code=400, detail="invalid job_id")
     return os.path.join(user_dir(email), job_id)
+
+
+def _prior_jobs(email: str, exclude: str = "") -> list:
+    """Every (company, title) this user has tailored before — the input to the `_2` numbering.
+
+    Read from the manifests, because they are the record: a counter in a file would be a second home
+    for a fact the directory already holds, and this project's oldest defect is a value with two
+    homes. An unreadable manifest is skipped, never guessed at."""
+    out = []
+    try:
+        base = user_dir(email)
+    except Exception:
+        return out
+    if not os.path.isdir(base):
+        return out
+    for name in sorted(os.listdir(base)):
+        if name == exclude or not JOB_ID_RE.match(name):
+            continue
+        mp = os.path.join(base, name, "job.json")
+        if not os.path.isfile(mp):
+            continue
+        try:
+            with open(mp, encoding="utf-8") as f:
+                _jd = (json.load(f) or {}).get("jd") or {}
+            out.append({"company": _jd.get("company", ""), "title": _jd.get("title", "")})
+        except Exception:
+            continue
+    return out
 
 
 def _new_job_id(company: str, title: str) -> str:
@@ -553,7 +584,14 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
     }
 
     photo = _photo_path(req.email) if req.use_photo else ""
-    written = documents.write_all(resume_struct, cover_struct, outdir, photo=photo)
+    # HOW MANY TIMES HAS THIS EMPLOYER + ROLE ALREADY BEEN TAILORED? That decides the `_2` suffix,
+    # and it is counted from what is ON DISK rather than from a counter, so it survives a restart
+    # and cannot drift away from the files it names.
+    _seq = docnames.next_seq(_prior_jobs(req.email, exclude=jid),
+                             jd.get("company", ""), jd.get("title", ""))
+    written = documents.write_all(resume_struct, cover_struct, outdir, photo=photo,
+                                  company=jd.get("company", ""), title=jd.get("title", ""),
+                                  seq=_seq)
     if written.get("errors"):
         errors.update(written["errors"])
     if not written.get("files"):
@@ -572,6 +610,10 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
                    "auditor_vendor": con["audit"].get("auditor_vendor")},
         "attempts": con["attempts"],
         "files": sorted(os.path.basename(p) for p in written["files"].values()),
+        # THE NAMING IS PART OF THE RECORD. `revise` rebuilds the same documents and must write the
+        # SAME filenames; recomputing the sequence there would name a job `_2` that is already `_1`
+        # and leave two half-current sets of files in one folder.
+        "doc_naming": {"company": jd.get("company", ""), "title": jd.get("title", ""), "seq": _seq},
         "keywords_matched": tailored.get("keywords_matched") or [],
         "gaps": tailored.get("gaps") or [],
         # The employer-drop check now runs on the RENDERED struct, not on the model's answer -
@@ -693,7 +735,16 @@ async def revise(req: ReviseReq, _user: str = Depends(require_user)):
     for r in rejected:
         print("[revise] %s" % r, file=sys.stderr)
     photo = _photo_path(req.email) if req.use_photo else ""
-    written = documents.write_all(resume_struct, cover_struct, outdir, photo=photo)
+    # THE SAME FILENAMES AS THE FIRST BUILD — read from the manifest, never recomputed here.
+    _prev = {}
+    try:
+        with open(os.path.join(outdir, "job.json"), encoding="utf-8") as _f:
+            _prev = (json.load(_f) or {}).get("doc_naming") or {}
+    except Exception:
+        _prev = {}
+    written = documents.write_all(resume_struct, cover_struct, outdir, photo=photo,
+                                  company=_prev.get("company", ""), title=_prev.get("title", ""),
+                                  seq=int(_prev.get("seq") or 1))
     _write_json(tp, {"resume": resume_struct, "cover": cover_struct})
 
     manifest = {}
@@ -824,7 +875,8 @@ def artifacts(job_id: str, email: str = Depends(require_user)):
 @router.get("/artifacts/{job_id}/{filename}")
 def artifact(job_id: str, filename: str, email: str = Depends(require_user)):
     """Download one generated file. Path traversal is impossible: the name is allow-listed."""
-    if not FILE_RE.match(filename or "") or filename not in ALLOWED_FILES:
+    if not FILE_RE.match(filename or "") or not (
+            filename in ALLOWED_FILES or docnames.looks_generated(filename)):
         raise HTTPException(status_code=400, detail="unknown artifact")
     d = job_dir(email, job_id)
     p = os.path.join(d, filename)

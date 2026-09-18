@@ -169,6 +169,46 @@ def main() -> int:
         ck(True, f"every `python jhw.py <verb>` we print is a real verb "
                  f"({sum(len(v) for v in verbs.values())} verbs across {len(verbs)} entry points)")
 
+    # ---------------------------------------------------------------- [9] an environment problem
+    # is ONE SENTENCE, never a traceback. `python jhw.py up` printed 40 lines of
+    # CalledProcessError because Docker Desktop was not running -- naming an npipe, not the fix.
+    import ast as _ast
+    _jp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "jhw.py")
+    with open(_jp, encoding="utf-8") as _fh:
+        _jsrc = _fh.read()
+    _jt = _ast.parse(_jsrc)
+    _jfns = {n.name: n for n in _ast.walk(_jt)
+             if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+    ck("require_docker" in _jfns and "Stop" in {n.name for n in _ast.walk(_jt)
+                                                if isinstance(n, _ast.ClassDef)},
+       "agent/jhw.py has a docker precondition and an environment-error type")
+
+    def _calls(fn, name):
+        return fn is not None and any(
+            isinstance(c, _ast.Call) and (
+                (isinstance(c.func, _ast.Name) and c.func.id == name)
+                or (isinstance(c.func, _ast.Attribute) and c.func.attr == name))
+            for c in _ast.walk(fn))
+
+    ck(_calls(_jfns.get("ensure_prereqs"), "require_docker"),
+       "every verb's prerequisite check asks the DAEMON first, not just the PATH")
+    _handled = set()
+    for _t in [n for n in _ast.walk(_jfns.get("main")) if isinstance(n, _ast.Try)] if _jfns.get("main") else []:
+        for _h in _t.handlers:
+            for _n in _ast.walk(_h.type) if _h.type else []:
+                if isinstance(_n, _ast.Name):
+                    _handled.add(_n.id)
+                if isinstance(_n, _ast.Attribute):
+                    _handled.add(_n.attr)
+    ck("Stop" in _handled, "main() turns an environment problem into one line")
+    ck("CalledProcessError" in _handled,
+       "main() never lets a failed `docker ...` reach the operator as a traceback")
+    _rd = _jfns.get("_docker_says_ready")
+    _rdsrc = _ast.get_source_segment(_jsrc, _rd) if _rd else ""
+    ck("docker" in _rdsrc and "info" in _rdsrc and "returncode" in _rdsrc,
+       "the daemon probe ASKS docker info and reads its exit status")
+    ck("check=True" not in _rdsrc, "...and the probe itself can never raise")
+
     print("\n" + "=" * 78)
     if FAILS:
         print(f"[X] {len(FAILS)} DOCKER CONTRACT(S) BROKEN")

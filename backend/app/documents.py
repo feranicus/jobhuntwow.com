@@ -32,6 +32,11 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import re
+
+try:
+    from . import docnames
+except Exception:                      # pragma: no cover - imported as a plain module by scripts
+    import docnames                    # type: ignore
 from typing import Any
 
 from docx import Document
@@ -487,20 +492,27 @@ def to_pdf(md_or_struct: Any, path: str, kind: str = "resume") -> str:
     return _write_pdf(b, path, title=_title_of(b))
 
 
-def write_all(resume: Any, cover: Any, outdir: str, photo: str = "") -> dict:
-    """Write resume.docx/.pdf + cover_letter.docx/.pdf into outdir.
+def write_all(resume: Any, cover: Any, outdir: str, photo: str = "",
+              company: str = "", title: str = "", seq: int = 1) -> dict:
+    """Write the resume and cover letter (.docx + .pdf) into outdir.
+
+    THE FILENAME CARRIES THE JOB: `resume_cisco_project-manager.pdf`, and `_2` when this employer
+    and role have been tailored before. The name is the only thing he can see at the moment he
+    attaches a file to an employer's form, and four `resume (1).pdf` downloads carry no information
+    at all. The rule itself lives in docnames.py (stdlib only, so it is testable anywhere).
 
     A failure in one renderer never blocks the others - the caller gets whatever
     succeeded plus an 'errors' map, instead of an exception and zero files.
     """
     os.makedirs(outdir, exist_ok=True)
+    n = lambda kind, ext: docnames.doc_name(kind, company, title, seq, ext)   # noqa: E731
     jobs = [
-        ("resume.docx", resume_docx, resume),
-        ("resume.pdf", resume_pdf, resume),
-        ("cover_letter.docx", cover_docx, cover),
-        ("cover_letter.pdf", cover_pdf, cover),
+        (n("resume", "docx"), resume_docx, resume),
+        (n("resume", "pdf"), resume_pdf, resume),
+        (n("cover_letter", "docx"), cover_docx, cover),
+        (n("cover_letter", "pdf"), cover_pdf, cover),
     ]
-    photo_for = {"resume.docx", "resume.pdf"}      # a cover letter never carries a photo
+    photo_for = {jobs[0][0], jobs[1][0]}           # a cover letter never carries a photo
     files = {}
     errors = {}
     for name, fn, payload in jobs:

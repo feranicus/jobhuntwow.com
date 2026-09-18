@@ -291,7 +291,7 @@ def do_tests() -> bool:
                 "backend/tests/test_resume_consensus.py",
                 # The Tailor correlation and the digest that reports it. Standalone, stdlib only,
                 # and they write to a temp database -- never to his real pipeline.
-                "backend/app/tracker.py", "backend/app/digest.py"):
+                "backend/app/tracker.py", "backend/app/digest.py", "backend/app/docnames.py"):
         p = os.path.join(HERE, rel)
         if not os.path.exists(p):
             say("  [X] MISSING test file %s - a suite that is absent cannot pass" % rel)

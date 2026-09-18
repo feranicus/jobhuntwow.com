@@ -104,10 +104,31 @@ python jhw.py apply "https://jobs.ashbyhq.com/..."      # warm: no rebuild, stra
 
 `agent/flows/*.py` is bind-mounted, so editing an adapter needs no rebuild at all.
 
+**Docker Desktop is the verb's problem, not yours.** If the engine is not running, `jhw.py` starts
+Docker Desktop and waits for it; if it cannot, you get one sentence and exit code 2 — never a
+`CalledProcessError` traceback naming an npipe.
+
 **`jhw.py` at the repo root is a LAUNCHER for `agent/jhw.py`.** It used to be a second copy, the two
 drifted, and the copy he actually runs was the stale one (no `git`/`memory` verb, five self-test
 suites unregistered, and it printed a verb that has never existed). One file, invoked from either
 place.
+
+## What the files are called
+
+`resume.pdf` is what every application used to produce, so four downloads later the folder holds
+`resume (1).pdf` … and the file you attach to an employer is a guess. Now:
+
+```
+resume_cisco_project-manager.pdf
+cover_letter_cisco_project-manager.pdf
+resume_cisco_project-manager_2.pdf      # a SECOND Cisco project-manager posting
+```
+
+The rule is `backend/app/docnames.py` (stdlib only, so it is testable anywhere). The number comes
+from how many times that employer **and** role have already been tailored — counted from the
+manifests on disk, so it survives a restart — and "Cisco Systems Inc." and "cisco systems" are the
+same employer. Asking Electronic to revise a draft rewrites the SAME filenames; it never numbers the
+same job twice. Older jobs keep their old names and still download.
 
 ## Your applications: the correlation, and the digest
 
