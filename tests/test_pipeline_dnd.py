@@ -107,6 +107,61 @@ def main() -> int:
     ck("<select" in jsx and "kmove" in jsx,
        "a keyboard/touch path remains (dragging needs a mouse)")
 
+    # ---------------------------------------------------------------- 3) CLICK A CARD, SEE THE JOB
+    # *"if I click on this job in the pipeline it needs to give me its details such as the job
+    # description and when exactly It was created time and full date"*.
+    one = c.get("/api/applications/j-drag")
+    ck(one.status_code == 200, "a single card can be read", one.status_code)
+    d = one.json()
+    ck(d.get("jd_text", None) is not None and "a posting" in d.get("jd_text", ""),
+       "the details carry the WHOLE job description (the list deliberately does not)")
+    ck(isinstance(d.get("created_ts"), int) and d["created_ts"] > 0,
+       "...and the exact moment it was created, as a timestamp the page can format")
+    for k in ("updated_ts", "sent_ts", "files", "stage", "jd_url", "employer_source"):
+        if k not in d:
+            ck(False, "the details carry %s" % k)
+            break
+    else:
+        ck(True, "...with sent/updated times, the documents, the stage and where the employer came from")
+
+    # HIS WORD BEATS OUR GUESS.
+    r = c.patch("/api/applications/j-drag", json={"employer": "Cisco Systems Inc"})
+    ck(r.status_code == 200 and r.json().get("employer") == "Cisco Systems Inc",
+       "he can correct the employer by hand")
+    ck(r.json().get("stage") == "tailored", "...without touching the stage it is in")
+    ck(c.patch("/api/applications/j-drag", json={}).status_code == 400,
+       "an empty patch changes nothing and says so")
+
+    # RE-READ: the ladder again, on demand, for rows written before the sniff understood postings.
+    T.record_tailored({"job_id": "j-blind", "email": "feranicus@s4biz.io",
+                       "jd": {"title": "About the job", "company": "", "url": ""},
+                       "files": ["resume_about-the-job.pdf"]},
+                      jd_text="About the job\nAtera is looking for a Senior Program Manager.")
+    rr = c.post("/api/applications/j-blind/reread")
+    ck(rr.status_code == 200 and rr.json().get("employer") == "Atera",
+       "re-reading a blind card finds the employer in the text it already holds",
+       rr.json().get("employer"))
+    ck(rr.json().get("reread", {}).get("source") == "text",
+       "...and says WHICH rung answered")
+    # ASSERT THE WRITE, NOT THE DISPLAY. `get()` also DERIVES an employer from the text on every
+    # read, so "the card shows Atera" is true even when nothing was saved — defence in depth hiding
+    # the very thing under test, for the fourth time in this project. `employer_source` is "jd" only
+    # when the value is STORED; a derivation reports "text".
+    after = c.get("/api/applications/j-blind").json()
+    ck(after.get("employer") == "Atera" and after.get("employer_source") == "jd",
+       "...and it is PERSISTED, so the card stays fixed", after.get("employer_source"))
+    ck(c.post("/api/applications/nope/reread").status_code == 404,
+       "re-reading a card we do not have is 404")
+
+    # the panel's wiring
+    ck("openCard(" in jsx and "onClick={() => { if (!didDrag.current) openCard(id); }}" in jsx,
+       "a click opens the card — and a DRAG never counts as a click")
+    ck("jd_text" in jsx and "stamp(open.created_ts)" in jsx,
+       "the panel shows the job description and the exact creation time")
+    ck("timeZoneName" in jsx, "...with the timezone, so 'exactly when' is unambiguous")
+    ck("/api/electronic/artifacts/" in jsx, "the documents are downloadable from the panel")
+    ck("saveDraft" in jsx and "reread" in jsx, "he can correct it, or make it read the posting again")
+
     print("=" * 66)
     if FAILS:
         print("[X] %d PIPELINE CONTRACT(S) BROKEN" % len(FAILS))

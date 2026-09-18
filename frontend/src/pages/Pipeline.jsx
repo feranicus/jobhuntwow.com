@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getJSON, patchJSON } from "../api.js";
+import { getJSON, patchJSON, postJSON } from "../api.js";
 
 /* Pipeline — the CRM view of the SAME rows the Tailor page writes and the apply engine updates.
 
@@ -29,6 +29,17 @@ const COLS = [
 const STAGES = COLS.map(([k]) => k);
 const txt = (v) => (v === null || v === undefined ? "" : typeof v === "string" ? v : String(v));
 const day = (ts) => (ts ? new Date(Number(ts) * 1000).toLocaleDateString() : "");
+/* EXACTLY when, to the minute, with the timezone — he asked for "when exactly It was created time
+   and full date". A relative "2 days ago" is not an answer to that. */
+const stamp = (ts) =>
+  ts
+    ? new Date(Number(ts) * 1000).toLocaleString(undefined, {
+        weekday: "short", year: "numeric", month: "short", day: "numeric",
+        hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+      })
+    : "—";
+const dl = (jobId, f) =>
+  `/api/electronic/artifacts/${encodeURIComponent(jobId)}/${encodeURIComponent(f)}`;
 
 /* The posting's host, when the JD never carried an employer name. `(employer not recorded)` tells
    you nothing; `app.civi.co.il` at least tells you where it came from. */
@@ -49,7 +60,11 @@ export default function Pipeline() {
   const [note, setNote] = useState("loading…");
   const [over, setOver] = useState("");          // the column the pointer is currently above
   const [busy, setBusy] = useState("");          // the job_id being saved
+  const [open, setOpen] = useState(null);        // the row shown in the details panel
+  const [draft, setDraft] = useState({ employer: "", title: "" });
+  const [panelNote, setPanelNote] = useState("");
   const dragged = useRef(null);                  // {job_id, from}
+  const didDrag = useRef(false);                 // a drag must never also count as a click
 
   async function load() {
     try {
@@ -85,6 +100,59 @@ export default function Pipeline() {
       setErr("could not move that card — " + txt((e && e.message) || e) + " (it went back)");
     } finally {
       setBusy("");
+    }
+  }
+
+  /* CLICK A CARD, SEE THE JOB. The list deliberately does not carry the job description (a board
+     with fifty postings in it would ship megabytes); the single-row read does, so the panel asks
+     for it. */
+  async function openCard(id) {
+    setPanelNote("loading…");
+    setOpen({ job_id: id });
+    try {
+      const r = await getJSON(`/api/applications/${encodeURIComponent(id)}`);
+      setOpen(r);
+      setDraft({ employer: txt(r.employer), title: txt(r.title) });
+      setPanelNote("");
+    } catch (e) {
+      setPanelNote("could not load it — " + txt((e && e.message) || e));
+    }
+  }
+
+  /* HIS WORD BEATS OUR GUESS. The employer and the role are the only two fields a person can know
+     better than the record does; everything else on a row is evidence and stays read-only. */
+  async function saveDraft() {
+    if (!open || !open.job_id) return;
+    setPanelNote("saving…");
+    try {
+      const r = await patchJSON(`/api/applications/${encodeURIComponent(open.job_id)}`, {
+        employer: draft.employer, title: draft.title,
+      });
+      setOpen({ ...open, ...r });
+      setRows((prev) => prev.map((x) => (txt(x.job_id) === txt(open.job_id) ? { ...x, ...r } : x)));
+      setPanelNote("saved");
+    } catch (e) {
+      setPanelNote("not saved — " + txt((e && e.message) || e));
+    }
+  }
+
+  /* READ THE POSTING AGAIN. For the cards written before the sniff understood how postings are
+     worded: same ladder, same guard — a name the posting does not contain is refused. */
+  async function reread() {
+    if (!open || !open.job_id) return;
+    setPanelNote("reading the job description…");
+    try {
+      const r = await postJSON(`/api/applications/${encodeURIComponent(open.job_id)}/reread`, {});
+      setOpen({ ...open, ...r });
+      setDraft({ employer: txt(r.employer), title: txt(r.title) });
+      setRows((prev) => prev.map((x) => (txt(x.job_id) === txt(open.job_id) ? { ...x, ...r } : x)));
+      const info = r.reread || {};
+      setPanelNote(info.found
+        ? `read from the ${info.source === "text" ? "job description" : info.source === "llm"
+            ? "job description (model, checked against the text)" : "posting address"}`
+        : "the posting does not name an employer anywhere — type it yourself above");
+    } catch (e) {
+      setPanelNote("could not re-read it — " + txt((e && e.message) || e));
     }
   }
 
@@ -127,14 +195,20 @@ export default function Pipeline() {
                     key={id}
                     draggable
                     title="drag me to another column"
+                    onClick={() => { if (!didDrag.current) openCard(id); }}
                     onDragStart={(ev) => {
+                      didDrag.current = true;
                       dragged.current = { job_id: id, from: key };
                       try {
                         ev.dataTransfer.setData("text/plain", id);
                         ev.dataTransfer.effectAllowed = "move";
                       } catch { /* older browsers: the ref above still carries it */ }
                     }}
-                    onDragEnd={() => { dragged.current = null; setOver(""); }}
+                    onDragEnd={() => {
+                      dragged.current = null; setOver("");
+                      // let the click that ends a drag pass by before re-arming
+                      setTimeout(() => { didDrag.current = false; }, 0);
+                    }}
                   >
                     <b>{whoFrom(r)}</b>
                     <small>{txt(r.title) || "(role not recorded)"}</small>
@@ -183,6 +257,55 @@ export default function Pipeline() {
           );
         })}
       </div>
+
+      {open && (
+        <div className="jdrawer" onClick={(e) => { if (e.target === e.currentTarget) setOpen(null); }}>
+          <div className="jpanel">
+            <button className="jclose" onClick={() => setOpen(null)} aria-label="close">×</button>
+            <h3>{txt(open.employer) || whoFrom(open) || "this application"}</h3>
+            <p className="muted">{txt(open.title) || "(role not recorded)"}</p>
+
+            <div className="jgrid">
+              <span>created</span><b>{stamp(open.created_ts)}</b>
+              <span>sent</span><b>{open.sent_ts ? stamp(open.sent_ts) : "not sent yet"}</b>
+              <span>last change</span><b>{stamp(open.updated_ts)}</b>
+              <span>stage</span><b>{txt(open.stage)}</b>
+              <span>ATS</span><b>{txt(open.ats) || "—"}</b>
+              <span>employer from</span><b>{txt(open.employer_source) || "—"}</b>
+              <span>record</span><b><code>{txt(open.job_id)}</code></b>
+            </div>
+
+            <h4>Correct the details</h4>
+            <div className="jedit">
+              <input value={draft.employer} placeholder="employer"
+                     onChange={(e) => setDraft({ ...draft, employer: e.target.value })} />
+              <input value={draft.title} placeholder="role"
+                     onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
+              <button className="btn" onClick={saveDraft}>Save</button>
+              <button className="btn ghost" onClick={reread}>Re-read the posting</button>
+            </div>
+            {panelNote && <p className="muted">{panelNote}</p>}
+
+            <h4>Documents</h4>
+            <div>
+              {(Array.isArray(open.files) ? open.files : []).map((f) => (
+                <a key={txt(f)} className="btn ghost" style={{ marginRight: 8, marginBottom: 6 }}
+                   href={dl(txt(open.job_id), txt(f))}>⬇ {txt(f)}</a>
+              ))}
+              {!(open.files || []).length && <small className="muted">no document on record</small>}
+            </div>
+
+            <h4>Job description</h4>
+            {open.jd_url && (
+              <p><a href={txt(open.jd_url)} target="_blank" rel="noreferrer">{txt(open.jd_url)}</a></p>
+            )}
+            <pre className="jdtext">
+              {txt(open.jd_text) || (open.jd_url ? "(a link only — nothing was pasted)"
+                                                 : "(no job description on record)")}
+            </pre>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -459,3 +459,20 @@ coin flip; the GUARD is the subject): a name in the posting is accepted, `Coinba
 Fireblocks posting is REFUSED, an exception costs nothing. Two mutations, both caught — and my first
 two attempts at the last check were a tautology and an empty message, which is the vacuous-check
 defect this file records over and over.
+
+## CLICK A CARD, SEE THE JOB (2026-09-18)
+*"if I click on this job in the pipeline it needs to give me its details such as the job description
+and when exactly It was created time and full date"*. A drawer on `Pipeline.jsx`: the WHOLE pasted
+job description, `created` / `sent` / `last change` as full date + time + TIMEZONE (a relative "2
+days ago" is not an answer to "when exactly"), stage, ATS, the documents as download links, the
+record id, and `employer from` so a derivation is never mistaken for the JD's own word.
+A CLICK MUST NOT BE A DRAG: `didDrag` is set on dragStart and cleared one tick after dragEnd, so
+finishing a drag never also opens the panel. Negative-tested.
+TWO FIELDS ARE EDITABLE — employer and role — because a person knows those better than a guess;
+everything else on a row is EVIDENCE (what was sent, when, which files) and stays read-only.
+`POST /api/applications/{id}/reread` runs the ladder again on demand for cards written before the
+sniff understood postings, with the same verbatim guard on the model rung, and PERSISTS the result.
+MY OWN CHECK MISSED THE MISSING WRITE: "the card still shows Atera" is true even when nothing was
+saved, because `get()` also DERIVES the employer on every read — defence in depth hiding the thing
+under test, the fourth time in this project. Re-pinned to `employer_source == "jd"`, which is true
+only when the value is STORED; the mutation is caught now.

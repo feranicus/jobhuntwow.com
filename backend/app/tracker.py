@@ -300,6 +300,30 @@ def set_stage(job_id: str, stage: str, note: str = "") -> bool:
         return False
 
 
+def set_fields(job_id: str, employer=None, title=None, note=None) -> bool:
+    """Correct a row by hand. The derivations are guesses; a human's word is not.
+
+    Only the three fields a person can reasonably know better than we do. Everything else about a
+    row is evidence (what was sent, when, which files) and is never hand-editable."""
+    sets, args = [], []
+    for col, val in (("employer", employer), ("title", title), ("note", note)):
+        if val is not None:
+            sets.append("%s=?" % col)
+            args.append(str(val)[:300])
+    if not sets:
+        return False
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            args += [int(time.time()), job_id]
+            n = c.execute("UPDATE applications SET %s, updated_ts=? WHERE job_id=?"
+                          % ", ".join(sets), args).rowcount
+        return bool(n)
+    except Exception as e:
+        _log(evt="tracker_error", where="set_fields", err=repr(e)[:180])
+        return False
+
+
 def rows(since_ts: int = 0, until_ts: Optional[int] = None, email: str = "",
          sent_only: bool = False, limit: int = 500) -> list:
     """Rows in a window. `sent_only` windows on sent_ts, otherwise on created_ts."""
@@ -384,7 +408,11 @@ try:
     router = APIRouter(prefix="/api/applications", tags=["applications"])
 
     class StageReq(BaseModel):
-        stage: str
+        # Every field optional: the board sends `stage` when a card is dragged, the details panel
+        # sends `employer`/`title` when he corrects a guess. One endpoint, one row, no second home.
+        stage: Optional[str] = None
+        employer: Optional[str] = None
+        title: Optional[str] = None
         note: Optional[str] = ""
 
     @router.get("")
@@ -406,12 +434,57 @@ try:
 
     @router.patch("/{job_id}")
     def patch_application(job_id: str, req: StageReq, _user: str = Depends(require_user)):
-        if req.stage not in STAGES:
-            raise HTTPException(status_code=400,
-                                detail="stage must be one of: %s" % ", ".join(STAGES))
-        if not set_stage(job_id, req.stage, req.note or ""):
+        if not get(job_id):
             raise HTTPException(status_code=404, detail="no such application")
+        touched = False
+        if req.stage is not None:
+            if req.stage not in STAGES:
+                raise HTTPException(status_code=400,
+                                    detail="stage must be one of: %s" % ", ".join(STAGES))
+            touched = set_stage(job_id, req.stage, req.note or "") or touched
+        if req.employer is not None or req.title is not None:
+            touched = set_fields(job_id, employer=req.employer, title=req.title) or touched
+        if not touched:
+            raise HTTPException(status_code=400, detail="nothing to change")
         return get(job_id)
+
+    @router.post("/{job_id}/reread")
+    async def reread_application(job_id: str, _user: str = Depends(require_user)):
+        """Read the employer and the role out of the job description AGAIN, on demand.
+
+        The rows on his board were written before the sniff understood how postings are actually
+        worded, and a card that says `(employer not recorded)` over 3,623 characters of job
+        description is the one case where re-reading is worth an inference call. Same ladder and the
+        same guard as a fresh tailor: the text, then the model (accepted ONLY if the name appears
+        verbatim in the posting), then the posting's address. It never touches the documents."""
+        row = get(job_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="no such application")
+        text = row.get("jd_text") or ""
+        # Imported HERE, not at module scope: electronic.py imports this module, and a cycle at
+        # import time would take the whole API down for a convenience feature.
+        from . import jd_ingest as _ji, docnames as _dn, electronic as _el
+        title, emp = _ji.sniff_title_company(text)
+        src = "text" if emp else ""
+        if not emp and text:
+            emp = await _el._company_from_model(text)
+            src = "llm" if emp else ""
+        if not emp:
+            emp = _dn.employer_from_url(row.get("jd_url") or "")
+            src = "url" if emp else "none"
+        # COMPARE AGAINST WHAT IS STORED, not against what `get()` DERIVED for display — otherwise
+        # a row whose employer is computed on every read looks "unchanged" and is never persisted.
+        changed = {}
+        if emp and (row.get("employer_source") != "jd" or emp != (row.get("employer") or "")):
+            changed["employer"] = emp
+        cur_t = (row.get("title") or "").strip()
+        if title and (not cur_t or _ji._SECTION.match(cur_t)):
+            changed["title"] = title          # only replace a SECTION HEADER, never his own words
+        if changed:
+            set_fields(job_id, **changed)
+        out = get(job_id)
+        out["reread"] = {"found": bool(emp), "source": src, "changed": sorted(changed)}
+        return out
 except Exception:                                   # pragma: no cover - standalone --logic run
     router = None
 
