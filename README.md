@@ -130,6 +130,18 @@ manifests on disk, so it survives a restart — and "Cisco Systems Inc." and "ci
 same employer. Asking Electronic to revise a draft rewrites the SAME filenames; it never numbers the
 same job twice. Older jobs keep their old names and still download.
 
+## Extra domains (jobhw.org)
+
+`python domains.py` — read-only. It reads the hostnames out of the Caddy block we ship, prints the
+exact DNS records to set at the registrar, then MEASURES whether each name points at the droplet and
+whether the redirect actually answers. It says plainly when it cannot measure (no DNS on this
+machine) instead of reporting a finding.
+
+Order: **DNS first, then `python ship.py`.** Caddy asks Let's Encrypt for the certificate the moment
+a hostname is in its config, and that only succeeds once the name resolves to the droplet.
+`jobhw.org` and `www.jobhw.org` redirect to `https://jobhuntwow.com` in one hop, carrying the path
+and the query.
+
 ## Manuals (Russian)
 
 `docs/manuals/` — **JobHuntWOW_QIG_RU.docx** (4 pages: sign in → tailor → pipeline → digest) and

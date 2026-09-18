@@ -500,3 +500,21 @@ A STALE ASSERTION OF MINE BROKE ON THIS: it demanded `stage == "tailored"` after
 which an earlier section legitimately moved. Re-pinned to the property (editing the employer must not
 move the card). The Russian manuals were regenerated in the same change — a manual that describes six
 columns the day nine ship is worse than no manual.
+
+## ANOTHER DOMAIN — jobhw.org, and the half-wiring that would not have been caught (2026-09-18)
+He registered a short domain at Squarespace and asked what to do "in the DNS settings, and on our
+caddy and DO". Two halves, and only one is ours: the Caddy block ships with `python ship.py` and
+Caddy fetches the certificate itself; the DNS is his registrar account and nobody else can touch it.
+`python domains.py` is the honest bridge — it READS the hostnames out of the block we ship (one
+home: what we serve is what we tell him to point), prints the exact records, then MEASURES. **It
+refuses to report a finding it cannot see**: if the canonical host itself does not resolve, DNS is
+unavailable on that machine and it says so and exits 2, rather than sending him to the registrar to
+fix something already correct.
+TWO PERMANENT CONTRACTS, both negative-tested: every hostname the block serves must also be in
+`fix_caddy.OURS` (serving a name we do not CLAIM leaves another vhost free to keep it — exactly how
+the old one-pager held jobhuntwow.com through six "successful" deploys), and every `redir` must
+target the canonical host in ONE hop (pointing jobhw.org at www.jobhuntwow.com would bounce again off
+the www block and cost every visitor a second round trip).
+THE REGISTRAR DETAIL THAT ACTUALLY BITES: Squarespace's "Squarespace Defaults" preset must be
+DELETED, not added to. Its four A records, the `www` CNAME and the HTTPS/SVCB row keep the name
+pointing at Squarespace and win over anything added underneath.

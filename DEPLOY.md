@@ -205,3 +205,17 @@ All app state is JSON on the `jobhuntwow_jhw_data` Docker volume:
 ```bash
 docker run --rm -v jobhuntwow_jhw_data:/d -v "$PWD":/b alpine tar czf /b/jhw_data_backup.tgz -C /d .
 ```
+
+## Adding another domain (worked example: jobhw.org)
+
+1. **Caddy** — add the hostnames to `deploy/caddy/jobhuntwow.caddy` and to `fix_caddy.OURS`
+   (`tests/test_gate_integrity.py` fails the build if the two disagree, because a hostname we serve
+   but do not claim can still be taken by another vhost on that droplet).
+2. **DNS at the registrar** — `python domains.py` prints the records. For Squarespace: Domains ->
+   DNS -> DNS Settings, **delete the "Squarespace Defaults" preset** (its four A records, the
+   `www` CNAME and the HTTPS/SVCB row keep the name pointing at Squarespace and win over anything
+   added underneath), then add two A records, `@` and `www`, both to the droplet IP. No CNAME, no
+   HTTPS record, no URL-forwarding rule — Caddy does the redirect with its own certificate.
+3. **Wait for DNS**, then `python ship.py`. The certificate is issued on the first request.
+4. `python domains.py` again to confirm: every name resolves here and every redirect answers 301
+   to the canonical host.

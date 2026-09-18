@@ -2,8 +2,17 @@
 # Edit THIS file and redeploy. NEVER hand-edit the droplet's Caddyfile: the deploy strips
 # everything between the markers and re-appends this block, so a manual edit is lost.
 
-# ONE canonical URL: https://jobhuntwow.com  — www permanently redirects to the apex.
+# ONE canonical URL: https://jobhuntwow.com  — everything else redirects to it, in ONE hop.
 www.jobhuntwow.com {
+	redir https://jobhuntwow.com{uri} permanent
+}
+
+# jobhw.org — the short domain (registered at Squarespace, DNS must point HERE: two A records,
+# @ and www, to this droplet). It redirects to the canonical host and carries the path and query
+# with it, so https://jobhw.org/pipeline lands on https://jobhuntwow.com/pipeline.
+# ONE HOP, deliberately: pointing it at www.jobhuntwow.com would bounce again off the block above.
+# Caddy gets its certificate automatically on the first request AFTER the DNS points here.
+jobhw.org, www.jobhw.org {
 	redir https://jobhuntwow.com{uri} permanent
 }
 

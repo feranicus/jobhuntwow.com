@@ -507,6 +507,31 @@ check(not _shiplocal, "ship.py never runs docker on the operator's machine eithe
 check('[sys.executable, p]' in _shipsrc,
       "ship.py runs its suites with this interpreter, not inside a container")
 
+# ================================ EVERY HOSTNAME WE SERVE MUST ALSO BE ONE WE CLAIM
+# `deploy/caddy/jobhuntwow.caddy` says what Caddy serves; `fix_caddy.OURS` says which hostnames the
+# deploy STRIPS from any other block on that droplet. A name in the first and not the second is
+# half-wired: we serve it while somebody else's vhost can still claim it — which is exactly how the
+# old one-pager kept jobhuntwow.com for six "successful" deploys.
+import domains as _dom
+import importlib.util as _ilu
+
+_fc_spec = _ilu.spec_from_file_location("fix_caddy", os.path.join(ROOT, "deploy", "fix_caddy.py"))
+_fc = _ilu.module_from_spec(_fc_spec)
+_fc_spec.loader.exec_module(_fc)
+
+_served = set(_dom.hostnames())
+check(len(_served) >= 4, "the managed Caddy block names its hostnames (%s)" % ", ".join(sorted(_served)))
+check(_served <= set(_fc.OURS),
+      "every hostname we serve is one the deploy also claims (fix_caddy.OURS)")
+check(_dom.CANON in _served, "the canonical host is one of them")
+
+# A redirect must land on the canonical host in ONE hop — pointing a new domain at
+# www.jobhuntwow.com would bounce again off the www block and cost every visitor a second trip.
+_blk = open(os.path.join(ROOT, "deploy", "caddy", "jobhuntwow.caddy"), encoding="utf-8").read()
+_targets = re.findall(r"redir\s+(https://[^\s{]+)", _blk)
+check(bool(_targets) and all(t == "https://" + _dom.CANON for t in _targets),
+      "every redirect points at the canonical host, one hop (%s)" % ", ".join(sorted(set(_targets))))
+
 # ============================================================== THE GATE (LAST STATEMENT)
 print("\n%s\n%d checks run, %d failed" % ("=" * 74, RUN[0], len(FAILS)))
 for f in FAILS:

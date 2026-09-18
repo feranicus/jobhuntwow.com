@@ -22,7 +22,11 @@ A timestamped .bak is written before any change.
 from __future__ import annotations
 import argparse, os, re, shutil, sys, time
 
-OURS = {"jobhuntwow.com", "www.jobhuntwow.com"}
+# EVERY hostname our managed block serves. `fix_caddy` strips these from any OTHER block on the
+# droplet, which is what stopped the old one-pager claiming jobhuntwow.com through `{$DOMAIN}`.
+# A hostname in the block but NOT here is half-wired: we would serve it while a stranger's block
+# could still claim it. tests/test_gate_integrity.py asserts the two lists agree.
+OURS = {"jobhuntwow.com", "www.jobhuntwow.com", "jobhw.org", "www.jobhw.org"}
 BEGIN, END = "# jhw:jobhuntwow BEGIN", "# jhw:jobhuntwow END"
 
 
