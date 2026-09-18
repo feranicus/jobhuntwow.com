@@ -102,8 +102,13 @@ def main() -> int:
             # RESOLVE AGAINST THE FILE THAT PRINTS IT. `agent/README.md` says `python apply_all.py`
             # and the reader is standing in `agent/` — resolving only against the repo root flagged
             # a correct line, which is the identical false positive test_docker.py §8 once had.
+            # THE OPERATOR STANDS IN ONE OF TWO PLACES in this repo: the root (website work) or
+            # `agent/` (the apply sandbox). A command is valid if it resolves from the doc's own
+            # directory or from either of those — resolving only against the root flagged
+            # `python apply_all.py`, which is correct from `agent/`. Same false positive as §8's.
             here = os.path.dirname(os.path.join(ROOT, f))
-            if not (os.path.exists(os.path.join(here, sc)) or os.path.exists(os.path.join(ROOT, sc))):
+            if not any(os.path.exists(os.path.join(d, sc))
+                       for d in (here, ROOT, os.path.join(ROOT, "agent"))):
                 missing.append("%s -> `%s`" % (f, sc))
     ck(not stale, "every `python jhw.py <verb>` in the docs is a real verb", "; ".join(stale)[:140])
     ck(not missing, "every `python <script>.py` in the docs exists", "; ".join(missing)[:140])

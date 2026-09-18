@@ -396,7 +396,7 @@ RULES:
    message NAMES the website path so the two cannot be confused at the moment it matters.
 
 ## THE DOCS NAMED FIVE COMMANDS THAT HAVE NEVER EXISTED (2026-09-18)
-`CLAUDE.md`'s own SETTLED-deploy section described **`python jhw.py deploy`**, and DEPLOY.md offered
+`CLAUDE.md`'s own SETTLED-deploy section described **`jhw.py deploy`** (no such verb), and DEPLOY.md offered
 `push`, `chat`, `diagnose` and `mailcheck` — none of which are verbs of anything. `flows/test_docker.py`
 §8 had been enforcing exactly this property for commands we PRINT AT RUNTIME since 2026-08-17, and
 the markdown had drifted the same way with nobody checking. Now `tests/test_claude_md_size.py` reads
