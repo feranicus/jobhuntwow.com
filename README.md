@@ -141,7 +141,7 @@ file names mean, what is still preview). PDF copies sit beside them.
 `/pipeline` reads the same rows. The columns are the real lifecycle:
 
     Tailored → Applied → HR screen → Technical → Task / presentation → Hiring manager
-             → Final panel → Offer        (Rejected from any of them)
+             → Final panel → Offer → Contract negotiation → Signed   (Rejected from any)
 
 `Applied` and `Submitted` used to be two columns for one event. The engine's "submitted" means the
 SITE confirmed the send — evidence about that event, not a next step — so it is a ✓ on the card and a

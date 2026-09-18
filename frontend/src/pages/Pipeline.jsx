@@ -32,6 +32,8 @@ const COLS = [
   ["manager", "Hiring manager", "the manager you would report to"],
   ["final", "Final panel", "final round"],
   ["offer", "Offer", "offer on the table"],
+  ["negotiation", "Contract negotiation", "money, start date, notice period, the paperwork"],
+  ["signed", "Signed", "contract signed — the job is yours"],
   ["rejected", "Rejected", "closed"],
 ];
 const STAGES = COLS.map(([k]) => k);

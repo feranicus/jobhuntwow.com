@@ -44,14 +44,22 @@ JD_TEXT_MAX = 40000                    # a JD is prose; anything past this is a 
 #   * "Interview" is not a stage, it is a SEASON: HR screen, technical, take-home or presentation,
 #     hiring manager, final panel. A funnel that cannot say which round you are in cannot tell you
 #     what to prepare for tonight.
+# AN OFFER IS NOT THE END. His words (2026-09-18): *"where is the stage of Contract negotiations
+# and Signed contract?"* — between "they want you" and "you have a job" sit the two weeks that
+# decide the money, the start date and the notice period. A funnel that stops at `offer` cannot
+# tell him which of those conversations is open.
 STAGES = ("tailored", "applied", "hr_screen", "tech", "task", "manager", "final",
-          "offer", "rejected")
+          "offer", "negotiation", "signed", "rejected")
 # Old names keep working forever: the apply engine (a different codebase, on his PC) reports
 # `submitted`, and rows already on his board carry the old vocabulary.
 LEGACY_STAGES = {"submitted": "applied", "sent": "applied", "interview": "hr_screen",
                  "screen": "hr_screen", "phone": "hr_screen", "onsite": "final",
                  "technical": "tech", "assignment": "task", "presentation": "task",
-                 "hiring manager": "manager", "panel": "final", "withdrawn": "rejected"}
+                 "hiring manager": "manager", "panel": "final", "withdrawn": "rejected",
+                 "negotiating": "negotiation", "contract": "negotiation",
+                 "contract negotiation": "negotiation", "offer negotiation": "negotiation",
+                 "accepted": "signed", "hired": "signed", "signed contract": "signed",
+                 "closed won": "signed", "won": "signed"}
 
 
 def canon_stage(stage: str) -> str:

@@ -484,7 +484,12 @@ event, not a second step in his funnel. It is now `confirmed` on the row — a �
 in the digest — and the column is gone. **"Interview" was a season, not a stage:** HR screen ·
 Technical · Task/presentation · Hiring manager · Final panel. A board that cannot say which round he
 is in cannot tell him what to prepare tonight.
-    tailored → applied → hr_screen → tech → task → manager → final → offer   (rejected from any)
+    tailored → applied → hr_screen → tech → task → manager → final → offer → negotiation
+             → signed                                                     (rejected from any)
+AND AN OFFER IS NOT THE END (same day, his follow-up): *"where is the stage of Contract negotiations
+and Signed contract?"* — between "they want you" and "you have a job" sit the two weeks that decide
+the money, the start date and the notice period. `negotiation` and `signed` are columns of their own,
+and `contract` / `negotiating` / `hired` / `accepted` / `closed won` all canonicalise into them.
 NOTHING BREAKS AND NOTHING IS LOST: `canon_stage()` is pure and maps every name we have ever used
 (`submitted`→applied, `interview`→hr_screen, `technical`→tech, `panel`→final, …), so the apply engine
 on his PC keeps working WITHOUT being redeployed; `_migrate()` adds the `confirmed` column to an

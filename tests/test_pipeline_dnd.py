@@ -72,13 +72,14 @@ def main() -> int:
     r = c.patch("/api/applications/nope", json={"stage": "offer"})
     ck(r.status_code == 404, "a card we do not have is 404, never a silent create", r.status_code)
 
-    for st in ("hr_screen", "tech", "task", "manager", "final", "offer", "rejected", "tailored"):
+    for st in ("hr_screen", "tech", "task", "manager", "final", "offer", "negotiation",
+               "signed", "rejected", "tailored"):
         rr = c.patch("/api/applications/j-drag", json={"stage": st})
         if rr.status_code != 200 or rr.json().get("stage") != st:
             ck(False, "every column on the board is a legal destination", "%s -> %s" % (st, rr.status_code))
             break
     else:
-        ck(True, "every column on the board is a legal destination (all nine)")
+        ck(True, "every column on the board is a legal destination (all eleven)")
 
     # ---------------------------------------------------------------- 2) the wiring in the page
     jsx = open(os.path.join(ROOT, "frontend", "src", "pages", "Pipeline.jsx"), encoding="utf-8").read()
@@ -117,6 +118,13 @@ def main() -> int:
             break
     else:
         ck(True, "the interview season is five real rounds, not one word")
+    # AN OFFER IS NOT THE END: the two weeks that decide money, start date and notice period.
+    ck("negotiation" in T.STAGES and "signed" in T.STAGES,
+       "the deal has its own stages — contract negotiation, then signed")
+    ck(T.STAGES.index("offer") < T.STAGES.index("negotiation") < T.STAGES.index("signed"),
+       "...in the order they actually happen")
+    ck(T.canon_stage("contract") == "negotiation" and T.canon_stage("hired") == "signed",
+       "the words a human would type land in those columns too")
     # THE OLD VOCABULARY MUST KEEP WORKING: the apply engine on his PC still says "submitted".
     ck(T.canon_stage("submitted") == "applied" and T.canon_stage("interview") == "hr_screen",
        "every name we have ever used still lands in a real column")
