@@ -472,6 +472,41 @@ try:
 finally:
     subprocess.run = _orun
 
+# ====================================== THE WEBSITE DEPLOY MUST NOT NEED DOCKER ON THIS MACHINE
+# `python ship.py` ships jobhuntwow.com: the tarball travels in ONE ssh session and the DROPLET
+# builds the image. The LOCAL apply sandbox (Chromium + noVNC, for Workday/Ashby) is a different
+# product driven by `python jhw.py`, and on 2026-09-18 its verbs learned to demand — and start — a
+# Docker daemon. deploy_direct.py was calling that orchestrator's `cmd_status` at the end, so a
+# WEBSITE deploy would have finished by demanding Docker Desktop for no reason at all.
+import ast as _ast2
+
+with open(os.path.join(ROOT, "deploy_direct.py"), encoding="utf-8") as _fh:
+    _ddsrc = _fh.read()
+_ddt = _ast2.parse(_ddsrc)
+_ddcalls = {c.func.id if isinstance(c.func, _ast2.Name) else c.func.attr
+            for c in _ast2.walk(_ddt) if isinstance(c, _ast2.Call)
+            and isinstance(c.func, (_ast2.Name, _ast2.Attribute))}
+check("cmd_status" not in _ddcalls,
+      "the web deploy does not call the apply sandbox's status verb")
+check("spec_from_file_location" not in _ddcalls,
+      "...and does not load agent/jhw.py at all")
+# Every `docker` in this file must be part of the REMOTE script, never a local subprocess.
+_ddlocal = [c for c in _ast2.walk(_ddt) if isinstance(c, _ast2.Call)
+            and isinstance(c.func, _ast2.Attribute) and c.func.attr in ("run", "Popen", "call")
+            and any(isinstance(a, _ast2.Constant) and "docker" in str(a.value) for a in c.args)]
+check(not _ddlocal, "no local `docker ...` subprocess in the website deploy path")
+_shipsrc = open(os.path.join(ROOT, "ship.py"), encoding="utf-8").read()
+_shipt = _ast2.parse(_shipsrc)
+_shiplocal = [c for c in _ast2.walk(_shipt) if isinstance(c, _ast2.Call)
+              and isinstance(c.func, _ast2.Attribute) and c.func.attr in ("run", "Popen", "call")
+              and any(isinstance(a, _ast2.Constant) and str(a.value).startswith("docker")
+                      for a in ([c.args[0]] if c.args else []))]
+check(not _shiplocal, "ship.py never runs docker on the operator's machine either")
+# And the suites ship.py runs must be plain python, so the website can be tested with nothing
+# installed but Python — that is what makes "no Docker for the web" true rather than hopeful.
+check('[sys.executable, p]' in _shipsrc,
+      "ship.py runs its suites with this interpreter, not inside a container")
+
 # ============================================================== THE GATE (LAST STATEMENT)
 print("\n%s\n%d checks run, %d failed" % ("=" * 74, RUN[0], len(FAILS)))
 for f in FAILS:

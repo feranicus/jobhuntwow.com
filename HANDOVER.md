@@ -472,7 +472,7 @@ a killed run once left a marker in a source file that broke the *next* run for a
 **Direct from the PC. GitHub is not in the deploy path.**
 
 ```
-python jhw.py deploy        (or ship.py in the sibling repo)
+python ship.py              (the WEBSITE; jhw.py is the local apply sandbox)
 ```
 
 scp the build context → **the droplet builds the image itself** → `up -d --force-recreate` → wire the

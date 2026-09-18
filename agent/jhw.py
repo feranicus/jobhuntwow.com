@@ -84,13 +84,23 @@ def require_docker(start: bool = True, wait_s: int = 180) -> None:
     is not a path problem and the operator should not have to know that."""
     if _docker_says_ready():
         return
+    # WHICH PRODUCT THIS IS. `jhw.py` drives the LOCAL apply sandbox — the Chromium + noVNC
+    # containers that fill Workday/Ashby forms. The WEBSITE (jobhuntwow.com, the Tailor page, the
+    # pipeline, the digest) is deployed by `python ship.py`, builds on the droplet over one ssh
+    # session and needs no Docker on this machine at all. Say so, because the two are easy to
+    # confuse and the error used to read like the whole project was blocked.
+    _web = ("  (this is the LOCAL apply sandbox. The website — jobhuntwow.com/tailor — needs no "
+            "Docker here: deploy it with `python ship.py`.)")
     if shutil.which("docker") is None:
-        raise Stop("Docker is not installed (no `docker` on PATH). Install Docker Desktop, "
-                   "then re-run this command.")
+        raise Stop("Docker is not installed (no `docker` on PATH). Install Docker Desktop, then "
+                   "re-run this command.\n" + _web)
     exe = _desktop_exe()
-    if not (start and exe):
-        raise Stop("Docker is installed but the engine is not running. Start Docker Desktop "
-                   "(wait for the whale icon to stop animating), then re-run this command.")
+    if not start or os.getenv("JHW_NO_DOCKER_AUTOSTART", "").strip().lower() in ("1", "true", "yes"):
+        raise Stop("Docker is installed but the engine is not running. Start Docker Desktop, then "
+                   "re-run this command.\n" + _web)
+    if not exe:
+        raise Stop("Docker is installed but the engine is not running, and Docker Desktop was not "
+                   "found to start for you. Start it yourself, then re-run this command.\n" + _web)
     print(f"[i] Docker Desktop is not running — starting it ({os.path.basename(exe)}) …")
     try:
         subprocess.Popen([exe], close_fds=True)

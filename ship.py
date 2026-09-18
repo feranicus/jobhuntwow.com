@@ -287,6 +287,8 @@ def do_tests() -> bool:
     # (d) the suites. Standalone scripts, stdlib only, no pytest: they must run on the operator's
     #     own machine with no setup, which is the platform five wasted ships were spent relearning.
     for rel in ("tests/test_gate_governance.py", "tests/test_gate_integrity.py",
+                # CLAUDE.md is re-injected on every turn: its size is a correctness property.
+                "tests/test_claude_md_size.py",
                 "tests/test_chat_open_wallet.py", "tests/test_llm_events_write.py",
                 "backend/tests/test_resume_consensus.py",
                 # The Tailor correlation and the digest that reports it. Standalone, stdlib only,

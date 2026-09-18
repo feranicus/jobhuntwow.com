@@ -4,7 +4,7 @@
 
 ```powershell
 cd "C:\Python SW\Linkedin Scraper\jobhuntwow-app"
-python jhw.py deploy
+python ship.py
 ```
 
 That is the whole deploy. It does, by itself:
@@ -24,13 +24,13 @@ That is the whole deploy. It does, by itself:
 7. **verify** — tags the request and greps jhw-web's access log to PROVE public traffic reaches
    the container, then asserts `/api/health` is JSON, `/` is the landing, `/login` is the SPA.
 
-**GitHub is not involved.** `python jhw.py push` commits and pushes for source control; it is not
+**GitHub is not involved.** `python ship.py` commits and pushes for source control as part of the ship; it is not
 part of deploying. Other verbs:
 
 - `python jhw.py status` — is the public site our app?
-- `python jhw.py diagnose` — who serves the domain, and how do events reach Grafana (section G)
-- `python jhw.py chat "hi"` — test the live Electronic chat, print the model + raw stream
-- `python jhw.py mailcheck --to you@x` — ask Google why OTP mail fails
+- `python diagnose_web.py` — who serves the domain, and how do events reach Grafana (section G)
+- `python probe_models.py` — ask the live endpoint which models answer, with status + timing
+- `python deploy/mailcheck.py --to you@x` — ask Google why OTP mail fails
 - `python jhw.py obs` — verify events reach Loki and install the Grafana dashboard
 - `python jhw.py logs --grep otp` — tail jhw-web
 

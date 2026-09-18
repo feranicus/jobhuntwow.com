@@ -279,15 +279,15 @@ def main():
     ap.add_argument("--no-caddy", action="store_true", help="start the app but do not touch the vhost")
     a = ap.parse_args()
     deploy(not a.no_caddy)
-    # THE ORCHESTRATOR LIVES AT agent/jhw.py; the file beside this one is only a launcher.
-    # `import jhw` used to pick up a COPY that has since been removed, so load the real module by
-    # path -- a cross-file call resolved by import name is exactly how the duplicate survived.
-    import importlib.util
-    _real = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent", "jhw.py")
-    _spec = importlib.util.spec_from_file_location("jhw_agent", _real)
-    _mod = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_mod)
-    _mod.cmd_status(None)
+    # NOTHING ABOUT THE LOCAL SANDBOX BELONGS HERE. This used to call `jhw.cmd_status`, which
+    # reports the LOCAL apply stack (Chrome + noVNC containers for Workday/Ashby automation) — a
+    # different product from the website, and as of 2026-09-18 that verb requires a running Docker
+    # daemon. So a WEBSITE deploy, which builds entirely on the droplet over ONE ssh session, would
+    # have ended by demanding Docker Desktop on a machine that needs neither. The deploy already
+    # verified the real subject inside that session (a tagged /api/health probe read back out of
+    # jhw-web's own access log), and `python ship.py` verifies it again in phase 5.
+    print("\n=== 3/3 the site is deployed and was verified in the session above ===")
+    print("    https://jobhuntwow.com/  ·  /tailor  ·  /pipeline  ·  /api/health")
 
 
 if __name__ == "__main__":
