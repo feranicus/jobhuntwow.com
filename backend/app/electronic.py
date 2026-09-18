@@ -587,11 +587,17 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
     # HOW MANY TIMES HAS THIS EMPLOYER + ROLE ALREADY BEEN TAILORED? That decides the `_2` suffix,
     # and it is counted from what is ON DISK rather than from a counter, so it survives a restart
     # and cannot drift away from the files it names.
-    _seq = docnames.next_seq(_prior_jobs(req.email, exclude=jid),
-                             jd.get("company", ""), jd.get("title", ""))
+    # WHO IS THIS FOR? The JD usually says. When it does not, the posting's own address does —
+    # `app.civi.co.il` beats `(employer not recorded)` on the card and `job` in the filename. It is
+    # a DERIVED fact, labelled as one below, and it never reaches the resume or the cover letter.
+    _emp = str(jd.get("company") or "").strip()
+    _emp_src = "jd" if _emp else ""
+    if not _emp:
+        _emp = docnames.employer_from_url(str(jd.get("url") or ""))
+        _emp_src = "url" if _emp else "none"
+    _seq = docnames.next_seq(_prior_jobs(req.email, exclude=jid), _emp, jd.get("title", ""))
     written = documents.write_all(resume_struct, cover_struct, outdir, photo=photo,
-                                  company=jd.get("company", ""), title=jd.get("title", ""),
-                                  seq=_seq)
+                                  company=_emp, title=jd.get("title", ""), seq=_seq)
     if written.get("errors"):
         errors.update(written["errors"])
     if not written.get("files"):
@@ -602,7 +608,10 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
         "email": req.email,          # daily_report attributes the job to a person
         "created": int(t0),
         "elapsed_ms": int((time.time() - t0) * 1000),
-        "jd": {k: jd.get(k, "") for k in ("title", "company", "location", "source", "url", "note")},
+        # `company` may be DERIVED from the posting URL when the JD named nobody; `company_source`
+        # says which, so a reader (and the Pipeline) never mistakes a guess for the JD's own word.
+        "jd": dict({k: jd.get(k, "") for k in ("title", "company", "location", "source", "url", "note")},
+                   company=_emp, company_source=_emp_src),
         # WHO wrote it and WHO reviewed it. A reader must be able to see that the auditor was not
         # the author, without taking our word for it.
         "models": {"resume": con["authors"].get("resume"), "cover": con["authors"].get("cover"),

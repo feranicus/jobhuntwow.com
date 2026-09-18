@@ -289,6 +289,8 @@ def do_tests() -> bool:
     for rel in ("tests/test_gate_governance.py", "tests/test_gate_integrity.py",
                 # CLAUDE.md is re-injected on every turn: its size is a correctness property.
                 "tests/test_claude_md_size.py",
+                # the board he drags cards on, and the endpoint the drop calls (real HTTP)
+                "tests/test_pipeline_dnd.py",
                 "tests/test_chat_open_wallet.py", "tests/test_llm_events_write.py",
                 "backend/tests/test_resume_consensus.py",
                 # The Tailor correlation and the digest that reports it. Standalone, stdlib only,

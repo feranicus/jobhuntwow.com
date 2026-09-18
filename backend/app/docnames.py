@@ -69,6 +69,48 @@ def doc_name(kind: str, company: str = "", title: str = "", seq: int = 1, ext: s
     return f"{k}_{stem(company, title, seq)}.{e}"
 
 
+# The ATS is not the employer. On these hosts the employer is the FIRST PATH SEGMENT
+# (jobs.ashbyhq.com/elevenlabs/…) or the TENANT subdomain (intive.wd3.myworkdayjobs.com).
+_BOARD_PATH = re.compile(r"(ashbyhq\.com|greenhouse\.io|lever\.co|recruitee\.com|personio\.(de|com)|"
+                         r"smartrecruiters\.com|workable\.com|teamtailor\.com)$", re.I)
+_TENANT_HOST = re.compile(r"^([a-z0-9-]+)\.(wd\d+|[a-z0-9-]+\.wd\d+)\.myworkdayjobs\.com$", re.I)
+_HOST_NOISE = ("www", "app", "jobs", "job", "careers", "career", "apply", "boards", "job-boards",
+               "recruiting", "hire", "my", "portal", "emea", "eu", "us")
+
+
+def employer_from_url(url: str) -> str:
+    """Who the posting belongs to, read off its address. Used ONLY when the JD carried no company.
+
+    MEASURED (2026-09-18, his own board): a card read `(employer not recorded)` and its file was
+    `resume_job_35.pdf` — the posting was `https://app.civi.co.il/promo/id=892963`, whose JD gave us
+    no company name at all. A filename and a pipeline card that name nobody are useless at the exact
+    moment he needs them: when he is attaching the file, or reading the funnel.
+
+    This is a DERIVED fact and it is labelled as one wherever it is stored (`company_source: url`).
+    It never reaches the resume or the cover letter — those are written from the JD, never a guess."""
+    u = str(url or "").strip()
+    if not u:
+        return ""
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(u if "//" in u else "https://" + u)
+        host = (p.hostname or "").lower()
+        path = [x for x in (p.path or "").split("/") if x]
+    except Exception:
+        return ""
+    if not host:
+        return ""
+    m = _TENANT_HOST.match(host)
+    if m:                                   # intive.wd3.myworkdayjobs.com -> intive
+        return slug(m.group(1))
+    if _BOARD_PATH.search(host) and path:   # jobs.ashbyhq.com/elevenlabs/... -> elevenlabs
+        return slug(path[0])
+    labels = [x for x in host.split(".") if x]
+    while len(labels) > 2 and labels[0] in _HOST_NOISE:
+        labels.pop(0)                       # app.civi.co.il -> civi.co.il
+    return slug(labels[0]) if labels else ""
+
+
 def next_seq(existing: list, company: str = "", title: str = "") -> int:
     """How many times this employer+role has ALREADY been tailored, plus one.
 
@@ -180,8 +222,12 @@ def _selftest() -> int:
     _gen, _rev = _fn(_et, "generate"), _fn(_et, "revise")
     ck(_calls(_gen, "next_seq"), "generate NUMBERS a repeat application from what is on disk")
     _gensrc = _ast.get_source_segment(_esrc, _gen) or ""
-    ck("seq=_seq" in _gensrc and "company=jd.get" in _gensrc,
+    _wa_call = re.search(r"documents\.write_all\((.{0,400}?)\)\n", _gensrc, re.S)
+    _wa_args = _wa_call.group(1) if _wa_call else ""
+    ck(all(k in _wa_args for k in ("company=", "title=", "seq=")) and "seq=_seq" in _wa_args,
        "...and hands the employer, the role and that number to the writer")
+    ck("employer_from_url(" in _gensrc and "company_source" in _gensrc,
+       "an employer DERIVED from the posting URL is labelled as derived, never passed off as the JD's")
     ck('"doc_naming"' in _gensrc, "the manifest records the naming, so a rebuild can reuse it")
     _revsrc = _ast.get_source_segment(_esrc, _rev) or ""
     ck("doc_naming" in _revsrc and not _calls(_rev, "next_seq"),
@@ -189,6 +235,21 @@ def _selftest() -> int:
     _art = _fn(_et, "artifact")
     ck(_calls(_art, "looks_generated"),
        "the download route serves the new names — and still only ours")
+
+    print("\n[the card said '(employer not recorded)' and the file was resume_job_35.pdf]")
+    for url, want in (
+        ("https://jobs.ashbyhq.com/elevenlabs/1ef264b8/application?utm_source=linkedin", "elevenlabs"),
+        ("https://job-boards.greenhouse.io/okx/jobs/7699600003", "okx"),
+        ("https://intive.wd3.myworkdayjobs.com/en-US/intive_Careers/job/x", "intive"),
+        ("https://app.civi.co.il/promo/id=892963&src=10216", "civi"),
+        ("https://www.fireblocks.com/careers/positions/4689361006", "fireblocks"),
+        ("", ""),
+        ("not a url at all", "not-a-url-at-all")):
+        got = employer_from_url(url)
+        ck(got == want, "employer from %r -> %r (got %r)" % (url[:40], want, got))
+    ck(doc_name("resume", employer_from_url("https://app.civi.co.il/x"), "Product Manager")
+       == "resume_civi_product-manager.pdf",
+       "so the file says WHO it is for, even when the JD named nobody")
 
     print("=" * 50)
     if fails:

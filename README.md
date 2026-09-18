@@ -130,6 +130,18 @@ manifests on disk, so it survives a restart — and "Cisco Systems Inc." and "ci
 same employer. Asking Electronic to revise a draft rewrites the SAME filenames; it never numbers the
 same job twice. Older jobs keep their old names and still download.
 
+## The Pipeline board
+
+`/pipeline` reads the same rows. **Drag a card into another column to move it** — the card moves
+immediately, the change is saved, and if the server refuses it goes back where it was and says why.
+A `move to …` dropdown on each card does the same thing for keyboard and touch. (The one-click
+`rejected` link is gone: one mis-click is how a live application ended up in Rejected.)
+
+When a posting's job description names no employer, the card and the filename fall back to the
+posting's own address — `app.civi.co.il` becomes `civi`, so you get
+`resume_civi_product-manager.pdf` instead of `resume_job_35.pdf`. That guess is labelled
+`company_source: url` in the record and never reaches the resume or the cover letter.
+
 ## Your applications: the correlation, and the digest
 
 Every tailored document set is recorded as ONE row that says **which job description** (the link you

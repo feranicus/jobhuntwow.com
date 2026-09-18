@@ -47,6 +47,11 @@ h1,h2,h3,.brand{font-family:'Space Grotesk',sans-serif}
 .kcard{background:#fff;border:1px solid var(--line);border-left:3px solid var(--sky);border-radius:9px;padding:10px;margin-bottom:8px;box-shadow:var(--shadow)}
 .kcard b{font-size:13px;font-family:'Space Grotesk';display:block}
 .kcard small{color:var(--muted);font-size:12px}
+.kcard[draggable="true"]{cursor:grab}
+.kcard[draggable="true"]:active{cursor:grabbing}
+.kcol.kdrop{border-color:var(--sky);background:rgba(2,132,199,.06);box-shadow:inset 0 0 0 2px rgba(2,132,199,.25)}
+.kcard.ksaving{opacity:.55}
+.kmove{margin-top:6px;width:100%;font-size:11px;color:var(--muted);background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:2px 4px}
 .jobrow{display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:10px;box-shadow:var(--shadow)}
 .fit{font-family:'Space Grotesk';font-weight:700;color:var(--green)}
 .tag{font-size:11px;background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--muted)}

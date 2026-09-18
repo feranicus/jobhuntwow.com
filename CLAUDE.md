@@ -406,3 +406,33 @@ named in the operator-facing docs exists — resolving each against THE FILE THA
 against the repo root flagged a correct line, which is the identical false positive §8 once had).
 Both halves negative-tested. `docs/decisions/` is excluded on purpose: it is a record of what was
 said at the time, not instructions.
+
+## THE BOARD IS DRAGGABLE, AND THE MIS-CLICK THAT PUT A LIVE APPLICATION IN "REJECTED" (2026-09-18)
+He asked for one thing: *"I need to be able to move myself the jobs in pipeline but just moving them
+with my mouse"*. Native HTML5 drag-and-drop in `Pipeline.jsx` — no library. THE MOVE IS OPTIMISTIC
+AND REVERSIBLE: the card lands immediately, the PATCH follows, and a refusal puts it BACK and prints
+why, because a board showing a state the database does not hold is the same defect as a log claiming
+a submit the site never confirmed. The one-click `rejected` link is REMOVED (his screenshot shows a
+real application sitting in Rejected; that link was one mis-click away on every card), and a
+`move to …` select remains for keyboard and touch.
+`tests/test_pipeline_dnd.py` checks BOTH halves: the endpoint over REAL HTTP through the app (legal
+move lands · invented stage 400 · unknown job 404 · **a refused move leaves the stored row
+unchanged**), and the drag contract in the JSX. The contract that matters most is
+`preventDefault` on `dragOver` — without it the browser silently refuses every drop, so the feature
+looks implemented and does nothing. Three mutations, all caught.
+HONEST LIMIT: there are no node_modules in my sandbox, so I did not RENDER the page — the JSX is
+parsed by esbuild and the wiring is asserted, not clicked.
+
+## `(employer not recorded)` AND `resume_job_35.pdf` — the posting's address is a fact (2026-09-18)
+His board showed a card with no employer and a file called `resume_job_35.pdf`, because that JD
+(`https://app.civi.co.il/promo/id=892963`) carried no company name at all. A filename that names
+nobody is useless at the one moment it is read: when he attaches it.
+`docnames.employer_from_url()` reads the employer off the address, and it knows the ATS is not the
+employer: `jobs.ashbyhq.com/elevenlabs/…` → elevenlabs (first path segment on a board host),
+`intive.wd3.myworkdayjobs.com` → intive (the tenant), `app.civi.co.il` → civi (noise labels
+stripped). It is used ONLY when the JD named nobody, it is recorded as `company_source: "url"` so a
+guess is never mistaken for the JD's own word, and **it never reaches the resume or the cover
+letter** — those are written from the JD.
+MY OWN WIRING CHECK BROKE ON THE FIX: it asserted `"company=jd.get" in generate`, the OLD spelling,
+which is precisely the defect that file exists to prevent. Re-pinned to the property (the writer is
+handed company/title/seq).
