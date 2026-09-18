@@ -137,6 +137,13 @@ immediately, the change is saved, and if the server refuses it goes back where i
 A `move to …` dropdown on each card does the same thing for keyboard and touch. (The one-click
 `rejected` link is gone: one mis-click is how a live application ended up in Rejected.)
 
+**Click a card to open it**: the whole job description, the exact creation and send times (full date,
+time and timezone), the stage, the ATS, the documents as download links, and where the employer came
+from. Two fields are editable — the employer and the role — because a person can know those better
+than a derivation; everything else on a row is evidence and stays read-only. **Re-read the posting**
+runs the employer ladder again for cards written before the parser understood how postings are
+worded.
+
 **Who the job is with** is answered by a ladder, most certain first:
 
 1. the ATS/JSON-LD parser, or the pasted text's own header — `Fireblocks is looking for …`,
