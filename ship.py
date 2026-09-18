@@ -291,6 +291,8 @@ def do_tests() -> bool:
                 "tests/test_claude_md_size.py",
                 # the board he drags cards on, and the endpoint the drop calls (real HTTP)
                 "tests/test_pipeline_dnd.py",
+                # who the job is with: the ladder, and the guard on its model rung
+                "tests/test_employer_ladder.py", "backend/app/jd_ingest.py",
                 "tests/test_chat_open_wallet.py", "tests/test_llm_events_write.py",
                 "backend/tests/test_resume_consensus.py",
                 # The Tailor correlation and the digest that reports it. Standalone, stdlib only,

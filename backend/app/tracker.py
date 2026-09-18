@@ -157,6 +157,48 @@ def correlation_ok(row: dict) -> bool:
     return has_jd and has_doc
 
 
+def _derive_employer(row: dict) -> tuple:
+    """(employer, source) for a row that never got one — computed on READ, never written.
+
+    His board showed `(employer not recorded)` on a row already holding 3,623 characters of pasted
+    job description. The name was in the text the whole time; nothing had looked. Rows already in
+    the database are fixed by looking NOW rather than by a migration that rewrites his history:
+    a derived value is labelled, and a labelled guess can always be corrected."""
+    emp = (row.get("employer") or "").strip()
+    if emp:
+        return emp, "jd"
+    txt = row.get("jd_text") or ""
+    if txt:
+        try:
+            from . import jd_ingest as _ji
+        except Exception:                       # pragma: no cover - standalone --logic run
+            try:
+                import jd_ingest as _ji        # type: ignore
+            except Exception:
+                _ji = None
+        if _ji is not None:
+            try:
+                _, c = _ji.sniff_title_company(txt)
+                if c:
+                    return c, "text"
+            except Exception:
+                pass
+    url = row.get("jd_url") or ""
+    if url:
+        try:
+            from . import docnames as _dn
+        except Exception:                       # pragma: no cover
+            try:
+                import docnames as _dn         # type: ignore
+            except Exception:
+                _dn = None
+        if _dn is not None:
+            c = _dn.employer_from_url(url)
+            if c:
+                return c, "url"
+    return "", "none"
+
+
 def _pick(files, *pats) -> str:
     """The document of that kind, preferring the PDF — that is the one that gets attached.
 
@@ -282,6 +324,7 @@ def rows(since_ts: int = 0, until_ts: Optional[int] = None, email: str = "",
                     d["files"] = json.loads(d.get("files") or "[]")
                 except Exception:
                     d["files"] = []
+                d["employer"], d["employer_source"] = _derive_employer(d)
                 d["jd_chars"] = len(d.pop("jd_text", "") or "")     # the TEXT is not list payload
                 d["correlated"] = correlation_ok(dict(r))
                 out.append(d)
@@ -303,6 +346,7 @@ def get(job_id: str) -> dict:
                 d["files"] = json.loads(d.get("files") or "[]")
             except Exception:
                 d["files"] = []
+            d["employer"], d["employer_source"] = _derive_employer(d)
             d["correlated"] = correlation_ok(dict(r))
             return d
     except Exception as e:
@@ -447,6 +491,20 @@ def _selftest() -> int:
        "the ATS is read off the URL")
     ck(ats_of("https://example.com/careers/apply") == "" or True, "an unknown host is not guessed")
     ck(ats_of("") == "", "no url, no claim")
+
+    # A ROW THAT NEVER GOT AN EMPLOYER IS FIXED ON READ, from what it already holds.
+    record_tailored({"job_id": "j-paste", "email": "x@y.z", "created": int(time.time()) - 60,
+                     "jd": {"title": "About the job", "company": "", "url": ""},
+                     "files": ["resume_job_2.pdf"]},
+                    jd_text="About the job\nFireblocks is looking for a Senior Product Manager.")
+    g = get("j-paste")
+    ck(g.get("employer") == "Fireblocks" and g.get("employer_source") == "text",
+       "the employer is read out of the PASTED text he already has on the card")
+    record_sent("j-url", url="https://jobs.ashbyhq.com/elevenlabs/1ef2", status="submitted")
+    ck(get("j-url").get("employer") == "elevenlabs",
+       "...and off the posting's address when there is no text")
+    ck(all(r.get("employer") for r in rows(0) if r.get("job_id") in ("j-paste", "j-url")),
+       "the LIST the board renders carries it too, not only the single-row read")
 
     # ---- WIRING. Behaviour AND wiring: a store that is correct and never called is not a store,
     # and this project has shipped exactly that (shield.py fully tested while nothing called it).

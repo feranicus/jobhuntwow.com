@@ -341,6 +341,33 @@ class GenerateReq(BaseModel):
     use_photo: bool = False
 
 
+async def _company_from_model(jd_text: str) -> str:
+    """Ask the model who the posting belongs to — and REFUSE an answer the posting does not contain.
+
+    HIS POINT, and it is correct: *"in every job description there is a name of the company"*. When
+    the deterministic sniff cannot find it (an unusual layout, another language), a model reading the
+    text will. The guard is what makes that safe: `jd_ingest.company_in_text()` accepts the answer
+    only if it appears VERBATIM in the posting, so an invented employer cannot reach a filename, a
+    pipeline card or the record. Failure of any kind returns "" and the ladder moves on."""
+    body = " ".join(str(jd_text or "").split())[:4000]
+    if len(body) < 40:
+        return ""
+    try:
+        d = await _ask(
+            "You read job postings. Answer ONLY with JSON: {\"company\": \"<the hiring company's "
+            "name exactly as written in the posting>\"}. If the posting never names the company, "
+            "answer {\"company\": \"\"}. Never guess, never abbreviate, never translate.",
+            body, 60)
+        cand = str((d or {}).get("company") or "")
+    except Exception as e:          # never break a generate over a nice-to-have
+        print("[jd] company-from-model skipped: %r" % (e,), flush=True)
+        return ""
+    ok = jd_ingest.company_in_text(cand, jd_text)
+    if cand and not ok:
+        print("[jd] REFUSED model employer %r — it is not in the posting" % cand[:40], flush=True)
+    return ok
+
+
 # --------------------------------------------------------------------------- endpoints
 def extract_text(name: str, blob: bytes) -> tuple[str, str]:
     """Return (text, kind) from an uploaded resume/profile.
@@ -587,11 +614,18 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
     # HOW MANY TIMES HAS THIS EMPLOYER + ROLE ALREADY BEEN TAILORED? That decides the `_2` suffix,
     # and it is counted from what is ON DISK rather than from a counter, so it survives a restart
     # and cannot drift away from the files it names.
-    # WHO IS THIS FOR? The JD usually says. When it does not, the posting's own address does —
-    # `app.civi.co.il` beats `(employer not recorded)` on the card and `job` in the filename. It is
-    # a DERIVED fact, labelled as one below, and it never reaches the resume or the cover letter.
+    # WHO IS THIS FOR? A LADDER, most certain first — the same shape as the answer ladder in the
+    # apply engine, and for the same reason: a guess is only allowed where nothing better exists.
+    #   1. the ATS/JSON-LD parser or the pasted text's own header (jd_ingest.sniff_title_company)
+    #   2. THE MODEL, reading the posting — accepted ONLY if the name appears VERBATIM in it
+    #   3. the posting's address (`app.civi.co.il` -> civi)
+    # Every rung is recorded in `company_source`, so a guess is never mistaken for the JD's own word,
+    # and NONE of this reaches the resume or the cover letter: those are written from the JD.
     _emp = str(jd.get("company") or "").strip()
     _emp_src = "jd" if _emp else ""
+    if not _emp:
+        _emp = await _company_from_model(str(jd.get("text") or ""))
+        _emp_src = "llm" if _emp else ""
     if not _emp:
         _emp = docnames.employer_from_url(str(jd.get("url") or ""))
         _emp_src = "url" if _emp else "none"

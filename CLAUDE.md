@@ -436,3 +436,26 @@ letter** — those are written from the JD.
 MY OWN WIRING CHECK BROKE ON THE FIX: it asserted `"company=jd.get" in generate`, the OLD spelling,
 which is precisely the defect that file exists to prevent. Re-pinned to the property (the writer is
 handed company/title/seq).
+
+## "IN EVERY JOB DESCRIPTION THERE IS A NAME OF THE COMPANY" — he is right (2026-09-18)
+His card read `(employer not recorded)`, title **"About the job"**, above 3,623 characters of pasted
+job description. `jd_ingest._guess_title_company` understood a literal `Company:` label — which
+almost no posting uses — and took the FIRST LINE as the title, which on a LinkedIn paste is a
+section header. The name was in the text the whole time; nothing had looked.
+`sniff_title_company()` now reads the shapes postings actually use (`<Company> is looking for`,
+`<Title> at <Company>`, `About <Company>`, `At <Company>, we…`, `Join us at <Company>`, the labels),
+and `_looks_like_name()` refuses a section header, a sentence, a generic noun and anything over six
+words — **a bad guess on a card and in a filename is worse than none**.
+THE LADDER, most certain first, recorded in `company_source`: the JD's own word → **the model,
+reading the posting** → the posting's address → nothing, said plainly. Rung 2 is safe for the same
+structural reason Set-of-Mark and the closed option list are: `jd_ingest.company_in_text()` accepts
+the model's answer ONLY if it appears VERBATIM in the posting, so a hallucinated employer is
+impossible rather than unlikely. None of it reaches the resume or the cover letter — asserted by
+measuring that `_emp` appears only AFTER the consensus wrote them.
+ROWS ALREADY IN THE DATABASE ARE FIXED ON READ (`tracker._derive_employer`), from the text they
+already hold — a labelled derivation beats a migration that rewrites his history.
+`tests/test_employer_ladder.py` runs rung 2 with a STUBBED model (a real one would make the test a
+coin flip; the GUARD is the subject): a name in the posting is accepted, `Coinbase` against a
+Fireblocks posting is REFUSED, an exception costs nothing. Two mutations, both caught — and my first
+two attempts at the last check were a tautology and an empty message, which is the vacuous-check
+defect this file records over and over.

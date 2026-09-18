@@ -185,25 +185,145 @@ def _looks_like_jd(text: str) -> bool:
 
 
 # --------------------------------------------------------------------------- primary path
-def _guess_title_company(body: str) -> tuple:
-    """Very conservative header sniff. Returns ('','') rather than a bad guess."""
-    title = ""
-    company = ""
-    for ln in body.split("\n")[:12]:
-        ln = ln.strip(" #*-–—")
-        if not ln or len(ln) > 120:
+# A PASTED JD IS MOSTLY SECTION HEADERS. The old sniff took the FIRST line as the title, so a
+# LinkedIn paste produced title="About the job" and company="" — which is exactly what his Pipeline
+# card showed, next to `(employer not recorded)`. These are headers, never a job title and never an
+# employer.
+_SECTION = re.compile(
+    r"^(about (the )?(job|role|us|company|team|position)|job description|description|overview|"
+    r"summary|responsibilities|key responsibilities|requirements|qualifications|what you.?ll do|"
+    r"what we.?re looking for|who (we are|you are)|the role|the opportunity|benefits|perks|"
+    r"why join|how to apply|apply now|equal opportunit|compensation|salary|location|employment type|"
+    r"seniority level|job function|industries|posted|apply)\b", re.I)
+# Words that make a fragment a SENTENCE about a company rather than the company's NAME.
+_NOT_A_NAME = re.compile(r"\b(we|our|you|your|they|their|the team|this role|candidate|position)\b", re.I)
+# A single generic noun is not an employer, however it was captured.
+_GENERIC = {"team", "company", "employer", "client", "us", "role", "job", "position", "group",
+            "organisation", "organization", "department", "office", "business"}
+
+
+def _looks_like_name(v: str) -> str:
+    """Clean a candidate employer name, or return '' — a bad guess is worse than none.
+
+    A company NAME is short, has letters, is not a sentence and is not a section header. Everything
+    that fails those is dropped rather than typed onto a card and into a filename."""
+    orig = _clean(str(v or ""))
+    v = orig.strip(" \t-–—:·|,.")
+    # CHECK THE ORIGINAL TOO. "the team" strips to "team", which then slipped past the
+    # sentence filter that was written to catch exactly that phrase.
+    if _NOT_A_NAME.search(orig):
+        return ""
+    v = re.sub(r"^(?:the|at|join|about)\s+", "", v, flags=re.I).strip()
+    if v.lower() in _GENERIC:
+        return ""
+    v = re.sub(r"[.,;:!]+$", "", v).strip()
+    if not (2 <= len(v) <= 60):
+        return ""
+    if not re.search(r"[A-Za-z\u0590-\u05FF\u0400-\u04FF]", v):      # letters, incl. Hebrew/Cyrillic
+        return ""
+    if _SECTION.match(v) or _NOT_A_NAME.search(v):
+        return ""
+    if len(v.split()) > 6:
+        return ""
+    return v
+
+
+def looks_like_company(v: str) -> str:
+    """Public name for the cleaner — `electronic.py` needs it for the model's answer."""
+    return _looks_like_name(v)
+
+
+def company_in_text(candidate: str, body: str) -> str:
+    """A MODEL MAY ONLY NAME SOMETHING THE JOB DESCRIPTION ACTUALLY SAYS.
+
+    Same property as the closed option list and the Set-of-Mark index: the answer is checked against
+    the source, so a hallucinated employer is structurally impossible rather than merely unlikely.
+    Returns the cleaned name when it appears VERBATIM in the text (case-insensitively), else ''."""
+    cand = _looks_like_name(candidate)
+    if not cand:
+        return ""
+    hay = " ".join(str(body or "").split()).lower()
+    return cand if cand.lower() in hay else ""
+
+
+def sniff_title_company(body: str) -> tuple:
+    """(title, company) from a PASTED job description. Deterministic, conservative, and tested.
+
+    HIS WORDS (2026-09-18): *"why Employer not recorded? in every job description there is a name of
+    the company so this suppose to be there"*. He is right — the name is nearly always in the text;
+    the old sniff only understood a literal `Company:` label, which almost no posting uses.
+
+    The ladder, most explicit first. Every candidate goes through `_looks_like_name()`, so a section
+    header or half a sentence can never become the employer."""
+    raw = [ln.rstrip() for ln in str(body or "").split("\n")]
+    bullet = re.compile(r"^\s*[-*•·▪]\s+")
+    lines, listish = [], []
+    for ln in raw:
+        st = ln.strip(" #*-–—\t")
+        if st:
+            lines.append(st)
+            listish.append(bool(bullet.match(ln)))
+    head = lines[:25]
+    title = company = ""
+
+    for ln in head:
+        if len(ln) > 160:
             continue
-        m = re.match(r"^(?:job\s*)?title\s*[:\-]\s*(.+)$", ln, re.I)
+        m = re.match(r"^(?:job\s*)?(?:title|position|role)\s*[:\-]\s*(.+)$", ln, re.I)
         if m and not title:
             title = _clean(m.group(1))
-            continue
-        m = re.match(r"^(?:company|employer|organisation|organization)\s*[:\-]\s*(.+)$", ln, re.I)
+        m = re.match(r"^(?:company|employer|organisation|organization|client)\s*[:\-]\s*(.+)$",
+                     ln, re.I)
         if m and not company:
-            company = _clean(m.group(1))
-            continue
-        if not title and 8 <= len(ln) <= 90 and not ln.endswith((".", ":")):
-            title = _clean(ln)
+            company = _looks_like_name(m.group(1))
+
+    # The title line itself very often carries the employer: "Product Manager at Acme".
+    if not title:
+        for i, ln in enumerate(head):
+            # "SRE" and "CTO" are real titles; a 6-character floor dropped them.
+            if (2 <= len(ln) <= 110 and not _SECTION.match(ln)
+                    and not ln.endswith((".", ":")) and not listish[i]):
+                title = _clean(ln)
+                break
+    if title and not company:
+        m = re.search(r"\s+(?:at|@|·|\|)\s+([^|·]+)$", title)
+        if m:
+            cand = _looks_like_name(m.group(1))
+            if cand:
+                company = cand
+                title = _clean(title[:m.start()])
+
+    text = "\n".join(lines[:80])
+    if not company:
+        for rx in (
+            # "About Acme" — but `_SECTION` rejects About the job / About us / About the role.
+            r"^[Aa]bout\s+([A-Z][^\n:]{1,58})$",
+            # "Acme is hiring a …" / "Acme is looking for …" / "Acme is seeking …"
+            r"^([^\n]{2,58}?)\s+is\s+(?:hiring|looking for|seeking|searching for|recruiting)\b",
+            # "Join Acme" / "Join us at Acme" / "here at Acme" / "work at Acme"
+            # CAPITALISED WORDS ONLY, or the sentence rides along: "Join us at Canonical and ship
+            # Ubuntu" captured the whole clause as the employer. A name is Capitalised; `and ship`
+            # is not, so the capture simply stops there.
+            r"\b(?:[Jj]oin|[Hh]ere at|[Ww]ork(?:ing)? at|[Cc]areer at|[Tt]eam at)\s+(?:us\s+at\s+)?"
+            r"([A-Z][A-Za-z0-9&.\-]*(?:\s+(?:&|[A-Z][A-Za-z0-9&.\-]*)){0,3})\b",
+            # "At Acme, we …" — the comma is what makes this safe to cut on.
+            r"^[Aa]t\s+([A-Z][A-Za-z0-9&.\- ]{1,40}),",
+            # "… at Acme." near the top of the body
+            r"\b[Aa]t\s+([A-Z][A-Za-z0-9&.\-]{2,30}(?:\s+[A-Z][A-Za-z0-9&.\-]{1,20}){0,2})\b",
+        ):
+            for m in re.finditer(rx, text, re.M):
+                cand = _looks_like_name(m.group(1))
+                if cand:
+                    company = cand
+                    break
+            if company:
+                break
     return title, company
+
+
+# Kept as the old name so every existing caller keeps working (one home, two spellings).
+def _guess_title_company(body: str) -> tuple:
+    return sniff_title_company(body)
 
 
 def from_text(text: str, title: str = "", company: str = "", location: str = "",
@@ -236,6 +356,82 @@ _RE_ASHBY = re.compile(r"jobs\.ashbyhq\.com/(?P<org>[A-Za-z0-9_.-]+)/(?P<jid>[A-
 _RE_WD = re.compile(
     r"(?P<host>[a-z0-9-]+\.(?:wd\d+\.)?myworkdayjobs\.com)/(?:[a-z]{2}-[A-Z]{2}/)?"
     r"(?P<site>[A-Za-z0-9_-]+)/(?:job/)?(?P<path>.+)$", re.I)
+
+
+def _selftest() -> int:
+    """`python backend/app/jd_ingest.py --logic` — the pasted-JD sniff, which is what he pastes.
+
+    MEASURED (2026-09-18): his Pipeline card read `(employer not recorded)` with the title
+    "About the job", because the old sniff understood only a literal `Company:` label and took the
+    first line — a LinkedIn section header — as the title. His note: *"in every job description
+    there is a name of the company so this suppose to be there"*."""
+    fails = []
+
+    def ck(c, m):
+        print(("  OK   " if c else "  FAIL ") + m)
+        if not c:
+            fails.append(m)
+
+    print("[jd_ingest] what a PASTED job description says about itself")
+    CASES = [
+        ("About the job\nFireblocks is looking for a Senior Product Manager to join our team.",
+         "", "Fireblocks", "'<Company> is looking for' — the LinkedIn paste that started this"),
+        ("Senior Project Manager at Cisco Systems\nAbout the job\nyou will lead...",
+         "Senior Project Manager", "Cisco Systems", "'<Title> at <Company>' splits into both"),
+        ("Product Manager\nAbout Acme Robotics\nWe build robots.",
+         "Product Manager", "Acme Robotics", "'About <Company>' is a name; 'About the job' is not"),
+        ("Job Title: Data Engineer\nCompany: Zalando SE\nLocation: Berlin",
+         "Data Engineer", "Zalando SE", "explicit labels still win"),
+        ("Backend Engineer\nAt Monzo, we are building a bank.",
+         "Backend Engineer", "Monzo", "'At <Company>, we …'"),
+        ("Cloud Architect\nJoin us at Canonical and ship Ubuntu.",
+         "Cloud Architect", "Canonical", "the capture stops at the first lowercase word"),
+        ("SRE\nWorking at Booking.com means scale.", "SRE", "Booking.com", "a 3-letter title is a title"),
+    ]
+    for body, wt, wc, why in CASES:
+        t, c = sniff_title_company(body)
+        ck(c == wc and (not wt or t == wt), "%s  ->  %r / %r" % (why, t, c))
+
+    # A BAD GUESS IS WORSE THAN NONE: these must produce NOTHING rather than prose on a card.
+    for body, why in (
+        ("About the job\nWe are looking for someone who can lead.", "no name present -> no employer"),
+        ("About the job\nAbout us\nWe are a great team.", "'About us' is never an employer"),
+        ("About the job\nResponsibilities\n- do things", "a bullet is never the job title"),
+        ("Overview\nRequirements\nQualifications", "section headers only -> nothing claimed"),
+    ):
+        t, c = sniff_title_company(body)
+        ck(c == "", "%s (got %r)" % (why, c))
+    ck(sniff_title_company("About the job\nResponsibilities\n- do things")[0] == "",
+       "...and no title either")
+
+    # THE MODEL RUNG'S SAFETY PROPERTY: it may only name what the posting says.
+    jd_body = "About the job\nWe are Fireblocks, and we build custody software."
+    ck(company_in_text("Fireblocks", jd_body) == "Fireblocks", "a name that IS in the JD is accepted")
+    ck(company_in_text("Coinbase", jd_body) == "", "a name the JD never mentions is REFUSED")
+    ck(company_in_text("fireblocks", jd_body) == "fireblocks", "matching ignores case")
+    ck(company_in_text("We are", jd_body) == "", "...and the cleaner still applies")
+    ck(company_in_text("", jd_body) == "" and company_in_text("Acme", "") == "",
+       "nothing in, nothing claimed")
+
+    for junk in ("we are hiring", "the team", "your next role", "a"):
+        ck(_looks_like_name(junk) == "", "refuses %r as an employer name" % junk)
+    ck(_looks_like_name("  Acme Robotics, ") == "Acme Robotics", "trims punctuation and spacing")
+    ck(_looks_like_name("The Boston Consulting Group") == "Boston Consulting Group",
+       "a leading article is not part of the name")
+
+    # from_text() is the caller the Tailor page actually uses.
+    d = from_text("About the job\nFireblocks is looking for a Senior Product Manager." + "x" * 60)
+    ck(d["status"] == "ok" and d["company"] == "Fireblocks",
+       "from_text() carries the employer out to the manifest, the card and the filename")
+    d2 = from_text("About the job\n" + "y" * 80, company="Given Ltd")
+    ck(d2["company"] == "Given Ltd", "an employer the caller supplies always wins over the sniff")
+
+    print("=" * 50)
+    if fails:
+        print("[X] %d failed" % len(fails))
+        return 1
+    print("ALL JD-INGEST CONTRACTS HOLD")
+    return 0
 
 
 async def _get(client, url: str):
@@ -481,3 +677,8 @@ async def ingest(text: str = "", url: str = "") -> dict:
     if url:
         return await from_url(url)
     return _blank("error", "error", "", "Provide either `text` (pasted JD) or `url`.")
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    raise SystemExit(_selftest() if "--logic" in _sys.argv else _selftest())

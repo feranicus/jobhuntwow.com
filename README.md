@@ -137,10 +137,18 @@ immediately, the change is saved, and if the server refuses it goes back where i
 A `move to …` dropdown on each card does the same thing for keyboard and touch. (The one-click
 `rejected` link is gone: one mis-click is how a live application ended up in Rejected.)
 
-When a posting's job description names no employer, the card and the filename fall back to the
-posting's own address — `app.civi.co.il` becomes `civi`, so you get
-`resume_civi_product-manager.pdf` instead of `resume_job_35.pdf`. That guess is labelled
-`company_source: url` in the record and never reaches the resume or the cover letter.
+**Who the job is with** is answered by a ladder, most certain first:
+
+1. the ATS/JSON-LD parser, or the pasted text's own header — `Fireblocks is looking for …`,
+   `Senior PM at Cisco Systems`, `About Acme Robotics`, `At Monzo, we …`, `Company: Zalando SE`;
+2. the model, reading the posting — and its answer is accepted **only if the name appears verbatim
+   in the posting**, so an invented employer cannot reach a card, a filename or the record;
+3. the posting's own address — `app.civi.co.il` becomes `civi`, so a file is
+   `resume_civi_product-manager.pdf` rather than `resume_job_35.pdf`.
+
+Which rung answered is stored as `company_source` (`jd` / `llm` / `url` / `none`), and none of it
+ever reaches the resume or the cover letter — those are written from the job description. Cards
+already in your pipeline are fixed on read, from the text they already hold.
 
 ## Your applications: the correlation, and the digest
 
