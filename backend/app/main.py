@@ -77,8 +77,13 @@ async def api_probe(request: Request):
     `judge_probe` compares the WebRTC-visible address to the request address HERE and keeps only
     the boolean — the revealed address is never logged, emitted or stored (GDPR; the whole point of
     the technique is that it unmasks, so the unmasked value must not survive the comparison)."""
+    # A PUBLIC endpoint reads a bounded body or nothing at all. 2 KB is far more than the dozen
+    # booleans probe.js sends, and an oversized or unparsable body is simply an empty report.
     try:
-        body = await request.json()
+        raw = await request.body()
+        body = __import__("json").loads(raw[:2048]) if raw else {}
+        if not isinstance(body, dict):
+            body = {}
     except Exception:
         body = {}
     try:

@@ -95,7 +95,14 @@ def test_one_allowlist_for_both_doors():
 # anonymous caller. Derived from the live app's route table, so a new route is caught the day it
 # is added without a session dependency -- the class of defect that made /api/chat, /api/models
 # and the whole /api/electronic tree (any user's CV by naming their email) public for weeks.
+# `/api/probe` is PUBLIC ON PURPOSE, decided 2026-09-21 rather than silenced: the browser probe is
+# most useful exactly when nobody is signed in (an automated client hitting the login page), so
+# requiring a session would blind it to the population it exists to judge. What that costs is
+# bounded: the body is size-capped and read as booleans, the per-address verdict map is capped and
+# cleared, the alert it can raise goes through `fire()` (cooldown + storm cap), and it returns
+# `{"ok": true}` to everyone — a caller learns nothing about what we concluded.
 PUBLIC_OK = {("GET", "/api/health"), ("POST", "/api/auth/signup"), ("POST", "/api/auth/login"),
+             ("POST", "/api/probe"),
              ("POST", "/api/auth/logout"),      # clearing a cookie needs no session
              ("POST", "/api/auth/verify")}
 
