@@ -230,6 +230,7 @@ def judge_probe(report, request_ip: str = "") -> dict:
 # Same reasoning as alerts.py: jhw-web is ONE container, the number must be readable in
 # milliseconds, and a counter that needs its own database is a component that rots. Loki keeps the
 # forensic history; this keeps the last hours to answer "how many people are using it".
+import time as _t                                  # noqa: E402
 from collections import deque as _deque           # noqa: E402
 
 WINDOW_S = int(os.environ.get("JHW_VISITOR_WINDOW", 86400))
@@ -280,6 +281,180 @@ def window(hours: float = 24.0) -> dict:
 # rule with two homes drifts. Two, measured 2026-09-21: `observability.py` is READ-ONLY on the
 # operator's filesystem (locked by an editor), and a feature that cannot be written cannot ship —
 # routing around the lock beats waiting for it.
+# =================================================================================================
+# PART 3 — THE VISIT FEED. "A person just opened jobhuntwow.com."
+#
+# He asked for this by pointing at the sibling site's message and saying: I still cannot see even a
+# stupid message that I VISITED the page while not logged in. He was right -- it did not exist here.
+# jobhuntwow fed Telegram on SIGN-IN and on a NEW JOB DESCRIPTION, which are both events that
+# require an account, so an anonymous visit -- the thing that tells him whether the site has any
+# traffic at all -- was invisible.
+#
+# IT IS A FEED, NOT AN ALERT. `alerts.fire()` dedupes on (rule, subject) with a 15-minute cooldown
+# and a storm cap across ALL rules; that is right for a scanner and wrong for "somebody opened the
+# page", which must not be able to silence a real security alert. So this carries its OWN dedupe
+# (one visitor per 6 hours) and its OWN hourly cap, exactly like `alerts.usage()`.
+#
+# EVERY SUPPRESSION IS WRITTEN DOWN (`evt=visit_suppressed`, with the reason). When the next
+# question is "why did I not get a message", the answer has to be readable instead of guessed at --
+# that is the whole point of the estate's "absence of evidence is never a finding" rule, applied to
+# our own silence. The Security console shows those counts beside the alerts.
+VISIT_NOTIFY = os.environ.get("JHW_VISIT_NOTIFY", "1") != "0"
+VISIT_DEDUPE_S = int(os.environ.get("JHW_VISIT_DEDUPE_S", str(6 * 3600)))
+VISIT_MAX_PER_HOUR = int(os.environ.get("JHW_VISIT_MAX_PER_HOUR", "30"))
+# /api/ is the app talking to itself; /.well-known/ is the certificate. Neither is a page view.
+VISIT_EXEMPT_PREFIXES = ("/api/", "/v1/", "/.well-known/", "/assets/", "/static/", "/media/")
+VISIT_EXEMPT_EXACT = {"/favicon.ico", "/robots.txt", "/sitemap.xml", "/manifest.webmanifest",
+                      "/sw.js", "/health", "/healthz"}
+try:                                               # one home for "what we serve"
+    from .spa_guard import CLIENT_ROUTES as _OUR_ROUTES
+except Exception:                                  # standalone import (tests)
+    _OUR_ROUTES = frozenset({"/", "/login", "/signup", "/scout", "/pipeline",
+                             "/electronic", "/tailor", "/hermes", "/connections",
+                             "/security"})
+_visit_seen: dict = {}
+_visit_sent = _deque()
+
+
+def _sib(name):
+    """Import a sibling module whether this file is `app.visitors` or a script run from its folder."""
+    from importlib import import_module
+    if __package__:
+        return import_module("." + name, __package__)
+    return import_module(name)
+
+
+def _visit_log(**k):
+    try:
+        _sib("notify")._log(**k)
+        return
+    except Exception:
+        pass
+    try:
+        print(__import__("json").dumps(dict(k, ts=int(_t.time()))), flush=True)
+    except Exception:
+        pass
+
+
+def _visit_key(ev) -> str:
+    """One human, one alert. IP plus a coarse client fingerprint, so a phone and a laptop behind one
+    office NAT are two visitors while one person clicking around is one."""
+    return "%s|%s|%s" % (ev.get("ip") or "-", ev.get("browser") or "-", ev.get("os") or "-")
+
+
+def visit_verdict(ev):
+    """(should_alert, reason). PURE, so every rule below is testable without a server or a clock.
+
+    `reason` is why it was SUPPRESSED when the answer is False, and "" when it is True.
+    """
+    path = str(ev.get("path") or "/")
+    if not VISIT_NOTIFY:
+        return False, "the visit feed is switched off (JHW_VISIT_NOTIFY=0)"
+    if str(ev.get("method") or "GET").upper() not in ("GET", "HEAD"):
+        return False, "not a page view (%s)" % ev.get("method")
+    if path.startswith(VISIT_EXEMPT_PREFIXES) or path in VISIT_EXEMPT_EXACT:
+        return False, "not a page (%s)" % path
+    try:
+        if int(ev.get("status") or 0) >= 400:
+            return False, "the page was refused (%s) - that is the alert rules' business" % ev.get("status")
+    except Exception:
+        pass
+    if ev.get("user"):
+        return False, "signed in as %s - the sign-in feed already covers that" % ev.get("user")
+    if ev.get("bot"):
+        return False, "self-identified client (%s)" % (ev.get("bot_name") or "bot")
+    # CLASSIFY BY PATH, NOT ONLY BY USER AGENT. A scanner asked the sibling site for /.svn/wc.db
+    # while announcing itself as "Safari / iOS / mobile", and the UA check passed it straight
+    # through: the alert then claimed a person had arrived, on a path no person has ever typed.
+    # The user agent is attacker-controlled; the path they asked for is the evidence.
+    # A RELATIVE IMPORT DIES WHEN THIS FILE IS RUN AS A SCRIPT, and ship.py runs it as one. The
+    # first version had `from . import perseus_client` inside a try/except: the ImportError was
+    # swallowed and the rule silently never ran in the suite -- PRESENCE IS NOT REACHABILITY, found
+    # by the contract below failing rather than by reading the code.
+    try:
+        _pc = _sib("perseus_client")
+        if _pc.probe_shape(path, lambda p: p in _OUR_ROUTES):
+            return False, "attack-shaped path (%s) behind a browser user agent" % path[:60]
+    except Exception as _e:
+        _visit_log(evt="visit_shape_unavailable", err=repr(_e)[:120],
+                   effect="the path-shape rule did not run for this request")
+    # THE THREE BUCKETS DECIDE, AND THEY FAIL OPEN TOWARDS "PERSON". A record that contradicts
+    # itself is a client; a record that simply carries no evidence is UNJUDGED and still alerts,
+    # because a corporate network with no fetch-metadata is a person, and making him invisible is
+    # the expensive error here. Wrongly alerting on a bot is merely annoying.
+    try:
+        reasons, _determinable = evaluate(ev)
+        if reasons:
+            return False, "the request contradicted itself (%s)" % reasons[0]
+    except Exception:
+        pass
+    return True, ""
+
+
+def note_visit(ev) -> bool:
+    """Called after a page response. Dedupes, caps, sends. NEVER raises, never blocks anything."""
+    try:
+        ok, why = visit_verdict(ev)
+        path = str(ev.get("path") or "/")
+        if not ok:
+            # Only worth a line when it was a plausible page view; /api/ and assets would drown it.
+            if not (path.startswith(VISIT_EXEMPT_PREFIXES) or path in VISIT_EXEMPT_EXACT):
+                _visit_log(evt="visit_suppressed", reason=why, ip=ev.get("ip", "-"), path=path[:120],
+                           host=ev.get("host", "-"), ua=str(ev.get("ua") or "")[:120])
+            return False
+        now = _t.time()
+        k = _visit_key(ev)
+        if now - _visit_seen.get(k, 0) < VISIT_DEDUPE_S:
+            return False                       # same visitor, still inside the window: silence
+        while _visit_sent and _visit_sent[0] < now - 3600:
+            _visit_sent.popleft()
+        if len(_visit_sent) >= VISIT_MAX_PER_HOUR:
+            _visit_log(evt="visit_suppressed", reason="cap %d/h reached" % VISIT_MAX_PER_HOUR,
+                       ip=ev.get("ip", "-"), path=path[:120], host=ev.get("host", "-"))
+            return False
+        _visit_seen[k] = now
+        _visit_sent.append(now)
+        if len(_visit_seen) > 4000:            # bounded: the key is partly attacker-chosen
+            for old in [kk for kk, ts in _visit_seen.items() if now - ts > VISIT_DEDUPE_S]:
+                _visit_seen.pop(old, None)
+        host = ev.get("host") or "jobhuntwow.com"
+        country = ev.get("country")
+        body = "\n".join([
+            "A person just opened %s." % host,
+            "",
+            "When    : %s" % _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime(now)),
+            "Site    : %s" % host,
+            "Page    : %s" % path,
+            "IP      : %s%s" % (ev.get("ip") or "-",
+                                (" (%s)" % country) if country not in (None, "", "-") else ""),
+            "Client  : %s / %s / %s" % (ev.get("browser") or "-", ev.get("os") or "-",
+                                        ev.get("device") or "-"),
+            "Referrer: %s" % (ev.get("ref") or "direct"),
+            "Language: %s" % (ev.get("lang") or "-"),
+            "",
+            "Signed out. A sign-in gets its own message.",
+            "Attack-shaped paths and self-identified bots never reach this feed.",
+            "One message per visitor per %d hour(s)." % max(1, VISIT_DEDUPE_S // 3600),
+        ])
+        _visit_log(evt="visit_notice", ip=ev.get("ip", "-"), host=host, path=path[:120],
+                   country=country, browser=ev.get("browser"), os=ev.get("os"),
+                   device=ev.get("device"), ref=str(ev.get("ref") or "")[:120])
+        try:
+            notify = _sib("notify")
+            # PLAIN TEXT, and the subject carries the host: the referrer and the path are
+            # attacker-controlled strings, and one stray underscore makes Telegram reject the whole
+            # message -- which is how the message that mattered most silently never arrived.
+            # AND OFF THE REQUEST PATH: this runs while somebody is waiting for a page, so the send
+            # happens on a daemon thread. Telegram's latency, and Telegram's outages, are not the
+            # visitor's problem.
+            return bool(notify.fire_and_forget(
+                notify.both, "Visitor on %s - %s" % (host, path[:60]), body))
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
 def install(app, session_user_fn=None):
     """Record per-request evidence for the counter. Detection only: never blocks, never raises."""
     try:
@@ -405,6 +580,49 @@ def _selftest() -> int:
        == (REASON_PROBE_AUTOMATION,), "a positive automation probe convicts")
     ck(evaluate({"ip": "1.1.1.1", "path": "/", "ua": CH, "probe": "unjudged"}) == ((), False),
        "an unjudged probe changes nothing")
+
+    # ---------------------------------------------------------------- PART 3: the visit feed
+    # "A person just opened jobhuntwow.com." Every rule is checked on the PURE verdict function, so
+    # none of this needs a server, a clock or a Telegram token.
+    CH_FULL = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+               "Chrome/131.0.0.0 Safari/537.36")
+    person = {"path": "/tailor", "method": "GET", "status": 200, "ip": "203.0.113.7",
+              "ua": CH_FULL, "bot": False, "sf": 15, "host": "jobhuntwow.com", "user": "",
+              "browser": "Chrome", "os": "Windows 10", "device": "desktop"}
+    ok, why = visit_verdict(person)
+    ck(ok, "an anonymous person opening a page IS reported (%s)" % why)
+    ck(not visit_verdict(dict(person, user="him@example.com"))[0],
+       "a SIGNED-IN visit is not, because the sign-in feed already covers it")
+    ck(not visit_verdict(dict(person, path="/api/health"))[0], "an API call is not a page view")
+    ck(not visit_verdict(dict(person, path="/assets/index-abc.js"))[0], "nor is an asset")
+    ck(not visit_verdict(dict(person, status=404))[0],
+       "a refused page is the alert rules' business, not the visit feed's")
+    ck(not visit_verdict(dict(person, method="POST"))[0], "a POST is not a page view")
+    ck(not visit_verdict(dict(person, bot=True, bot_name="curl"))[0],
+       "a self-identified client is not a person")
+    # THE PATH IS THE EVIDENCE, NOT THE USER AGENT. The sibling site alerted "a person just opened
+    # cybergod.ai" for a scanner that asked for /.svn/wc.db while claiming to be Safari on iOS.
+    bad, why_bad = visit_verdict(dict(person, path="/wp-login.php"))
+    ck(not bad and "attack-shaped" in why_bad,
+       "a scanner wearing a browser user agent is refused BY ITS PATH (%s)" % why_bad)
+    # A record that contradicts itself is a client; a record with no evidence is still a person.
+    liar = dict(person, ua=CH_FULL, sf=0, hv="1.1", hvs="p")
+    ck(not visit_verdict(dict(person, ua="curl/8.4.0", bot=True))[0],
+       "and so is one that names itself")
+    bare = {"path": "/", "method": "GET", "status": 200, "ip": "198.51.100.1", "ua": CH_FULL,
+            "bot": False, "host": "jobhuntwow.com", "user": ""}
+    ck(visit_verdict(bare)[0],
+       "a request carrying NO evidence still reports - a corporate network is a person, and "
+       "making him invisible is the expensive error")
+    ck(_visit_key(person) != _visit_key(dict(person, ip="198.51.100.2")),
+       "two addresses are two visitors")
+    ck(_visit_key(person) != _visit_key(dict(person, browser="Firefox")),
+       "a phone and a laptop behind one office NAT are two visitors")
+    ck(_visit_key(person) == _visit_key(dict(person, path="/pipeline")),
+       "one person clicking around is ONE visitor")
+    ck(visit_verdict(dict(person, host="jobhw.org"))[0], "the short domain reports too")
+    ck(all(visit_verdict(dict(person, path=p))[1] for p in ("/api/x", "/assets/a.js")),
+       "every suppression names its reason, so 'why did I get no message' is answerable")
 
     print("=" * 62)
     if fails:

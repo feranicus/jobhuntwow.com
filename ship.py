@@ -293,7 +293,9 @@ def do_tests() -> bool:
                 "tests/test_pipeline_dnd.py",
                 # who the job is with: the ladder, and the guard on its model rung
                 "tests/test_employer_ladder.py", "backend/app/jd_ingest.py",
-                # visitors against bots: three buckets, and what each signal may prove
+                # visitors against bots: three buckets, what each signal may prove, AND the visit
+                # feed ("a person just opened jobhuntwow.com") with the rules that keep a scanner
+                # wearing a browser user agent out of it.
                 "backend/app/visitors.py",
                 # WHY THE CATCH-ALL ANSWERED 200 TO EVERYTHING AND NOTHING EVER ALERTED.
                 # The probe-shaped 404 and its route mirror; the ten security headers and the CSP

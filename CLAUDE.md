@@ -450,6 +450,24 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
 - **The deploy's `deploy_probe` is a GATE now**: it printed `EVENTS_LOG_UNWRITABLE` and exited 0, so
   a deploy with a dead event pipeline still said DONE.
 
+## THE VISIT FEED — "a person just opened jobhuntwow.com" (2026-09-21)
+- **An anonymous VISIT is the only signal that says whether the site has traffic at all**, and this
+  project did not have it: the feeds were sign-in and new-job-description, both of which need an
+  account. `visitors.note_visit()` now sends one plain-text Telegram message per visitor per 6h,
+  naming the HOST (so jobhw.org is its own line), with its own hourly cap so a feed can never
+  silence an alert, and `notify.fire_and_forget` so Telegram's latency never reaches the page
+  (measured: 61 ms response while the sender slept 2 s).
+- **Gate on the PATH, never on the user agent** — the sibling site alerted "a person just opened
+  cybergod.ai" for a scanner claiming to be Safari on iOS while asking for `/.svn/wc.db`.
+- **A record with NO evidence still counts as a person.** Contradiction → client; absence →
+  unjudged → still reported. A corporate network strips the headers that would prove it, and
+  making that visitor invisible is the expensive error.
+- **Every suppression writes its reason** (`evt=visit_suppressed`) and the console lists them:
+  "why did I get no message" must be readable, not guessed.
+- And the first version's `from . import perseus_client` inside a `try/except: pass` meant the
+  path-shape rule silently never ran under `python backend/app/visitors.py` — PRESENCE IS NOT
+  REACHABILITY, caught by a contract failing, not by reading the code.
+
 ## USAGE FEED AND BOT COUNTING (2026-09-21)
 - **A feed is not an alert.** Sign-ins and new job descriptions go to Telegram through
   `alerts.usage()`, which has its OWN hourly cap and NO per-subject cooldown: `fire()` dedupes on

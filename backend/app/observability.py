@@ -347,6 +347,15 @@ def install_middleware(app, session_user_fn=None):
                     alerts.observe_http(ev)
                 except Exception:
                     pass
+            # WHO ACTUALLY ARRIVED. The security rules above count 404s and refusals; this is the
+            # other half -- an anonymous person opening a page, which is the only signal that says
+            # whether the site has any traffic at all. It carries its own dedupe and its own cap so
+            # it can never silence a real alert, and every suppression writes down its reason.
+            try:
+                from . import visitors as _vis
+                _vis.note_visit(ev)
+            except Exception:
+                pass
         except Exception:
             pass
 

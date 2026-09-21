@@ -276,6 +276,47 @@ export default function Security() {
       </div>
 
       <div className="card" style={{ padding: 14 }}>
+        <h3 style={{ marginTop: 0 }}>People who opened the site</h3>
+        <div style={{ display: "flex", gap: 22, flexWrap: "wrap", marginBottom: 8 }}>
+          <Stat label="TOLD YOU ABOUT" value={(d.visits || {}).reported}
+                sub="one message per visitor per 6h" />
+          <Stat label="HELD BACK" value={(d.visits || {}).suppressed} sub="and why, below" />
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr>
+            <th style={th}>time</th><th style={th}>host</th><th style={th}>address</th>
+            <th style={th}>page</th><th style={th}>country</th><th style={th}>client</th>
+            <th style={th}>came from</th>
+          </tr></thead>
+          <tbody>
+            {((d.visits || {}).last || []).map((v, i) => (
+              <tr key={i}>
+                <td style={td}>{new Date((v.ts || 0) * 1000).toLocaleTimeString()}</td>
+                <td style={td}>{txt(v.host)}</td>
+                <td style={td}>{txt(v.ip)}</td>
+                <td style={td}>{txt(v.path)}</td>
+                <td style={td}>{txt(v.country)}</td>
+                <td style={td}>{txt(v.browser)} / {txt(v.os)}</td>
+                <td style={{ ...td, maxWidth: 240 }}>{txt(v.ref) || "direct"}</td>
+              </tr>
+            ))}
+            {!((d.visits || {}).last || []).length && (
+              <tr><td style={td} colSpan={7}>
+                {blind ? "not measured" : "nobody has opened the site in this window"}
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+        {Object.keys((d.visits || {}).why_suppressed || {}).length > 0 && (
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+            <b>Why some visits did not send a message:</b>{" "}
+            {Object.entries((d.visits || {}).why_suppressed || {})
+              .map(([r, n2]) => txt(r) + " (" + n(n2) + ")").join(" · ")}
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 14 }}>
         <h3 style={{ marginTop: 0 }}>Live feed — the last {(d.feed || []).length} requests</h3>
         <div style={{ maxHeight: 420, overflow: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>

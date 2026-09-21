@@ -114,6 +114,30 @@ def email(subject, body, to=None):
     return False
 
 
+def fire_and_forget(fn, *a, **k):
+    """Send on a daemon thread and return immediately. Returns True if the send was STARTED.
+
+    WHY THIS EXISTS. `telegram()` and `email()` are blocking HTTPS calls of a few hundred
+    milliseconds. The visit feed runs inside the response path of an ordinary page view, so calling
+    them directly would put a third party's latency -- and its outages -- in front of the person
+    opening the site. An optional notification may make a page more informed; it may never make it
+    slower than its own budget, and a nice-to-have that hangs is its own outage.
+    """
+    import threading
+    try:
+        threading.Thread(target=lambda: _quiet(fn, *a, **k), daemon=True).start()
+        return True
+    except Exception:
+        return False
+
+
+def _quiet(fn, *a, **k):
+    try:
+        fn(*a, **k)
+    except Exception as e:
+        _log(evt="notify_async_failed", fn=getattr(fn, "__name__", "?"), err=repr(e)[:160])
+
+
 def both(subject, body):
     """Fire both channels. Independent: email failing must not silence Telegram."""
     # NO ASTERISKS. telegram() has defaulted to PLAIN TEXT since 2026-09 (see its docstring), so

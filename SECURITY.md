@@ -90,7 +90,19 @@ add, the gate fails closed). It shows, per window:
 
 per-hostname traffic (jobhuntwow.com **and** jobhw.org separately) · three buckets · attack classes
 by shape · worst offenders ranked by **distinct** paths · blocks, would-blocks, tarpits, 429s ·
-alerts fired and suppressed · spend by account and model · and a live feed of the last 200 requests.
+alerts fired, delivered and suppressed · **who opened the site, and which visits were held back and
+why** · spend by account and model · and a live feed of the last 200 requests.
+
+### The visit feed
+
+A signed-out page view sends one Telegram message naming the host, page, address, country, client,
+referrer and language. Gated on the PATH, not the user agent — a scanner announcing itself as Safari
+while asking for `/wp-login.php` is refused by its path, which is the evidence; the user agent is
+attacker-controlled. A record that contradicts itself is a client; a record carrying no evidence at
+all is still a person (a corporate network blocks the very headers that would prove it, and making
+that person invisible is the expensive error). One message per visitor per 6 h, own hourly cap so it
+can never silence a security alert, sent on a background thread so a third party's latency never
+reaches the page. `JHW_VISIT_NOTIFY=0` turns it off.
 
 The window selector scales the read: a 1-hour view parses roughly a twenty-fourth of what a 7-day
 view does, rather than the whole file every time. The page refreshes every 30 s while it is open.

@@ -220,6 +220,7 @@ def overview(window_h=24.0, feed_max=None):
         "visitors": None, "clients": None, "unjudged": None, "addresses": None,
         "visitor_split": "none",
         "attacks": None, "attack_classes": {}, "top_offenders": [], "top_paths": [],
+        "visits": {"reported": None, "suppressed": None, "why_suppressed": {}, "last": []},
         "countries": {}, "users": [], "feed": [],
         "sidecar": "unverifiable", "sidecar_why": "", "sidecar_beat": {},
         "enforce": "unknown", "enforce_why": "",
@@ -304,6 +305,25 @@ def overview(window_h=24.0, feed_max=None):
         out["visitor_split"] = "none"
         out["caveat"] = "the visitor split could not be computed (%r)" % (e,)
 
+    # THE VISIT FEED, AND ITS SILENCE. "I visited the page and got no message" must be answerable
+    # from this page: how many visits were reported, how many were held back, and WHY.
+    notices = [e for e in evs if e.get("evt") == "visit_notice"]
+    supp = [e for e in evs if e.get("evt") == "visit_suppressed"]
+    reasons = {}
+    for e in supp:
+        r = str(e.get("reason") or "unstated")[:70]
+        reasons[r] = reasons.get(r, 0) + 1
+    out["visits"] = {
+        "reported": len(notices),
+        "suppressed": len(supp),
+        "why_suppressed": dict(sorted(reasons.items(), key=lambda kv: -kv[1])[:8]),
+        "last": [{"ts": e.get("ts"), "host": e.get("host"), "ip": e.get("ip"),
+                  "path": e.get("path"), "country": e.get("country"),
+                  "browser": e.get("browser"), "os": e.get("os"), "ref": e.get("ref")}
+                 for e in sorted(notices, key=lambda e: float(e.get("ts") or 0),
+                                 reverse=True)[:20]],
+    }
+
     out["shield"] = {
         "blocks": sum(1 for e in evs if e.get("evt") == "perseus_shield_block"),
         "would_block": sum(1 for e in evs if e.get("evt") == "perseus_shield_would_block"),
@@ -378,6 +398,11 @@ def _selftest():
     rows.append({"evt": "http", "service": SERVICE, "ts": now - 20, "host": "jobhw.org",
                  "ip": "198.51.100.9", "method": "GET", "path": "/pipeline", "status": 301,
                  "bot": False, "sf": 15, "ua": "Mozilla/5.0", "country": "DE"})
+    rows.append({"evt": "visit_notice", "service": SERVICE, "ts": now - 12, "host": "jobhw.org",
+                 "ip": "198.51.100.9", "path": "/pipeline", "country": "DE", "browser": "Safari"})
+    rows.append({"evt": "visit_suppressed", "service": SERVICE, "ts": now - 11,
+                 "reason": "signed in as him@example.com - the sign-in feed already covers that",
+                 "ip": "198.51.100.1", "path": "/tailor"})
     rows.append({"evt": "security_alert", "service": SERVICE, "ts": now - 10, "rule": "path_probe"})
     rows.append({"evt": "alert_suppressed", "service": SERVICE, "ts": now - 9, "rule": "path_probe"})
     rows.append({"evt": "llm_budget_refused", "service": SERVICE, "ts": now - 8, "user": "x@y.z"})
@@ -410,6 +435,10 @@ def _selftest():
     ck("the offender is ranked by DISTINCT paths, not volume",
        o["top_offenders"] and o["top_offenders"][0]["distinct_paths"] >= 5,
        str(o["top_offenders"][:1]))
+    ck("a reported visit and a suppressed one are BOTH counted, with the reason",
+       o["visits"]["reported"] == 1 and o["visits"]["suppressed"] == 1
+       and "signed in" in " ".join(o["visits"]["why_suppressed"]),
+       str(o["visits"])[:120])
     ck("alerts fired and suppressed are both counted",
        o["alerts_fired"] == 1 and o["alerts_suppressed"] == 1)
     ck("an alert that was RAISED but never delivered does not read as 'active'",

@@ -76,6 +76,9 @@ budget.
 | `DO_API_TOKEN` | unset | lets `spend_watch` read the VENDOR's month-to-date usage. Without it that half honestly reports "unavailable" instead of 0 |
 | `EXTRA_ADMIN_EMAILS` | unset | may only ADD administrators; `ADMIN_EMAILS` is committed in `auth.py` |
 | `JHW_PROBE_WEBRTC` | off | the WebRTC half of the browser probe. Off at both ends on purpose |
+| `JHW_VISIT_NOTIFY` | `1` | Telegram message when a signed-out person opens a page |
+| `JHW_VISIT_DEDUPE_S` | `21600` | one message per visitor per 6 hours |
+| `JHW_VISIT_MAX_PER_HOUR` | `30` | hard cap on visit messages per hour |
 
 
 ## Release  (`python ship.py`)
@@ -253,6 +256,16 @@ hostname), 22 attack-shape classes, three visitor buckets (never two), a reversi
 alert rules with a cooldown and a storm cap, ten security headers, a probe-shaped 404, a budget and
 a rate limit in front of every paid model call, and an hourly watcher that compares our own ledger
 against DigitalOcean's balance.
+
+**"A person just opened jobhuntwow.com."** A signed-out visitor opening any page sends one
+Telegram message carrying the host (jobhuntwow.com or jobhw.org), the page, the address and country,
+the client, the referrer and the language — the same shape cybergod.ai has sent for months, which
+jobhuntwow never had: it fed Telegram on sign-in and on a new job description, both of which need an
+account, so an anonymous visit was invisible. One message per visitor per 6 hours, its own hourly
+cap so it can never silence a security alert, and it is sent on a background thread so Telegram's
+latency never reaches the person opening the page. A signed-in visit stays silent, because the
+sign-in feed already covers it. **Every suppression writes down its reason** and the Security page
+lists them, so "why did I get no message" is answerable instead of guessed at.
 
 The operator's console is the **Security** page in the sidebar (administrators only, enforced
 server-side on every request, not by hiding the menu entry). It shows who is knocking on each
