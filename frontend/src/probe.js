@@ -53,13 +53,23 @@ function iceFacts() {
   });
 }
 
+// THE WEBRTC HALF IS OPT-IN, AND IT IS OFF. It reveals an address the user chose to hide, it
+// cannot see a scripted client at all, and it flags corporate networks that block UDP - three
+// reasons the sibling estate evaluated the same technique and declined it. Set
+// VITE_JHW_PROBE_WEBRTC=1 at build time to turn it on; the server also drops the fields unless
+// JHW_PROBE_WEBRTC=1, so BOTH ends must agree before anybody is unmasked.
+const WEBRTC_ON = (() => {
+  try { return import.meta.env && import.meta.env.VITE_JHW_PROBE_WEBRTC === "1"; }
+  catch { return false; }
+})();
+
 export async function reportProbe() {
   try {
     if (sessionStorage.getItem("jhwProbe")) return;   // once per session; this is not telemetry
     sessionStorage.setItem("jhwProbe", "1");
   } catch { /* private mode: just run it once per load */ }
   try {
-    const ice = await iceFacts();
+    const ice = WEBRTC_ON ? await iceFacts() : { ice: false, srflx: false, publicIp: "" };
     const ua = navigator.userAgent || "";
     await fetch("/api/probe", {
       method: "POST",

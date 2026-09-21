@@ -40,6 +40,15 @@ async def chat_stream(messages, model: str = "", temperature: float = 0.4, user:
         "temperature": temperature,
         "stream": True,
     }
+    # THE BUDGET GATE, BEFORE THE STREAM. This generator cannot raise usefully -- the response
+    # has already started -- so a refusal is yielded as the answer, which is also what the user
+    # needs to read. The refusal is recorded and paged by llm_meter.refuse().
+    from . import llm_meter as _meter
+    try:
+        _meter.gate(caller="qwen.chat_stream", model=mdl, user=user)
+    except _meter.BudgetExceeded as _e:
+        yield "\u26a0\ufe0f " + str(_e)
+        return
     _usage = None
     _t0 = time.time()
     async with httpx.AsyncClient(timeout=None) as c:
@@ -78,3 +87,6 @@ async def chat_stream(messages, model: str = "", temperature: float = 0.4, user:
                           ms=int((time.time() - _t0) * 1000), status="stream")
     except Exception:
         pass
+    # ITS OWN try (see llm.complete): the recorder must not be able to disarm the budget.
+    _meter.record("qwen.chat_stream", mdl, _usage, user=user,
+                  ms=int((time.time() - _t0) * 1000), status="stream")

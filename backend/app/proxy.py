@@ -149,6 +149,16 @@ async def chat_completions(request: Request, authorization: str | None = Header(
         raise HTTPException(403, {"error": "model not permitted through this proxy",
                                   "requested": str(requested)[:80],
                                   "allowed": sorted(_allowed_models())})
+    # THE BUDGET GATE. The allowlist above bounds WHICH model; it never bounded HOW MUCH, and the
+    # actor made 1,521 successful calls through a door exactly like this one. A proxy token is not
+    # a person, so the caller is identified by its address here -- attribution, not authorisation.
+    from . import llm_meter as _meter
+    try:
+        _meter.gate(caller="proxy.chat_completions", model=payload.get("model"),
+                    user="proxy:" + (ip or "unknown"), ip=ip)
+    except _meter.BudgetExceeded as _e:
+        return JSONResponse({"error": {"message": str(_e), "type": "rate_limit_exceeded"}},
+                            status_code=429, headers={"Retry-After": "3600"})
     stream = bool(payload.get("stream"))
     _t0 = time.time()
 
@@ -204,6 +214,10 @@ async def chat_completions(request: Request, authorization: str | None = Header(
                               status=str(r.status_code), user=ip)
         except Exception:
             pass
+        # ITS OWN try: the ledger must never be able to skip the budget write.
+        _meter.record("proxy.chat_completions", payload.get("model"),
+                      (_body or {}).get("usage"), ms=int((time.time() - _t0) * 1000),
+                      status=str(r.status_code), user="proxy:" + (ip or "unknown"))
         return JSONResponse(_body, status_code=r.status_code)
 
     async def gen():
@@ -230,4 +244,10 @@ async def chat_completions(request: Request, authorization: str | None = Header(
                               ms=int((time.time() - _t0) * 1000), status="stream", user=ip)
         except Exception:
             pass
+        # UNKNOWN TOKENS STILL COST, AND IN THEIR OWN try. A stream carries no usage block, so
+        # without this line the cheapest way past the cap is to ask for a stream -- which is what
+        # the actor did -- and a raise in the ledger above must not take it with it.
+        _meter.record("proxy.chat_completions.stream", payload.get("model"), None,
+                      ms=int((time.time() - _t0) * 1000), status="stream",
+                      user="proxy:" + (ip or "unknown"))
     return StreamingResponse(gen(), media_type="text/event-stream")

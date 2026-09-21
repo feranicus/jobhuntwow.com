@@ -44,7 +44,7 @@ services:
       - JHW_PROBE_404=1
       # What this project serves, DECLARED. A declaration is available on the first request; a
       # learned route is not. Mirrors spa_guard.CLIENT_ROUTES, which mirrors frontend/src/App.jsx.
-      - PERSEUS_OUR_ROUTES=/,/login,/signup,/scout,/pipeline,/electronic,/tailor,/hermes,/connections
+      - PERSEUS_OUR_ROUTES=/,/login,/signup,/scout,/pipeline,/electronic,/tailor,/hermes,/connections,/security
     volumes:
       - jhw_data:/data
       - jhw_events:/var/log/jhw

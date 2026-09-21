@@ -61,6 +61,23 @@ cd frontend && npm install && npm run dev                     # :5173, proxies /
 | `DATA_DIR` | backend data dir (default `/data`, a Docker volume) |
 | `CORS_ORIGINS` | allowed origins (`*` in dev; lock down in prod) |
 
+**The wallet** (see `SECURITY.md`). Every one of these has a working default; set them only to move
+a limit. The gate is asked BEFORE each model call and fails open on a storage fault, closed on the
+budget.
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `JHW_DAILY_USD` | `3.00` | the whole service's AI spend per UTC day |
+| `JHW_USER_DAILY_USD` | `0.75` | one account's share of it (self-signup is open) |
+| `JHW_USER_CALLS_PER_HOUR` | `120` | per-account rate limit |
+| `JHW_CALLS_PER_HOUR` | `600` | service-wide rate limit |
+| `JHW_UNKNOWN_CALL_USD` | `0.01` | what a stream with no usage block costs against the caps |
+| `JHW_METER_DB` | `$DATA_DIR/llm_meter.sqlite` | the ledger |
+| `DO_API_TOKEN` | unset | lets `spend_watch` read the VENDOR's month-to-date usage. Without it that half honestly reports "unavailable" instead of 0 |
+| `EXTRA_ADMIN_EMAILS` | unset | may only ADD administrators; `ADMIN_EMAILS` is committed in `auth.py` |
+| `JHW_PROBE_WEBRTC` | off | the WebRTC half of the browser probe. Off at both ends on purpose |
+
+
 ## Release  (`python ship.py`)
 
 **ONE command releases the app.** It runs the test gates, pushes to GitHub, validates the change on a
@@ -223,7 +240,29 @@ machine) instead of reporting a finding.
 Order: **DNS first, then `python ship.py`.** Caddy asks Let's Encrypt for the certificate the moment
 a hostname is in its config, and that only succeeds once the name resolves to the droplet.
 `jobhw.org` and `www.jobhw.org` redirect to `https://jobhuntwow.com` in one hop, carrying the path
-and the query.
+and the query — **and the redirect is issued by the application, not by Caddy**. A `redir` upstream
+is one line and means the request never reaches the only process that writes an event, so nobody who
+typed the short domain appeared anywhere in the record. They are proxied here, observed with
+`host=jobhw.org`, and then bounced (`backend/app/hosts.py`). They show up as their own row on the
+Security page.
+
+## Security and observability (`/security`)
+
+`SECURITY.md` is the whole picture. The short version: one JSON event per request (carrying the
+hostname), 22 attack-shape classes, three visitor buckets (never two), a reversible shield, twelve
+alert rules with a cooldown and a storm cap, ten security headers, a probe-shaped 404, a budget and
+a rate limit in front of every paid model call, and an hourly watcher that compares our own ledger
+against DigitalOcean's balance.
+
+The operator's console is the **Security** page in the sidebar (administrators only, enforced
+server-side on every request, not by hiding the menu entry). It shows who is knocking on each
+hostname, what they asked for, what the defences did about it, whether anybody was actually told,
+and what the models cost — and it renders an unreadable source as an em dash with a reason, never
+as a zero.
+
+```
+python authz_audit.py     # every route, every method, asked anonymously. A gate inside ship.py
+```
 
 ## Manuals (Russian)
 

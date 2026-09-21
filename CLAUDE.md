@@ -403,6 +403,53 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
   on the canonical host in ONE hop. `python domains.py` prints the registrar records and measures —
   and refuses to report a finding when it cannot resolve DNS at all.
 
+## THE WALLET, THE CONSOLE AND THE SHORT DOMAIN (2026-09-21)
+*(the full stack and its boundaries: `SECURITY.md`; the incident that earned it: the LLM-jacking report)*
+
+- **A paid model call is GATED BEFORE IT IS MADE, at all four chokepoints** (`llm.chat`,
+  `llm.complete`, `qwen.chat_stream`, `proxy.chat_completions`). `backend/app/llm_meter.py` holds
+  four rules — global daily USD, per-account daily USD, per-account calls/hour, service calls/hour —
+  and **fails OPEN on a storage fault, CLOSED on the budget**. `None` (cannot read) and `0.0` (a
+  quiet day) never collapse into each other. A refusal is a 429 with Retry-After, recorded as
+  `evt=llm_budget_refused` and paged; it is never a 500.
+- **UNKNOWN TOKENS ARE CHARGED.** A stream carries no `usage` block and the actor used the streaming
+  endpoint, so an unpriced call costs `JHW_UNKNOWN_CALL_USD` against the caps and the row is marked
+  `estimated`. A gate that only counts what it can price is one the attacker walks through.
+- **A GATED FUNCTION THAT DOES NOT RECORD IS AN OPEN WALLET.** `llm.chat` — the transport for the
+  whole consensus tailor — gated and never recorded for half a day, so the cap read a total that
+  excluded the biggest spender, and a suite check asserted that hole was correct
+  (`n_meter == 0` for resume_consensus). Both fixed; the suite now asserts per FUNCTION: if it
+  gates, it records. And the meter write lives in its OWN `try`, never behind the ledger's.
+- **The identity carrier needs a caller.** `llm_meter.set_current_user()` is called by
+  `auth.require_user`; without it both per-account rules (`if user and ...`) are silently skipped
+  on every path except `/api/chat`.
+- **WATCH TWO SOURCES.** `spend_watch.py`: our ledger says *who*, DigitalOcean's month-to-date says
+  *whether*. Median baseline with today excluded from it, a ratio AND a floor, and any model called
+  today that was never called before is itself the finding. Needs `DO_API_TOKEN`.
+- **EVERY HOSTNAME WE OWN IS REDIRECTED BY THE APP, NOT BY CADDY** (`backend/app/hosts.py`). A
+  `redir` upstream is one line and means the request never reaches the only process that writes an
+  event, so "show me everyone trying to enter jobhw.org" had no answer. The destination is a
+  constant in that file (no open redirect), an unknown Host is served rather than bounced, and
+  `/.well-known/` is never redirected — a bounced ACME challenge is a certificate outage.
+- **THE ROUTE-TABLE GATE WAS SEEING 10 ROUTES OF 31.** FastAPI 0.139 stopped flattening
+  `include_router()` into `app.routes`, so every auth, electronic, tracker and `/v1` route was
+  skipped and the gate reported clean. `authz_audit.iter_api_routes()` is the one walker, both
+  callers assert a floor on the count, and `python authz_audit.py` is a GATE inside `ship.py`.
+- **ONE `evt=http` WRITER, NOMINATED IN CODE** (main.py), not by an env var in one compose file —
+  and only if the nominated writer imports. The line now carries `host`.
+- **THE CONSOLE NEVER RENDERS "I COULD NOT LOOK" AS ZERO.** `/api/security/overview` +
+  `frontend/src/pages/Security.jsx`, admin-only server-side (`auth.require_admin`, fails closed).
+  Unreadable source → `None` and a caveat; sidecar → active/stale/not installed/unverifiable;
+  enforcement → unknown/none/armed/empty/active. Offenders are ranked by DISTINCT paths, not volume.
+- **A SYNTHETIC AUDIT MUST NOT PAGE THE OPERATOR.** Probing every route anonymously trips
+  `authz_probe` by construction; the audit and the wallet suite set `ALERTS_ENABLED=0` — detection
+  runs, delivery does not, and the suppression is said out loud.
+- **The WebRTC half of the browser probe is OPT-IN and OFF** at both ends (`JHW_PROBE_WEBRTC=1` and
+  `VITE_JHW_PROBE_WEBRTC=1`). It cannot see a scripted client, it accuses corporate networks, and it
+  unmasks an address the user chose to hide.
+- **The deploy's `deploy_probe` is a GATE now**: it printed `EVENTS_LOG_UNWRITABLE` and exited 0, so
+  a deploy with a dead event pipeline still said DONE.
+
 ## USAGE FEED AND BOT COUNTING (2026-09-21)
 - **A feed is not an alert.** Sign-ins and new job descriptions go to Telegram through
   `alerts.usage()`, which has its OWN hourly cap and NO per-subject cooldown: `fire()` dedupes on

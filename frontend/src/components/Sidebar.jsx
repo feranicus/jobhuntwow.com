@@ -7,12 +7,15 @@ const items = [
   ["/tailor", "📄 Tailor"],
   ["/connections", "🔌 Connections"],
 ];
-export default function Sidebar() {
+// Shown only to an administrator - and that is PRESENTATION. The control is auth.require_admin on
+// the route itself, which runs on the server on every request; anyone can type the URL.
+const adminItems = [["/security", "🛡 Security"]];
+export default function Sidebar({ admin = false }) {
   return (
     <aside className="side">
       <div className="brand"><span className="dot"></span>JobHunt<b>WOW</b></div>
       <nav className="nav">
-        {items.map(([to, label, end]) => (
+        {items.concat(admin ? adminItems : []).map(([to, label, end]) => (
           <NavLink key={to} to={to} end={!!end}>{label}</NavLink>
         ))}
       </nav>

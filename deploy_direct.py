@@ -166,7 +166,10 @@ def remote_script(with_caddy: bool) -> str:
              # tails. Any container on the volume could already write it, so a+w widens nothing.
              "echo '== events.log: writable by the jhw user, PROVEN by writing one line =='",
              "docker exec -u root jhw-web sh -c 'touch /var/log/colt/events.log && chmod a+w /var/log/colt/events.log'",
-             "docker exec jhw-web sh -c 'echo \"{\\\"evt\\\": \\\"deploy_probe\\\", \\\"service\\\": \\\"jhw-web\\\"}\" >> /var/log/colt/events.log' && echo 'events.log: jhw can write' || echo 'EVENTS_LOG_UNWRITABLE: jhw still cannot append to /var/log/colt/events.log'",
+             # AND IT IS A GATE, NOT A NOTE. This printed a scary marker and exited 0, so a deploy
+             # whose event pipeline was dead still said DONE -- and a log pipeline that has never
+             # been observed working is off. `exit 1` here fails the ssh payload and the ship.
+             "docker exec jhw-web sh -c 'echo \"{\\\"evt\\\": \\\"deploy_probe\\\", \\\"service\\\": \\\"jhw-web\\\"}\" >> /var/log/colt/events.log' && echo 'events.log: jhw can write' || { echo 'EVENTS_LOG_UNWRITABLE: jhw still cannot append to /var/log/colt/events.log'; exit 1; }",
              ]
     if with_caddy:
         lines += [

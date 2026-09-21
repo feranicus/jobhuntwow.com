@@ -4,6 +4,10 @@ returned DO's whole catalogue, deepseek-v4-pro-0813 and glm-5.3-flash included. 
 the 2026-09-01/03 spend walked through. These tests keep it shut."""
 import asyncio, json, os, sys, tempfile
 
+# A SUITE MUST NOT PAGE THE OPERATOR. Probing every route anonymously trips the authz_probe rule
+# by construction; an alert on every test run is the benign-every-time noise that teaches people to
+# ignore the one that matters. Detection still runs here -- only DELIVERY is off.
+os.environ["ALERTS_ENABLED"] = "0"
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 os.environ.setdefault("SESSION_SECRET", "test-secret-not-used-in-prod")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend"))
@@ -108,10 +112,23 @@ PUBLIC_OK = {("GET", "/api/health"), ("POST", "/api/auth/signup"), ("POST", "/ap
 
 
 def test_every_api_route_is_locked_except_the_named_public_ones():
-    from fastapi.routing import APIRoute
+    # WALK THE WHOLE TABLE, INCLUDING INCLUDED ROUTERS. Until 2026-09-21 this loop read
+    # `app.routes` and filtered for APIRoute, which in FastAPI 0.139 sees only the routes declared
+    # directly on the app: 10 of 31. Every auth, electronic, tracker and /v1 route -- including the
+    # whole `/api/electronic/*` tree that served another user's CV during the incident -- was
+    # skipped, and the gate reported a clean run. A regression gate that silently stops seeing
+    # two thirds of its subject is worse than none, because it is trusted. `authz_audit` owns the
+    # walk; importing it here keeps ONE home for "what are all the routes".
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    from authz_audit import iter_api_routes, MIN_ROUTES
+    routes = iter_api_routes(app)
+    assert len(routes) >= MIN_ROUTES, ("the route walk found only %d routes (floor %d) - it has "
+                                       "gone blind again" % (len(routes), MIN_ROUTES))
     leaks = []
-    for r in app.routes:
-        if not isinstance(r, APIRoute) or not r.path.startswith(("/api/", "/v1/")):
+    for r in routes:
+        if not r.path.startswith(("/api/", "/v1/")):
             continue
         for m in r.methods:
             if (m, r.path) in PUBLIC_OK or m in ("HEAD", "OPTIONS"):

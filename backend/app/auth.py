@@ -334,11 +334,53 @@ def current_user(request: Request):
     return email
 
 
+# WHO MAY LOOK AT THE SECURITY CONSOLE. Committed beside the code, not hidden in an env file: an
+# address is not a secret, and a list nobody can read in review is a list nobody audits. The sibling
+# project keeps ADMIN_EMAILS next to its partner list for exactly this reason. EXTRA_ADMIN_EMAILS
+# can only ever ADD, and the gate FAILS CLOSED: an unreadable list is not an open door.
+ADMIN_EMAILS = {"feranicus@s4biz.io"}
+
+
+def admins() -> set:
+    extra = {e.strip().lower() for e in os.environ.get("EXTRA_ADMIN_EMAILS", "").split(",")
+             if e.strip()}
+    return {e.lower() for e in ADMIN_EMAILS} | extra
+
+
+def is_admin(email: str) -> bool:
+    try:
+        return bool(email) and str(email).strip().lower() in admins()
+    except Exception:
+        return False                       # fails CLOSED
+
+
+def require_admin(request: Request) -> str:
+    """FastAPI dependency for the operator-only surfaces. 401 if anonymous, 403 if not an admin.
+
+    SERVER-SIDE, on every request. Hiding a nav item is presentation: anyone can issue the request
+    the menu would have issued, and the security console reads addresses, user agents and spend.
+    """
+    email = require_user(request)
+    if not is_admin(email):
+        log(evt="admin_denied", email=email, path=str(request.url.path)[:120])
+        raise HTTPException(status_code=403, detail="administrator access required")
+    return email
+
+
 def require_user(request: Request) -> str:
     """FastAPI dependency: the email, or 401. Use this to scope EVERY tenant-owned route."""
     email = current_user(request)
     if not email:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    # ONE PLACE ESTABLISHES IDENTITY, so every model call downstream is attributable without
+    # threading a `user=` parameter through twenty functions. Both per-account rules in
+    # llm_meter.allow() are written `if user and ...`, so without this line they were SKIPPED on
+    # every path except /api/chat. Best-effort: a meter fault must never cost a request.
+    try:
+        from . import llm_meter as _meter
+        _meter.set_current_user(email)
+    except Exception:
+        pass
     return email
 
 
@@ -505,4 +547,4 @@ def api_me(request: Request):
     email = current_user(request)
     if not email:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return {"email": email, "user": users.public_user(email)}
+    return {"email": email, "user": users.public_user(email), "admin": is_admin(email)}

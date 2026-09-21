@@ -2,18 +2,21 @@
 # Edit THIS file and redeploy. NEVER hand-edit the droplet's Caddyfile: the deploy strips
 # everything between the markers and re-appends this block, so a manual edit is lost.
 
-# ONE canonical URL: https://jobhuntwow.com  — everything else redirects to it, in ONE hop.
-www.jobhuntwow.com {
-	redir https://jobhuntwow.com{uri} permanent
-}
-
-# jobhw.org — the short domain (registered at Squarespace, DNS must point HERE: two A records,
-# @ and www, to this droplet). It redirects to the canonical host and carries the path and query
-# with it, so https://jobhw.org/pipeline lands on https://jobhuntwow.com/pipeline.
-# ONE HOP, deliberately: pointing it at www.jobhuntwow.com would bounce again off the block above.
-# Caddy gets its certificate automatically on the first request AFTER the DNS points here.
-jobhw.org, www.jobhw.org {
-	redir https://jobhuntwow.com{uri} permanent
+# ONE canonical URL: https://jobhuntwow.com — and every other name we own is PROXIED HERE so the
+# application can answer the redirect itself. A `redir` in this file is one line and works, and it
+# also means the request never reaches the only process that writes an event: nobody who types the
+# short domain would appear anywhere in our record, and "show me everyone trying to enter
+# jobhw.org" could not be answered at all. backend/app/hosts.py issues the 301, in one hop, after
+# the request has been observed with host=<what they typed>. The ACME challenge is never
+# redirected (a bounced challenge is a certificate outage), which that module asserts.
+www.jobhuntwow.com, jobhw.org, www.jobhw.org {
+	log {
+		output stdout
+		format json
+	}
+	reverse_proxy jhw-web:8000 {
+		header_up X-Client-Proto {http.request.proto}
+	}
 }
 
 jobhuntwow.com {

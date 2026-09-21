@@ -188,11 +188,30 @@ async def chat(payload: dict, *, timeout: float = 120.0) -> dict:
     """
     if not DO_KEY:
         raise RuntimeError("DO_INFERENCE_KEY is not set on the server")
+    # THE BUDGET GATE, BEFORE THE REQUEST. Counting afterwards buys nothing: the money is spent
+    # by the time the response arrives. llm_meter fails OPEN on a storage fault and CLOSED on the
+    # budget, and it raises its own type so a model-failover chain cannot walk the ladder and
+    # spend four times over on a refusal that no model can fix.
+    from . import llm_meter as _meter
+    _meter.gate(caller="llm.chat", model=payload.get("model"))
+    _t0 = time.time()
     async with httpx.AsyncClient(timeout=timeout) as c:
         r = await c.post(f"{DO_BASE_URL}/chat/completions", headers=_headers(), json=payload)
     if r.status_code >= 400:
+        # A FAILED CALL STILL COSTS A SLOT, NEVER A DOLLAR. The rate limits must see it -- a loop
+        # of 400s is exactly what an abusive client produces -- while the USD column stays honest.
+        _meter.record("llm.chat", payload.get("model"), {}, ms=int((time.time() - _t0) * 1000),
+                      status=str(r.status_code))
         raise LLMHTTPError(r.status_code, (r.text or "")[:800])
-    return r.json()
+    data = r.json()
+    # METER IT. This function is the transport for the WHOLE consensus tailor
+    # (resume_consensus._default_poster is its only caller), so without this line the biggest
+    # spender in the service contributed NOTHING to the total its own gate reads: a cap computed
+    # from a number that excludes the path it guards. Found by an independent review, not by the
+    # suite -- and the suite had a check that asserted the hole was correct. Both are fixed.
+    _meter.record("llm.chat", payload.get("model"), (data or {}).get("usage"),
+                  ms=int((time.time() - _t0) * 1000))
+    return data
 
 
 async def complete(role: str, messages: list[dict], *, temperature: float = 0.3,
@@ -209,6 +228,12 @@ async def complete(role: str, messages: list[dict], *, temperature: float = 0.3,
         payload["max_tokens"] = max_tokens
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    # THE BUDGET GATE, BEFORE THE REQUEST. Counting afterwards buys nothing: the money is spent
+    # by the time the response arrives. llm_meter fails OPEN on a storage fault and CLOSED on the
+    # budget, and it raises its own type so a model-failover chain cannot walk the ladder and
+    # spend four times over on a refusal that no model can fix.
+    from . import llm_meter as _meter
+    _meter.gate(caller="llm.complete", model=payload.get("model"))
     _t0 = time.time()
     async with httpx.AsyncClient(timeout=120) as c:
         r = await c.post(f"{DO_BASE_URL}/chat/completions", headers=_headers(), json=payload)
@@ -225,4 +250,9 @@ async def complete(role: str, messages: list[dict], *, temperature: float = 0.3,
                           ms=int((time.time() - _t0) * 1000))
     except Exception:
         pass
+    # ITS OWN try. The ledger and the budget were in ONE block, so a raise inside llm_events.record
+    # skipped the meter write and that call became free against all four caps, silently. The
+    # recorder must never be able to disarm the gate.
+    _meter.record("llm.complete", payload.get("model"), (data or {}).get("usage"),
+                  ms=int((time.time() - _t0) * 1000))
     return data["choices"][0]["message"]["content"]

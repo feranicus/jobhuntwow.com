@@ -525,12 +525,41 @@ check(_served <= set(_fc.OURS),
       "every hostname we serve is one the deploy also claims (fix_caddy.OURS)")
 check(_dom.CANON in _served, "the canonical host is one of them")
 
-# A redirect must land on the canonical host in ONE hop — pointing a new domain at
-# www.jobhuntwow.com would bounce again off the www block and cost every visitor a second trip.
+# THE DOCTRINE CHANGED ON 2026-09-21, AND THIS CHECK CHANGED WITH IT.
+# It used to read: "every `redir` in the Caddy block points at the canonical host, one hop", because
+# www.jobhuntwow.com and jobhw.org were redirected BY CADDY. That was correct about hops and wrong
+# about visibility: a request answered by the proxy never reaches the only process that writes an
+# event, so nobody who typed the short domain appeared anywhere in our record and the operator's
+# question -- "show me everyone trying to enter jobhw.org" -- had no answer at all. The redirect now
+# happens in the APPLICATION (backend/app/hosts.py), after the request has been observed.
+# The property is unchanged and is now checked where it actually lives: every hostname we serve is
+# either the canonical host or one the app redirects, in ONE hop, to the canonical host.
 _blk = open(os.path.join(ROOT, "deploy", "caddy", "jobhuntwow.caddy"), encoding="utf-8").read()
 _targets = re.findall(r"redir\s+(https://[^\s{]+)", _blk)
-check(bool(_targets) and all(t == "https://" + _dom.CANON for t in _targets),
-      "every redirect points at the canonical host, one hop (%s)" % ", ".join(sorted(set(_targets))))
+# `all([])` is True, so this line alone could no longer fail once the redirects left the proxy.
+# It is kept only as the belt for a redirect somebody re-adds, and the braces are the two checks
+# below it, which are falsifiable (proven by removing a hostname from _hosts.REDIRECT_HOSTS).
+check(all(t == "https://" + _dom.CANON for t in _targets),
+      "any redirect left in the proxy still points at the canonical host, one hop (%s)"
+      % (", ".join(sorted(set(_targets))) or "none - the app owns the redirect now"))
+check(bool(_targets) or "reverse_proxy" in _blk,
+      "the block either redirects or proxies - an empty block would pass every check above it")
+
+sys.path.insert(0, os.path.join(ROOT, "backend"))
+from app import hosts as _hosts                                          # noqa: E402
+check(_hosts.CANONICAL == _dom.CANON,
+      "the app and the deploy agree on which host is canonical (%s)" % _hosts.CANONICAL)
+_unclaimed = sorted(h for h in _served if h != _dom.CANON and h not in _hosts.REDIRECT_HOSTS)
+check(not _unclaimed,
+      "every hostname Caddy serves is either canonical or redirected by the app (%s)"
+      % (", ".join(_unclaimed) or "none unclaimed"))
+_hops = {h: _hosts.target(h, "/pipeline", "a=1") for h in _hosts.REDIRECT_HOSTS}
+check(all(v == "https://" + _dom.CANON + "/pipeline?a=1" for v in _hops.values()),
+      "and each of them lands on the canonical host in ONE hop, path and query intact")
+check(_hosts.target(_dom.CANON, "/") is None,
+      "the canonical host is never itself redirected (that is an infinite loop)")
+check(_hosts.target("evil.example", "/") is None,
+      "a hostname we do not own is served, never bounced on its own say-so (no open redirect)")
 
 # ============================================================== THE GATE (LAST STATEMENT)
 print("\n%s\n%d checks run, %d failed" % ("=" * 74, RUN[0], len(FAILS)))

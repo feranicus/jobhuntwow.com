@@ -78,6 +78,9 @@ def configure(**kw):
 # =================================================================================================
 # 1. STRUCTURED EVENTS  — the heart of the stack. Write to stdout AND events.log.
 # =================================================================================================
+_EVENTS_LOG_FAILED = []          # the first failed append prints once; never raises
+
+
 def emit(**fields):
     """Emit ONE structured JSON event. Never raises. Adds ts/service if absent.
 
@@ -95,8 +98,20 @@ def emit(**fields):
         try:
             with open(CFG.events_log, "a") as fh:
                 fh.write(line + "\n")
-        except Exception:
-            pass
+        except Exception as e:
+            # LOUD ONCE, NEVER SILENT. This is the LIVE writer for this service, and it was the
+            # only one of the four in the estate that swallowed the failure. jobhuntwow's writes to
+            # the shared log failed for days on a file-ownership bug; every Loki query then came
+            # back honestly empty and the emptiness was read as innocence for three runs. A write
+            # that cannot land must say so, exactly once, or absence of evidence becomes a finding.
+            if not _EVENTS_LOG_FAILED:
+                _EVENTS_LOG_FAILED.append(1)
+                try:
+                    print(json.dumps({"evt": "events_log_unwritable", "caller": "observability",
+                                      "service": CFG.service, "path": CFG.events_log,
+                                      "err": repr(e)[:160]}), flush=True)
+                except Exception:
+                    pass
 
 
 log = emit   # alias — some call sites read better as log(evt=...)
@@ -275,7 +290,9 @@ def install_middleware(app, session_user_fn=None):
                     user = session_user_fn(request) or ""
             except Exception:
                 user = ""
-            ev = dict(evt="http", ip=_maybe_hash_ip(ip), method=request.method, path=path[:200],
+            host = (request.headers.get("host") or "").split(":")[0].lower()[:80]
+            ev = dict(evt="http", host=host, ip=_maybe_hash_ip(ip), method=request.method,
+                      path=path[:200],
                       status=status, ms=int((time.time() - t0) * 1000), ua=ua[:220],
                       browser=c["browser"], os=c["os"], device=c["device"],
                       bot=c["bot"], bot_name=c["bot_name"],
@@ -314,10 +331,22 @@ def install_middleware(app, session_user_fn=None):
             except Exception:
                 pass                      # the line still goes out, a few fields poorer
             emit(**ev)
+            # ONE HOME FOR THE RULES. This file carries an Alerts class of its own and
+            # backend/app/alerts.py carries a near-identical one; both were loaded, only this one
+            # had a caller, and the other's seven rules were unreachable while its constants were
+            # asserted equal by a test -- "two homes, the stale one wins", the defect class this
+            # estate has paid for four times. alerts.py is the home: it is the file the rest of the
+            # app already calls for logins, OTPs and the usage feed. This one stays only as the
+            # fallback for the case where that import fails, so a broken import cannot leave the
+            # HTTP rules with no caller at all.
             try:
-                alerts.observe_http(ev)
+                from . import alerts as _alerts_home
+                _alerts_home.observe_http(ev)
             except Exception:
-                pass
+                try:
+                    alerts.observe_http(ev)
+                except Exception:
+                    pass
         except Exception:
             pass
 

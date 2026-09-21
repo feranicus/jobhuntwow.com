@@ -1,14 +1,15 @@
 import os
+import os as _os
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
 
 from . import qwen, store, scout, llm
 from .proxy import router as proxy_router
-from .auth import router as auth_router, require_user
+from .auth import router as auth_router, require_user, require_admin
 from .electronic import router as electronic_router
 from .settings import CORS_ORIGINS
 
@@ -32,6 +33,27 @@ app = FastAPI(title="JobHuntWOW API", version="0.1.0",
 # It holds no credentials and sends nothing itself. Wrapped because a defence that
 # stops the site it protects is worse than no defence -- but the failure is PRINTED,
 # because a swallowed import is how this ran unguarded while reporting success.
+# ONE WRITER PER REQUEST, DECIDED IN CODE AND NOT IN A COMPOSE FILE. Both this sidecar and
+# observability's middleware append evt=http to the same shared log; for weeks every count derived
+# from it was doubled for this project, and the only thing stopping it was PERSEUS_OBSERVE_HTTP=0
+# in docker-compose.web.yml -- so running the image any other way (local, a different compose, a
+# bare uvicorn) silently double-counted again. The nomination is made HERE, and only if
+# observability is actually importable: if it is not, the sidecar keeps writing, because one writer
+# is better than none and a silent log is the failure this whole stack exists to prevent.
+# IMPORTABLE IS NOT INSTALLED. The nomination is made here because perseus_client reads the env
+# var at import time, but it is CONDITIONAL: main.py silences the sidecar's access line only if the
+# observability middleware actually goes in (see the `_event_writer_installed` assertion further
+# down). If that install fails, the nomination is UNDONE and the sidecar writes again, because one
+# writer is better than none and a silent event log is the failure this whole stack exists to stop.
+_event_writer = {"nominated": False, "installed": False}
+try:
+    from . import observability as _obs_probe       # noqa: F401  (probe: is the writer available?)
+    __import__("os").environ["PERSEUS_OBSERVE_HTTP"] = "0"
+    _event_writer["nominated"] = True
+except Exception as _obs_missing:
+    print('{"evt":"event_writer","writer":"perseus_client","why":"observability not importable: %s"}'
+          % repr(_obs_missing)[:120], flush=True)
+
 try:
     from . import perseus_client
     app.add_middleware(perseus_client.Middleware)
@@ -91,6 +113,14 @@ async def api_probe(request: Request):
         ip = _obs.client_ip(request)
     except Exception:
         ip = ""
+    # THE WEBRTC HALF IS OFF BY DEFAULT, DELIBERATELY. It unmasks an address the user chose to
+    # hide, it cannot see a scripted client at all (no JavaScript runs in one), and it accuses
+    # corporate networks that block UDP. The sibling estate evaluated the same technique and
+    # declined it for those reasons. The HTTP/3, webdriver and headless signals cost nobody
+    # anything and stay. JHW_PROBE_WEBRTC=1 turns the rest back on, as a deliberate act.
+    if _os.environ.get("JHW_PROBE_WEBRTC", "") not in ("1", "true", "yes", "on"):
+        for _k in ("ice", "srflx", "publicIp"):
+            body.pop(_k, None)
     out = _visitors.judge_probe(body, ip)
     _visitors.remember_probe(ip, out["verdict"])
     try:
@@ -132,7 +162,6 @@ except Exception as _e:      # a bookkeeping module must never stop the portal f
 # Loki -> Grafana, and the SAME event feeds the alert rules (DDoS, scanners, IDOR, exfil, spray,
 # OTP brute force). Detection only: never blocks a request, never touches the firewall.
 # SERVICE + EVENTS_LOG come from the environment (docker-compose sets them for prod).
-import os as _os
 try:
     from . import observability as obs
 
@@ -151,11 +180,37 @@ try:
         grafana_hint=_os.environ.get("OBS_GRAFANA_HINT",
                                      "https://godeyes.ai/observe/d/jobhuntwow"),
     )
+    # ADDED BEFORE observability's middleware ON PURPOSE. Starlette runs the last-added
+    # middleware outermost, so adding the redirect here puts it INSIDE the observer: a visitor who
+    # typed jobhw.org produces a real evt=http line carrying host=jobhw.org and status=301, and
+    # then gets bounced. Added after, the redirect would answer above the only writer and the short
+    # domain would be invisible again.
+    try:
+        from . import hosts as _hosts
+        _hosts.install(app)
+        print('{"evt":"canonical_host","canonical":"%s","redirected":%d}'
+              % (_hosts.CANONICAL, len(_hosts.REDIRECT_HOSTS)), flush=True)
+    except Exception as _he:
+        print('{"evt":"canonical_host","result":"not_wired","err":"%s"}' % repr(_he)[:120],
+              flush=True)
+
     obs.install_middleware(app, session_user_fn=_session_user)
+    _event_writer["installed"] = True
+    print('{"evt":"event_writer","writer":"observability","sidecar_http_write":"off"}', flush=True)
 
     # Daily "who used the platform and what did they run" report -> ALERT_EMAIL.
     # In-app asyncio task on purpose: no cron in the container, no systemd unit on the droplet
     # that would drift out of this repo.
+    # WATCH TWO SOURCES, HOURLY. Our meter says who; the vendor's balance says whether. A
+    # meter-only watcher reports a normal fortnight while the invoice triples - which is what
+    # happened, and the bank statement found it six days late.
+    from . import spend_watch as _spend
+
+    @app.on_event("startup")
+    async def _start_spend_watch():
+        import asyncio as _aio
+        _aio.create_task(_spend.scheduler())
+
     from . import daily_report as _daily
 
     @app.on_event("startup")
@@ -232,6 +287,53 @@ class ScoutReq(BaseModel):
 class ApplyReq(BaseModel):
     job_id: str
     confirm: bool = False
+
+# A REFUSED BUDGET IS A 429, NEVER A 500. resume_consensus and llm.complete raise
+# llm_meter.BudgetExceeded from deep inside the tailor chain; without this handler the user would
+# read "internal server error" for a deliberate, correct refusal, and the operator would go looking
+# for a crash that never happened. Retry-After names when it is worth trying again.
+try:
+    from . import llm_meter as _llm_meter
+
+    @app.exception_handler(_llm_meter.BudgetExceeded)
+    async def _budget_exceeded(request: Request, exc):
+        return JSONResponse({"error": "ai_budget", "detail": str(exc)},
+                            status_code=429, headers={"Retry-After": "3600"})
+except Exception as _e:                                   # a handler is not worth an outage
+    print('{"evt":"budget_handler","result":"not_wired","err":"%s"}' % repr(_e)[:120], flush=True)
+
+
+# THE UNDO. If the nominated writer was silenced but never installed, nobody writes the access
+# line at all -- the worst of the three possible states, and invisible. The sidecar is already
+# imported by now, so re-enabling means putting its flag back AND telling the module, since it read
+# the env var once at import.
+if _event_writer["nominated"] and not _event_writer["installed"]:
+    try:
+        __import__("os").environ["PERSEUS_OBSERVE_HTTP"] = "1"
+        perseus_client.OBSERVE_HTTP = True
+        print('{"evt":"event_writer","writer":"perseus_client","why":"observability imported but '
+              'its middleware did not install - the sidecar keeps writing"}', flush=True)
+    except Exception:
+        print('{"evt":"event_writer","writer":"NONE","level":"error","why":"observability did not '
+              'install and the sidecar could not be re-enabled - no request is being recorded"}',
+              flush=True)
+
+
+# ---------- the operator's security console ----------
+# READ-ONLY, ADMIN-ONLY, and it reads the same event record everything else in the stack consumes.
+# "I want to see every user trying to enter jobhw.org or jobhuntwow.com, and all the defences"
+# is answered here: per-host traffic, three-bucket classification, attack classes by shape, what
+# the shield did, whether anybody was actually told, and what the models cost.
+@app.get("/api/security/overview")
+def security_overview(request: Request, hours: float = 24.0,
+                      admin: str = Depends(require_admin)):
+    from . import security as _sec
+    try:
+        h = max(0.25, min(168.0, float(hours or 24.0)))
+    except Exception:
+        h = 24.0
+    return _sec.overview(window_h=h)
+
 
 # ---------- health / config ----------
 @app.get("/api/health")

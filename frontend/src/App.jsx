@@ -8,6 +8,7 @@ import Pipeline from "./pages/Pipeline.jsx";
 import { reportProbe } from "./probe.js";
 import Electronic from "./pages/Electronic.jsx";
 import Tailor from "./pages/Tailor.jsx";
+import Security from "./pages/Security.jsx";
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
 import { me as fetchMe, logout as apiLogout } from "./api.js";
@@ -63,7 +64,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <Sidebar />
+      <Sidebar admin={!!user.admin} />
       <main className="main">
         <div style={topbar}>
           <span>{user.email}</span>
@@ -78,6 +79,9 @@ export default function App() {
           {/* the agent was renamed Hermes -> Electronic; keep old links working */}
           <Route path="/hermes" element={<Navigate to="/electronic" replace />} />
           <Route path="/connections" element={<Connections />} />
+          {/* Administrator-only. The route is always mounted and the SERVER decides: hiding it
+              from the menu is presentation, and anyone can type the URL. */}
+          <Route path="/security" element={<Security />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

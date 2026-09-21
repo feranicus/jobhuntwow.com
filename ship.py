@@ -308,7 +308,14 @@ def do_tests() -> bool:
                 "backend/tests/test_resume_consensus.py",
                 # The Tailor correlation and the digest that reports it. Standalone, stdlib only,
                 # and they write to a temp database -- never to his real pipeline.
-                "backend/app/tracker.py", "backend/app/digest.py", "backend/app/docnames.py"):
+                "backend/app/tracker.py", "backend/app/digest.py", "backend/app/docnames.py",
+                # THE WALLET, after the 2026-09 LLM-jacking. The budget gate and its four rules,
+                # the canonical-host redirect the APPLICATION now owns (so the short domain's
+                # visitors are observed rather than answered upstream), the operator's console and
+                # its refusal to render "I could not look" as a zero, and the wiring check that
+                # proves the gate runs BEFORE the spend at every chokepoint.
+                "backend/app/llm_meter.py", "backend/app/hosts.py", "backend/app/security.py",
+                "backend/app/spend_watch.py", "tests/test_security_console.py"):
         p = os.path.join(HERE, rel)
         if not os.path.exists(p):
             say("  [X] MISSING test file %s - a suite that is absent cannot pass" % rel)
@@ -319,6 +326,34 @@ def do_tests() -> bool:
             ok = False
         else:
             say("  %s  OK" % rel)
+    # (e) AUTHORISATION, MEASURED ON THE RESPONSE. Every route of this app, every method, driven
+    #     in-process and asked anonymously. Incident finding #11 was "no authorisation audit
+    #     existed"; this is it, and it is a GATE rather than a report, because opt-in
+    #     authorisation eventually ships a route whose author forgot. rc=1 stops the ship. rc=2
+    #     means the audit could not reach its subject, which is BLIND, NOT CLEAN -- said out loud
+    #     and never counted as a pass.
+    #     CISA/NSA Secure-by-Design · NIST SP 800-53 AC-3 · OWASP API Top 10 API1/API5 · BSI
+    #     IT-Grundschutz APP.3.1 (deny by default, verified).
+    try:
+        az = subprocess.run([sys.executable, os.path.join(HERE, "authz_audit.py")],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=300)
+    except subprocess.TimeoutExpired:
+        say("  [X] the authorisation audit HUNG (300s) - that is a failure, not a pass")
+        return False
+    if az.returncode == 1:
+        say((az.stdout or "") + (az.stderr or ""))
+        say("  [X] A ROUTE SERVED CONTENT TO AN ANONYMOUS CALLER - do not ship")
+        ok = False
+    elif az.returncode != 0:
+        # BLIND IS NOT CLEAN, AND IT IS NOT A SHIP EITHER. The sibling project printed a warning
+        # here and let the deploy proceed; after an incident whose root cause was six days of
+        # believing a blind tool, "we could not check" stops this one. Re-run it, or fix it.
+        say("  [X] the authorisation audit could not run (rc=%s) - BLIND, NOT CLEAN" % az.returncode)
+        say((az.stdout or "")[-600:])
+        ok = False
+    else:
+        say("  authz: every non-public route refuses an anonymous caller")
     return ok
 
 

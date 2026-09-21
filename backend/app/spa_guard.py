@@ -59,6 +59,7 @@ CLIENT_ROUTES = frozenset({
     "/tailor",
     "/hermes",       # <Navigate to="/electronic">, still a URL a bookmark can hold
     "/connections",
+    "/security",     # the operator's console: a normal SPA route here, admin-only at the API
 })
 
 # Files a web root serves by convention. Not routes; shapes. None of these is a page a person can
@@ -156,6 +157,7 @@ def should_404(path, exists_on_disk=False):
 REAL_PATHS = [
     "/", "/login", "/signup", "/scout", "/pipeline", "/electronic", "/tailor", "/hermes",
     "/connections",
+    "/security",
     "/login/", "/pipeline/", "/tailor/",                       # trailing slash
     "/?ref=linkedin", "/login?next=/pipeline",                 # ordinary query strings
     "/?XDEBUG_SESSION_START=phpstorm",                         # hostile QUERY on a real page
