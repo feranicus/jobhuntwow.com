@@ -42,7 +42,14 @@ PROBE_404_N       = _i("ALERT_PROBE_404_N", 12)     # scanner walking paths
 PROBE_404_WIN     = _i("ALERT_PROBE_404_WIN", 300)
 DENY_N            = _i("ALERT_DENY_N", 5)           # 401/403 storm = IDOR / token probing
 DENY_WIN          = _i("ALERT_DENY_WIN", 300)
-DL_N              = _i("ALERT_DOWNLOAD_N", 25)      # deck-download burst = exfil
+DL_N              = _i("ALERT_DOWNLOAD_N", 25)      # artifact-download burst = exfil
+# THE REAL ARTIFACT ROUTE, and now env-driven like every other threshold. "/deck/" was pasted in
+# from cybergod (an assessment deck) and is not a route this app has ever served, so rule 6 below
+# guarded nothing. jobhuntwow serves candidate documents from electronic.py's
+# `@router.get("/artifacts/{job_id}/{filename}")` under APIRouter(prefix="/api/electronic").
+# ONE HOME with observability.Alerts.DOWNLOAD_MARKER: same env var, same default, asserted equal
+# by tests/test_alert_chain.py - two copies of a rule is how the stale one wins.
+DOWNLOAD_MARKER   = os.environ.get("ALERT_DOWNLOAD_MARKER", "/api/electronic/artifacts/")
 DL_WIN            = _i("ALERT_DOWNLOAD_WIN", 600)
 SESSION_IP_N      = _i("ALERT_SESSION_IP_N", 3)     # one account, many IPs = stolen session
 SESSION_IP_WIN    = _i("ALERT_SESSION_IP_WIN", 1800)
@@ -162,8 +169,8 @@ def observe_http(ev):
                   "User (if any): %s" % (ev.get("user") or "-"),
                   "", "Job dirs are owner-scoped; a 403 means the gate held."])
 
-    # 6) deck-download burst = data exfiltration of customer-facing material
-    if "/deck/" in path and status == 200:
+    # 6) artifact-download burst = data exfiltration of candidate personal data
+    if DOWNLOAD_MARKER and DOWNLOAD_MARKER in path and status == 200:
         who = ev.get("user") or ip
         _push("dl:%s" % who, path, DL_WIN)
         if _count("dl:%s" % who, DL_WIN) >= DL_N:

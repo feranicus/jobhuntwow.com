@@ -52,10 +52,24 @@ catch-all, and Starlette matches routes in registration order, so the API always
 """
 import os
 
+from fastapi import Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.main import app  # noqa: F401  (the real backend, unmodified)
+
+# THE CATCH-ALL USED TO ANSWER 200 TO EVERYTHING, AND THAT WAS THE WHOLE OF THE ZERO.
+# Over 24h this app logged 4002 requests, 320 attack-shaped, and fired 0 alerts, because
+# observability.py's `path_probe` and `dir_bruteforce` rules are gated on status 404/403 and this
+# handler never produced one. Two more things were broken by the same line, and both are fixed by
+# the same change: perseus_client._learn_served() saw probe paths answered 2xx, concluded at the
+# third one that this app has a catch-all, and DISARMED the local shield permanently
+# ("this app has a catch-all - local enforcement is off here"); and a 200 on /wp-login.php told
+# every scanner on the internet that the path exists.
+# The judgement is NOT made here. app.spa_guard owns the route list (the one thing perseus cannot
+# know) and delegates the shape verdict to perseus_client.probe_shape(), the estate's one home for
+# it. Everything in that module fails toward serving the SPA; read its header for why.
+from app import spa_guard
 
 DIST = os.environ.get("FRONTEND_DIST", "/app/frontend_dist")
 INDEX = os.path.join(DIST, "index.html")
@@ -72,7 +86,7 @@ if os.path.isdir(os.path.join(DIST, "assets")):
 
 
 @app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
-async def spa(full_path: str):
+async def spa(full_path: str, request: Request):
     # Never let the SPA swallow an unknown API path -- that would turn a 404 into HTML.
     if full_path.startswith("api/"):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
@@ -82,6 +96,27 @@ async def spa(full_path: str):
     candidate = os.path.normpath(os.path.join(DIST, full_path))
     if full_path and candidate.startswith(DIST) and os.path.isfile(candidate):
         return FileResponse(candidate)
+    # LAST STOP BEFORE THE SPA SHELL, and deliberately AFTER the real-file check above: the only
+    # requests considered here are the ones that would otherwise have been handed index.html with
+    # a 200. A declared client-side route, a file on disk, an unimportable sidecar or any raised
+    # exception all resolve to serving the SPA - see app/spa_guard.py.
+    try:
+        refuse, why = spa_guard.decision("/" + full_path, exists_on_disk=False)
+    except Exception:
+        refuse, why = False, ""
+    if refuse:
+        # OBSERVABLE FROM THE FIRST MINUTE. A refusal nobody can see is indistinguishable from a
+        # bug, and this one is a judgement about a stranger's request, so it leaves a line naming
+        # the path and the reason. It rides the same writer as every other event (stdout + the
+        # shared events log), and it never raises: a log line is not worth a 500.
+        try:
+            from app import observability as _obs
+            _obs.emit(evt="spa_probe_404", path=("/" + full_path)[:200], why=why[:120],
+                      ip=_obs.client_ip(request),
+                      ua=(request.headers.get("user-agent") or "")[:180])
+        except Exception:
+            pass
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
     if os.path.isfile(INDEX):
         return FileResponse(INDEX, headers=NOCACHE)
     return JSONResponse({"detail": "frontend not built"}, status_code=404)

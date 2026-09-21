@@ -295,6 +295,15 @@ def do_tests() -> bool:
                 "tests/test_employer_ladder.py", "backend/app/jd_ingest.py",
                 # visitors against bots: three buckets, and what each signal may prove
                 "backend/app/visitors.py",
+                # WHY THE CATCH-ALL ANSWERED 200 TO EVERYTHING AND NOTHING EVER ALERTED.
+                # The probe-shaped 404 and its route mirror; the ten security headers and the CSP
+                # measured against what this site actually loads; the alert chain end to end
+                # (plain-text delivery, the real artifact route, observe_http's caller, one
+                # evt=http line per request, and the fleet page's count).
+                "backend/app/spa_guard.py",
+                "tests/test_spa_guard.py",
+                "tests/test_security_headers.py",
+                "tests/test_alert_chain.py",
                 "tests/test_chat_open_wallet.py", "tests/test_llm_events_write.py",
                 "backend/tests/test_resume_consensus.py",
                 # The Tailor correlation and the digest that reports it. Standalone, stdlib only,

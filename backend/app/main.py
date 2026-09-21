@@ -177,6 +177,24 @@ except Exception as _e:      # observability must NEVER stop the app from bootin
     print('{"evt":"telemetry_init","result":"error","err":"%s"}' % repr(_e)[:160], flush=True)
 
 
+# ---- security headers. LAST middleware added == OUTERMOST, and that ordering is the point: it has
+# to decorate the 404s the SPA probe guard returns as well as the pages the app serves, or every
+# refused-scanner response would go out bare. Ten headers, one of which (CSP) is written from the
+# origins this site demonstrably loads - read security_headers.py's header for what differs from
+# the sibling's policy and why. Measured before this: jobhuntwow sent NONE of them while serving
+# candidate CVs behind a login.
+try:
+    from . import security_headers as _sec
+    _sec.install(app)
+    # NAME THE FILE THE HASH CAME FROM. If the landing policy ever silently falls back to
+    # 'unsafe-inline' because /app/landing.html could not be read, this line is how anyone finds
+    # out - a feature nobody has seen working is off.
+    print('{"evt":"security_headers","result":"installed","landing_csp":"%s","landing_src":"%s"}'
+          % (_sec.LANDING_MODE, _sec.LANDING_SOURCE), flush=True)
+except Exception as _e:      # a header is never worth refusing to boot over
+    print('{"evt":"security_headers","result":"error","err":"%s"}' % repr(_e)[:160], flush=True)
+
+
 @app.on_event("startup")
 async def _startup_selfcheck():
     """Say out loud, at boot, whether OTP email can actually work.

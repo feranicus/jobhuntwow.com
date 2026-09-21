@@ -155,6 +155,64 @@ it can never see a scraper (no JavaScript runs), so it is evidence, never a gate
 WebRTC reveals is compared on the server and dropped; only the boolean is kept. `no UDP` is
 UNJUDGED, because that is what a corporate firewall looks like.
 
+## Why nothing ever alerted, and what now does
+
+Measured over 24 hours on 2026-09-21: **4002 requests, 320 attack-shaped, 0 alerts**, while the
+sibling site fired 25 on a quarter of the traffic. The rules were fine. The server was not.
+
+**The SPA catch-all answered HTTP 200 to every unknown path**, including `/.env`,
+`/wp-login.php` and `/phpmyadmin/`. The two rules that catch scanners (`path_probe`,
+`dir_bruteforce`) are gated on `status in (404, 403)`, so they were structurally unable to fire.
+The same behaviour also told `perseus_client` that this app has a catch-all, which permanently
+disarmed the local shield, and told every scanner that `/wp-login.php` exists.
+
+**`backend/app/spa_guard.py`** now answers **404** to a probe-shaped path that is not a route we
+serve. It is conservative by construction, because a wrong 404 here is a real person on a dead
+page:
+
+* the judgement is `perseus_client.probe_shape()`, the estate's one home for it, never a second
+  path table;
+* a declared client-side route is never refused, whatever its shape or its query string;
+* a file that exists on disk is never refused;
+* if `perseus_client` cannot be imported, or anything raises, the SPA is served;
+* `JHW_PROBE_404=0` turns it off with a container restart and no deploy;
+* every refusal emits `evt=spa_probe_404` with the path and the reason.
+
+`CLIENT_ROUTES` mirrors `frontend/src/App.jsx` because the image ships the built bundle and cannot
+read the router at runtime. `tests/test_spa_guard.py` parses App.jsx and fails if the two disagree,
+so add a route to the router and the suite tells you before your users do.
+
+**Security headers** (`backend/app/security_headers.py`) - the site had none while serving other
+people's CVs behind a login. Ten now, installed outermost so they also decorate the refusals. The
+CSP is written from what this site actually loads, not copied: the cabinet gets
+`script-src 'self'` (the built shell has zero inline script, so this is free), and the public
+landing one-pager, whose 162 KB of JavaScript is one inline block, is permitted by SHA-256 of that
+exact block instead. `tests/test_security_headers.py` recomputes the hash from the served file and
+reads both HTML shells and every `fetch()` in `frontend/src`, failing if the policy is missing an
+origin the site uses **or** carries one it does not.
+
+**Delivery is plain text.** Alert bodies carry attacker-controlled strings - the probed path, the
+User-Agent - and one stray `_` or `*` under `parse_mode=Markdown` makes Telegram reject the whole
+message with a 400. `notify.py` learned that in 2026-09; `observability.py`, the path actually
+wired to the HTTP rules, had not.
+
+**One line per request.** `perseus_client` and `observability` were both writing `evt=http` into
+the same events log, doubling every count. `PERSEUS_OBSERVE_HTTP=0` silences the sidecar's write
+only, and its evidence (`bot`, `sf`, `hv`, `hvs`, `av`) is merged into the surviving line rather
+than dropped.
+
+**The exfiltration rule points at the real payload.** `ALERT_DOWNLOAD_MARKER` defaulted to
+`/deck/`, a route this site has never served. It is now `/api/electronic/artifacts/`, where the
+candidate resumes, cover letters and photographs are.
+
+**Proven, not assumed.** `tests/test_alert_chain.py` runs the rules in process - three probe-shaped
+404s from one address must produce a `security_alert` tagged `jhw-web`, and the same three as 200s
+must produce nothing. The staging gate then fires the real thing at the real container and asserts
+the event appears there too (`probe_paths_are_refused`, `security_alert_fires`). The twin never
+pages: the gate ships `ALERT_DELIVERY=0`, which suppresses the send and leaves a line saying so.
+
+All of it runs inside `python ship.py`. There is no second command.
+
 ## Extra domains (jobhw.org)
 
 `python domains.py` — read-only. It reads the hostnames out of the Caddy block we ship, prints the

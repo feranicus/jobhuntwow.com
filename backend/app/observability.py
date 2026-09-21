@@ -284,6 +284,35 @@ def install_middleware(app, session_user_fn=None):
                       country=(request.headers.get("cf-ipcountry")
                                or request.headers.get("x-country") or country(ip)),
                       user=user)
+            # ---- ONE LINE PER REQUEST, CARRYING BOTH SETS OF EVIDENCE ------------------------
+            # TWO middlewares were each writing evt=http for every request into the SAME events
+            # log - perseus_client.Middleware (via its observe()) and this one - so every count
+            # derived from those lines, including the fleet page's per-project traffic, was
+            # doubled for jobhuntwow. The sidecar's write is switched off for this project
+            # (PERSEUS_OBSERVE_HTTP=0 in docker-compose.web.yml) and its evidence is MERGED here
+            # rather than deleted, because the two lines carried DIFFERENT facts and both are
+            # wanted: this line already has browser/os/device/country/user, and `sf`, `hv`/`hvs`
+            # and `av` exist nowhere else. (`bot` is not lost - ua_bot() and classify_ua() do the
+            # same arithmetic, and this line already carries bot AND bot_name.)
+            # THE JUDGEMENT KEEPS ITS ONE HOME: every value below is produced by perseus_client's
+            # own helpers, never re-implemented here, and the shapes match what the sidecar wrote
+            # byte for byte so no consumer sees the same address wearing a different shape.
+            try:
+                from . import perseus_client as _pc
+                _cp = request.headers.get(_pc.HV_CLIENT_HEADER)
+                if _cp:
+                    ev["hv"], ev["hvs"] = str(_cp)[:12], _pc.HV_FROM_CLIENT
+                else:
+                    _pv = request.scope.get("http_version")
+                    if _pv:
+                        ev["hv"], ev["hvs"] = str(_pv)[:12], _pc.HV_FROM_HOP
+                ev["sf"] = _pc.sf_mask({k.lower(): v for k, v in request.headers.items()})
+                # The RAW address, never the hashed one: the asset ledger is keyed on what the
+                # sidecar saw. A key that does not match simply yields 0, which is documented as
+                # evidence of nothing - the fail-open direction.
+                ev["av"] = _pc.asset_evidence(ip)
+            except Exception:
+                pass                      # the line still goes out, a few fields poorer
             emit(**ev)
             try:
                 alerts.observe_http(ev)
@@ -313,15 +342,33 @@ def _tg_chats():
     return out
 
 
-def notify_telegram(text):
+def notify_telegram(text, markdown=False):
+    """PLAIN TEXT BY DEFAULT, and that is a fix, not a style choice.
+
+    Every alert body this module produces carries ATTACKER-CONTROLLED text: the probed path in
+    `path_probe` ("Paths: /wp-admin/_x, /.env_backup"), the User-Agent, the referrer. With
+    parse_mode=Markdown a single stray `_`, `*` or `[` makes Telegram reject the ENTIRE message
+    with HTTP 400 for malformed entities, so the alert that matters most - the one describing what
+    the attacker actually asked for - is exactly the one that silently never arrives.
+
+    notify.py learned this in 2026-09 and was fixed there. THIS is the path that is actually wired
+    to the HTTP alert rules (install_middleware -> alerts.observe_http -> fire -> notify_both), and
+    it never got the fix. Same defect, second home. jobhuntwow has never produced a security alert,
+    so it had never been observed; it would have fired on the first one.
+
+    Nothing we send depends on bold, so the formatting bought nothing and cost the message.
+    `markdown=True` remains for a caller that composes its own text and knows it is safe.
+    """
     if not CFG.tg_token:
         return False
     ok = False
     for chat in _tg_chats():
         try:
-            data = urllib.parse.urlencode({"chat_id": chat, "text": text[:3900],
-                                           "parse_mode": "Markdown",
-                                           "disable_web_page_preview": "true"}).encode()
+            payload = {"chat_id": chat, "text": text[:3900],
+                       "disable_web_page_preview": "true"}
+            if markdown:
+                payload["parse_mode"] = "Markdown"
+            data = urllib.parse.urlencode(payload).encode()
             req = urllib.request.Request("https://api.telegram.org/bot%s/sendMessage" % CFG.tg_token, data=data)
             with urllib.request.urlopen(req, timeout=12) as r:
                 ok = (r.status == 200) or ok
@@ -367,7 +414,10 @@ def notify_email(subject, body, to=None):
 
 def notify_both(subject, body):
     """Fire both channels independently — email failing must not silence Telegram."""
-    t = notify_telegram("\U0001F6A8 *%s*\n\n%s" % (subject, body))
+    # NO ASTERISKS. They existed to bold the subject under parse_mode=Markdown; with the parse mode
+    # correctly gone they are literal junk in the message, and re-adding the parse mode to make
+    # them render would re-open the HTTP 400 described in notify_telegram.
+    t = notify_telegram("\U0001F6A8 %s\n\n%s" % (subject, body))
     e = notify_email("[%s] %s" % (CFG.app_name, subject), body)
     emit(evt="alert_delivery", channel="both", telegram=bool(t), email=bool(e), subject=subject[:120])
     return t or e
@@ -405,7 +455,14 @@ class Alerts:
                    "/config.json", "/actuator", "/vendor/", "/xmlrpc.php", "/shell", "/cgi-bin",
                    "/.ssh", "/backup", "/.docker", "/api/v1/pods", "/solr/", "/struts")
     # sensitive-download URL fragment (attribute exfil bursts). Override for your app.
-    DOWNLOAD_MARKER = os.environ.get("ALERT_DOWNLOAD_MARKER", "/deck/")
+    # THE REAL ARTIFACT ROUTE, not the sibling's. The default was "/deck/", a cybergod route (an
+    # assessment deck) that does not exist on jobhuntwow - so rule 6 guarded nothing, while the
+    # payload actually worth guarding sat somewhere else. jobhuntwow serves its documents from
+    # electronic.py's `@router.get("/artifacts/{job_id}/{filename}")` under
+    # APIRouter(prefix="/api/electronic"), i.e. /api/electronic/artifacts/<job>/<file>. Those files
+    # are candidate resumes, cover letters and photographs: personal data under GDPR, and the one
+    # thing here whose bulk retrieval is worth paging a human about.
+    DOWNLOAD_MARKER = os.environ.get("ALERT_DOWNLOAD_MARKER", "/api/electronic/artifacts/")
 
     def __init__(self):
         self._w = defaultdict(deque)   # key -> deque[(ts, value)]
@@ -445,8 +502,25 @@ class Alerts:
         tail = ("\n\nGrafana: %s" % CFG.grafana_hint) if CFG.grafana_hint else ""
         full = "%s\n\nWhen : %s\nRule : %s\nWhere: %s (%s)\n\n%s%s" % (
             title, stamp, rule, CFG.app_name, CFG.service, body, tail)
+        # THE EVENT IS WRITTEN FIRST AND UNCONDITIONALLY. Detection is what the fleet page, Loki
+        # and the staging gate read; delivery is a separate thing that can fail on its own, and
+        # conflating them is how "we sent nothing" became indistinguishable from "nothing
+        # happened".
         emit(evt="security_alert", rule=rule, severity=severity, subject=str(subject)[:120],
              title=title[:160], detail=body[:600])
+        # ALERT_DELIVERY=0 SUPPRESSES THE MESSAGE, NEVER THE DETECTION. It exists for the staging
+        # twin: deploy/stagegate/gate.py fires real probe paths at the twin on every release to
+        # prove this chain can still fire, and without this switch each release would page the
+        # operator with a synthetic attack. A warning that arrives on every run trains you to read
+        # past the one that matters, which is the failure this whole change exists to end.
+        # The suppression LEAVES A LINE, because an alert nobody received must never look like an
+        # alert that was delivered.
+        if os.environ.get("ALERT_DELIVERY", "1") == "0":
+            emit(evt="alert_delivery", channel="both", result="suppressed", rule=rule,
+                 subject=str(subject)[:120],
+                 reason="ALERT_DELIVERY=0 - detection ran and the security_alert event was "
+                        "written; only the Telegram/email send was skipped")
+            return True
         return notify_both("%s — %s" % (severity, title), full)
 
     # ---- HTTP-level rules (fed by the middleware) ----

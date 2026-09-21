@@ -98,6 +98,18 @@ def runtime_env() -> str:
     missing = [k for k in ("DO_INFERENCE_KEY", "GMAIL_SENDER", "GMAIL_SA_B64") if not merged.get(k)]
     if missing:
         print("  [!] missing (OTP mail / LLM may not work): " + ", ".join(missing), flush=True)
+    # JHW_EXTRA_ENV: comma-separated K=V pairs appended to the runtime env for THIS deploy only.
+    # It exists so the staging gate can hand the twin ALERT_DELIVERY=0 without a second .env, a
+    # second compose file or a manual step on the droplet - a twin should never page the operator
+    # with production-shaped alerts, and the gate deliberately fires real probe paths at it.
+    # Never used for secrets: these values travel in the same stdin payload the rest of the env
+    # does, but they are chosen by the caller, not read from a store.
+    for pair in (os.environ.get("JHW_EXTRA_ENV") or "").split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            k, _s, v = pair.partition("=")
+            merged[k.strip()] = v
+            print("  runtime env override: %s=%s" % (k.strip(), v), flush=True)
     print("  runtime env keys: " + " ".join(sorted(merged)), flush=True)
     return "\n".join(f"{k}={merged[k]}" for k in sorted(merged)) + "\n"
 

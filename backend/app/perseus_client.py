@@ -60,6 +60,11 @@ BLOCKLIST = os.environ.get("PERSEUS_BLOCKLIST", "/var/log/colt/perseus_blocklist
 RELOAD_S = int(os.environ.get("PERSEUS_RELOAD_S", "30"))
 ENABLED = os.environ.get("PERSEUS_ENABLED", "1") != "0"
 
+# Does this sidecar WRITE the evt=http access line itself? See observe()'s docstring. Default on;
+# a project that already has its own request middleware writing the same line into the same log
+# sets PERSEUS_OBSERVE_HTTP=0 and merges this module's evidence into that line instead.
+OBSERVE_HTTP = os.environ.get("PERSEUS_OBSERVE_HTTP", "1") != "0"
+
 SERVICE = os.environ.get("SERVICE") or os.environ.get("PERSEUS_SERVICE") or "unknown"
 
 EVENTS = os.environ.get("EVENTS_LOG", "/var/log/colt/events.log")
@@ -663,6 +668,113 @@ _SF_HEADERS = (("sec-fetch-site", SF_SITE), ("sec-fetch-mode", SF_MODE),
 HV_FROM_CLIENT = "p"
 HV_FROM_HOP = "s"
 HV_CLIENT_HEADER = "x-client-proto"
+
+# ---------------------------------------------------------------------------------------------
+# THE ASSET LEDGER, RESTATED. Same reason as the bitmask above: this file may import nothing, and
+# `app.asset_trace` is not in five of the six projects it is copied into. The constants are welded
+# to their one home by `tests/test_asset_trace.py`, which parses BOTH files off disk with `ast`.
+#
+# ONE-WAY POSITIVE, AND THE SIDECAR MUST NOT FORGET IT EITHER. `av >= ASSET_MIN_ASSETS` CONFIRMS
+# that a browser engine rendered the page. `av == 0` proves NOTHING: a first navigation, a cached
+# repeat visit and an inline page all produce a zero, and treating one as incriminating would be
+# the "absence of evidence is never a finding" rule broken in the one file that reaches five
+# request paths at once. Nothing in this file reads `av`; it is written for the brain.
+#
+# `ASSET_MIN_ASSETS` is unused HERE on purpose: the sidecar records and reports, it never judges.
+# It is restated anyway so a project that vendors this file alone carries the floor its own `av`
+# values must be read against, instead of the reader having to guess one.
+# ---------------------------------------------------------------------------------------------
+ASSET_WINDOW_S = 120          # how long after a navigation an asset still counts
+ASSET_MIN_ASSETS = 3          # the floor that CONFIRMS a browser engine; never a floor to accuse
+ASSET_MAX_TRACKED = 4096      # addresses held; a source-rotating flood must not become the outage
+ASSET_MAX_PATHS_PER_IP = 16   # distinct paths held per address
+_ASSET_SWEEP_S = 30           # full expiry sweep, on write, at most this often. No timer thread.
+
+# The SAME suffix list telemetry.py drops from the event log, restated as a pattern literal and
+# welded by ast. SUFFIX, not a directory prefix: ASSET_RE above answers a different question (is
+# this a path OUR app would serve) and reusing it here would count /favicon.ico and /sw.js, which
+# sit at the root, as navigations.
+ASSET_SUFFIX_PAT = (r"\.(css|js|mjs|map|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot"
+                    r"|webmanifest|mp4|webm|json|txt|xml)$")
+ASSET_SUFFIX_RE = re.compile(ASSET_SUFFIX_PAT, re.I)
+
+# ITS OWN LOCK, NOT `_LOCK`. The module lock already serialises the blocklist reload, which does a
+# stat and a json.load under it; hanging an every-request ledger off the same lock would make the
+# two contend for no reason, and a non-reentrant lock shared between a request path and a disk read
+# is a deadlock waiting for someone to nest them.
+_ASSET_LOCK = threading.Lock()
+_assets = {}          # ip -> {path: last_seen_ts}
+_assets_last = {}     # ip -> last_seen_ts, so eviction never scans the inner dicts
+_assets_swept = [0.0]
+
+
+def _asset_prune(now):
+    """Expiry then ceiling, on write, under _ASSET_LOCK. No background thread to leak.
+
+    Batch eviction rather than one-at-a-time: a sustained flood then pays for a sort once every few
+    hundred requests instead of once per request, which is the difference between a memory bound
+    and a self-inflicted slowdown on the request path of five sites.
+    """
+    pressure = len(_assets) > ASSET_MAX_TRACKED
+    if not pressure and (now - _assets_swept[0]) < _ASSET_SWEEP_S:
+        return
+    _assets_swept[0] = now
+    for ip in [k for k, t in _assets_last.items() if (now - t) >= ASSET_WINDOW_S]:
+        _assets.pop(ip, None)
+        _assets_last.pop(ip, None)
+    if len(_assets) > ASSET_MAX_TRACKED:
+        keep = ASSET_MAX_TRACKED - (ASSET_MAX_TRACKED // 8)
+        for ip, _t in sorted(_assets_last.items(), key=lambda kv: kv[1])[:len(_assets) - keep]:
+            _assets.pop(ip, None)
+            _assets_last.pop(ip, None)
+
+
+def asset_note(ip, path, now=None):
+    """Record that `ip` fetched a static asset. WRITES NO LOG LINE. Never raises.
+
+    The whole point is that this costs no log volume: the fact lives in memory for two minutes and
+    leaves as a single integer on the next navigation. Distinct paths only, or one image on a retry
+    loop would confirm a browser by itself.
+    """
+    try:
+        if not ip or not path:
+            return
+        now = time.time() if now is None else float(now)
+        key = str(path)[:160]
+        who = str(ip)[:64]
+        with _ASSET_LOCK:
+            paths = _assets.get(who)
+            if paths is None:
+                paths = {}
+                _assets[who] = paths
+            paths[key] = now
+            _assets_last[who] = now
+            for p in [p for p, t in paths.items() if (now - t) >= ASSET_WINDOW_S]:
+                paths.pop(p, None)
+            if len(paths) > ASSET_MAX_PATHS_PER_IP:
+                excess = len(paths) - ASSET_MAX_PATHS_PER_IP
+                for p, _t in sorted(paths.items(), key=lambda kv: kv[1])[:excess]:
+                    paths.pop(p, None)
+            _asset_prune(now)
+    except Exception:
+        return                               # fail open: an error here is a fact about US
+
+
+def asset_evidence(ip, now=None):
+    """-> distinct assets this address fetched inside ASSET_WINDOW_S. Never raises, 0 on error.
+
+    ZERO IS NOT A FINDING and the reader is told so at the top of this block. The only permitted
+    reading is `>= ASSET_MIN_ASSETS -> a browser engine rendered the page`.
+    """
+    try:
+        now = time.time() if now is None else float(now)
+        with _ASSET_LOCK:
+            paths = _assets.get(str(ip)[:64])
+            if not paths:
+                return 0
+            return sum(1 for t in paths.values() if (now - t) < ASSET_WINDOW_S)
+    except Exception:
+        return 0
 
 
 def ua_bot(ua):
@@ -1720,7 +1832,8 @@ def check(ip, path, authed=False):
     return True, 0, ""
 
 
-def observe(ip, path, status=200, ms=0, ua="", ref="", method="GET", hv=None, hvs=None, sf=None):
+def observe(ip, path, status=200, ms=0, ua="", ref="", method="GET", hv=None, hvs=None, sf=None,
+            av=None):
     """REPORT WHAT HAPPENED, so the brain can alert on it.
 
     The client could once only BLOCK; it had no way to say a word about who arrived. It now writes
@@ -1741,14 +1854,35 @@ def observe(ip, path, status=200, ms=0, ua="", ref="", method="GET", hv=None, hv
     carries `bot`, and the two pieces of evidence that are not free to fake (`hv`/`hvs` and `sf`)
     that client_truth.py compares that claim against. A field we could not measure is OMITTED, not
     defaulted: `sf` absent and `sf: 0` are different facts and only one of them is a signal.
+
+    `av` IS THE THIRD PIECE, AND IT ONLY EVER POINTS ONE WAY. It is how many distinct static assets
+    this address pulled in the last ASSET_WINDOW_S, which is the strongest server-side proof there
+    is that a browser engine rendered the page. At or above ASSET_MIN_ASSETS it CONFIRMS a browser;
+    at zero it proves nothing whatever, because a first navigation, a cached repeat visit and an
+    inline page all sit at zero. Absent means nobody looked, same rule as `sf`.
+
+    PERSEUS_OBSERVE_HTTP=0 SILENCES THIS LINE, AND NOTHING ELSE. A project that already runs its
+    own request middleware writing evt=http into the SAME events log ends up with TWO lines per
+    request, and every count derived from them is then doubled - measured on jobhuntwow, which
+    runs observability.install_middleware() alongside this sidecar. The flag exists so such a
+    project can nominate ONE writer; it turns off the WRITE only. watch(), check(), decide(),
+    the asset ledger, the beat and every shield decision are untouched, so DETECTION is never
+    what gets traded away.
+    DEFAULT "1": the other four projects behave exactly as before, because a shared file that
+    changes behaviour for everyone when one project needed something is how an estate-wide
+    regression gets shipped by a one-line fix.
+    THE EVIDENCE MUST NOT VANISH WITH THE LINE. `bot`, `sf`, `hv`/`hvs` and `av` exist nowhere
+    else, so the nominated writer is expected to call ua_bot(), sf_mask() and asset_evidence()
+    here and merge them into its own line - which is what jobhuntwow's observability.py does.
+    Turning this off without doing that DELETES evidence rather than de-duplicating it.
     """
-    if not ENABLED:
+    if not ENABLED or not OBSERVE_HTTP:
         return
     ev = {"evt": "http", "ts": int(time.time()), "service": SERVICE,
           "ip": _ident(ip), "method": method, "path": (path or "")[:200],
           "status": int(status or 0), "ms": int(ms or 0),
           "ua": (ua or "")[:180], "ref": (ref or "")[:180],
-          "bot": ua_bot(ua), "hv": hv, "hvs": hvs, "sf": sf}
+          "bot": ua_bot(ua), "hv": hv, "hvs": hvs, "sf": sf, "av": av}
     _write({k: v for k, v in ev.items() if v is not None})
 
 
@@ -1824,6 +1958,22 @@ class Middleware:
             _pv = scope.get("http_version")
             _hv, _hvs = (str(_pv)[:12], HV_FROM_HOP) if _pv else (None, None)
         _sf = sf_mask(hdr)
+        # ---- THE ASSET LEDGER, READ ONCE, PASSED DOWN WITH THE REST OF THE EVIDENCE -----------
+        # A SUBRESOURCE IS NOT A NAVIGATION, so the two branches are exclusive: an asset request is
+        # RECORDED and carries no `av` of its own, and a navigation READS what the address has
+        # already pulled. asset_note() writes no log line, which is the entire reason this can be
+        # afforded at all. ONE-WAY POSITIVE: `av` at or above ASSET_MIN_ASSETS confirms a browser
+        # engine, and `av == 0` is evidence of nothing -- see the ASSET_* block at the top.
+        # Unlike colt-web this file does not DROP asset lines, so nothing is being restored here;
+        # what is new is only the derived count on the navigation.
+        _av = None
+        try:
+            if ASSET_SUFFIX_RE.search(path or ""):
+                asset_note(ip, path)
+            else:
+                _av = asset_evidence(ip)
+        except Exception:
+            _av = None                            # fail open, always
         # ONE SNAPSHOT, READ ONCE, PASSED DOWN. Both the hold path and the local shield must judge
         # this request against the same answer to "is this caller authenticated"; reading it twice
         # lets a session land between the two and the halves then describe different moments.
@@ -1836,7 +1986,7 @@ class Middleware:
         if not allowed:
             await self._refuse(send, retry)
             observe(ip, path, 429, (time.time() - t0) * 1000, ua, hdr.get("referer", ""), method,
-                    hv=_hv, hvs=_hvs, sf=_sf)
+                    hv=_hv, hvs=_hvs, sf=_sf, av=_av)
             watch(ip, path, 429, ua, method, cred)
             return
 
@@ -1850,7 +2000,7 @@ class Middleware:
             # with a retry window is the truth: we are refusing you, for this long.
             await self._refuse(send, cfg("block_s"))
             observe(ip, path, 429, (time.time() - t0) * 1000, ua, hdr.get("referer", ""), method,
-                    hv=_hv, hvs=_hvs, sf=_sf)
+                    hv=_hv, hvs=_hvs, sf=_sf, av=_av)
             watch(ip, path, 429, ua, method, cred)
             return
         if verdict == "TARPIT":
@@ -1877,7 +2027,7 @@ class Middleware:
             await self.app(scope, receive, _send)
         finally:
             observe(ip, path, status["code"], (time.time() - t0) * 1000, ua,
-                    hdr.get("referer", ""), method, hv=_hv, hvs=_hvs, sf=_sf)
+                    hdr.get("referer", ""), method, hv=_hv, hvs=_hvs, sf=_sf, av=_av)
             watch(ip, path, status["code"], ua, method, cred)
 
     @staticmethod

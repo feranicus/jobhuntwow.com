@@ -160,6 +160,9 @@ EXPECTED = [
     "auditor_not_author",
     "engine_fresh",
     "events_written",
+    # The alert chain, fired for real against the twin. See the ALERTCHAIN block in HEALTH.
+    "probe_paths_are_refused",
+    "security_alert_fires",
     "disk",
     "memory",
 ]
@@ -367,6 +370,61 @@ else
   else
     chk events_written no "no jhw-web lines in $EL - the app cannot append (the shared volume is root-owned and the app is uid 10001)"
   fi
+fi
+
+# ==============================================================================================
+# THE ALERT CHAIN, FIRED FOR REAL. Nothing on either side of this estate had ever proven that
+# jobhuntwow can produce a security alert, and for 24 measured hours it did not: 4002 requests,
+# 320 attack-shaped, 0 alerts, because the SPA catch-all answered 200 to everything and the rules
+# that catch scanners are gated on 404/403. A check that cannot fail is not a check, so this one
+# sends the real thing at the real container and reads the real event log.
+#
+# X-Forwarded-For CARRIES A DOCUMENTATION ADDRESS (RFC 5737 TEST-NET-3) ON PURPOSE. Both the
+# sidecar and observability read XFF first, so the scoring, the tarpit and any block land on
+# 203.0.113.77 and never on loopback - otherwise this section would block the health checks that
+# run after it. Which is also why it is LAST in this script.
+#
+# THE TWIN DOES NOT PAGE: deploy_to_staging() ships ALERT_DELIVERY=0, so fire() writes the
+# security_alert event and skips the Telegram/email send. Detection is what is asserted here;
+# delivery is a different failure and asserting it would mean messaging the operator every release.
+echo "#### ALERTCHAIN"
+PIP=203.0.113.77
+P404=0; P200=0; PCODES=""
+for PP in /.env /wp-login.php /phpmyadmin/ /.git/config /.aws/credentials /admin.php; do
+  PRC=$($IN curl -s -o /dev/null -w '%{http_code}' --max-time 25 -H "X-Forwarded-For: $PIP" "http://127.0.0.1:8000$PP" 2>/dev/null)
+  PCODES="$PCODES $PP=${PRC:-none}"
+  [ "$PRC" = "404" ] && P404=$((P404+1))
+  [ "$PRC" = "200" ] && P200=$((P200+1))
+done
+# A 200 IS THE REGRESSION. 404 is the fix; 429 is the local shield refusing the same source, which
+# is also a refusal and also not a catch-all. Only 200 means the SPA swallowed a probe again.
+if [ "${P200:-0}" -gt 0 ]; then
+  chk probe_paths_are_refused no "the SPA catch-all answered 200 to $P200 probe path(s) - the alert rules are gated on 404/403 and cannot fire:$PCODES"
+elif [ "${P404:-0}" -ge 3 ]; then
+  chk probe_paths_are_refused yes "$P404 probe path(s) answered 404, none answered 200:$PCODES"
+else
+  chk probe_paths_are_refused no "only ${P404:-0} of 6 probe paths answered 404 (need 3 for path_probe) and none 200:$PCODES"
+fi
+
+sleep 1
+# NAME WHERE THE EVIDENCE CAME FROM. emit() writes to the events log AND stdout, so a failure to
+# append to the shared volume is not a failure to detect - but the two are different facts and a
+# check that does not say which one it read sends the next investigation down the wrong road.
+AL_SRC="none"; AL_N=0
+EL2=$($IN sh -c 'printenv EVENTS_LOG' 2>/dev/null)
+if [ -n "$EL2" ]; then
+  AL_N=$($IN sh -c "grep security_alert \"$EL2\" 2>/dev/null | grep -c jhw-web" | tr -d ' ')
+  [ "${AL_N:-0}" -gt 0 ] && AL_SRC="$EL2"
+fi
+if [ "${AL_N:-0}" -eq 0 ]; then
+  AL_N=$(docker logs "$C" 2>&1 | grep security_alert | grep -c jhw-web)
+  [ "${AL_N:-0}" -gt 0 ] && AL_SRC="docker logs $C (stdout; the shared events volume had none)"
+fi
+AL_RULE=$($IN sh -c "grep security_alert \"$EL2\" 2>/dev/null | tail -1" | sed 's/.*"rule": *"\([a-z_]*\)".*/\1/')
+if [ "${AL_N:-0}" -ge 1 ]; then
+  chk security_alert_fires yes "$AL_N security_alert event(s) tagged jhw-web after 6 probe paths, read from $AL_SRC (last rule: ${AL_RULE:-unparsed}). Proves DETECTION and the event write; delivery is suppressed on the twin by ALERT_DELIVERY=0"
+else
+  chk security_alert_fires no "SIX probe paths produced NO security_alert tagged jhw-web, in ${EL2:-no EVENTS_LOG} or on stdout. The rules are in observability.Alerts.observe_http and are fed by install_middleware; either the probes were not 404s (see probe_paths_are_refused), the middleware is not installed, or ALERTS_ENABLED=0"
 fi
 
 DF=$(df -P / | awk 'NR==2{print $4}')
@@ -586,7 +644,14 @@ def deploy_to_staging(say) -> bool:
         say("  [X] provisioning failed (rc=%s) %s" % (rc, (err or "").strip()[:200]))
         return False
     say("deploying to the twin with deploy_direct.deploy() - the same call jhw.py deploy makes")
-    env = dict(os.environ, DROPLET_HOST=host)
+    # THE TWIN NEVER PAGES. The health script below fires real probe paths at this container to
+    # prove the alert chain can still fire; without this the operator would get a synthetic attack
+    # alert on every single release, and an alert that arrives every time is one you stop reading.
+    # Detection is untouched - observability.fire() still writes the security_alert event, which
+    # is exactly what the gate then asserts.
+    env = dict(os.environ, DROPLET_HOST=host,
+               JHW_EXTRA_ENV=((os.environ.get("JHW_EXTRA_ENV", "") + ",") if
+                              os.environ.get("JHW_EXTRA_ENV") else "") + "ALERT_DELIVERY=0")
     r = subprocess.run([sys.executable, "-c",
                         "import deploy_direct as dd; dd.deploy(False)"],
                        cwd=ROOT, env=env)

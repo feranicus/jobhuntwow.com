@@ -116,7 +116,10 @@ def email(subject, body, to=None):
 
 def both(subject, body):
     """Fire both channels. Independent: email failing must not silence Telegram."""
-    t = telegram("🚨 *%s*\n\n%s" % (subject, body))
+    # NO ASTERISKS. telegram() has defaulted to PLAIN TEXT since 2026-09 (see its docstring), so
+    # these only ever rendered as literal `*` characters around the subject. Re-adding
+    # markdown=True to make them bold would re-open the HTTP 400 that fix exists to prevent.
+    t = telegram("🚨 %s\n\n%s" % (subject, body))
     e = email("[jobhuntwow.com] " + subject, body)
     _log(evt="alert_delivery", channel="both", telegram=bool(t), email=bool(e), subject=subject[:120])
     return t or e

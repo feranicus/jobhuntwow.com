@@ -32,6 +32,19 @@ services:
       # Grafana ({container=~".*assess-bot.*"} | json | service=`jhw-web`). A separate
       # jhw-web.log was the bug — nothing tailed it, so Loki had zero of our lines.
       - EVENTS_LOG=/var/log/colt/events.log
+      # ONE WRITER PER REQUEST. perseus_client.Middleware and observability's middleware were
+      # BOTH appending evt=http to the line above's file, so every count derived from it was
+      # doubled here. observability wins because it already carries browser/os/device/country/user
+      # AND feeds the alert rules; it now merges the sidecar's bot/sf/hv/hvs/av into its own line,
+      # so nothing is lost. The sidecar keeps detecting, deciding and beating - only its WRITE of
+      # the access line is silenced. See perseus_client.observe().
+      - PERSEUS_OBSERVE_HTTP=0
+      # The probe-shaped 404 (backend/app/spa_guard.py). Default ON in code; named here so it can
+      # be turned off with a container restart and no deploy if it ever refuses a real page.
+      - JHW_PROBE_404=1
+      # What this project serves, DECLARED. A declaration is available on the first request; a
+      # learned route is not. Mirrors spa_guard.CLIENT_ROUTES, which mirrors frontend/src/App.jsx.
+      - PERSEUS_OUR_ROUTES=/,/login,/signup,/scout,/pipeline,/electronic,/tailor,/hermes,/connections
     volumes:
       - jhw_data:/data
       - jhw_events:/var/log/jhw
