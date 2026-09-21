@@ -616,6 +616,91 @@ def ua_fingerprint(ua):
     return "%s|%s|%s" % (b, o, d)
 
 
+# ---------------------------------------------------------------------------------------------
+# WHAT THE BRAIN NEEDS FROM US, AND WHY IT IS RESTATED HERE RATHER THAN IMPORTED.
+#
+# `observe()` used to write a NARROWER line than cybergod's own telemetry: no `bot` field at all.
+# Any consumer doing `not e.get("bot")` therefore scored every line from jobhuntwow, klima, jev and
+# s4biz as a human, which is precisely how the fleet page's VISITORS column came to count a curl.
+#
+# This file may not import `app.telemetry` (it is copied into projects that do not have it) and may
+# not import `app.client_truth` either: `test_perseus_shield.py` asserts the import floor here is
+# exactly {asyncio, json, os, re, threading, time, hashlib}, and that floor is a security control,
+# not a style rule. So the three token tables and the four bit values are RESTATED, and
+# `test_client_truth.py` parses telemetry.py and client_truth.py OFF DISK with `ast` and fails the
+# build if any of them ever drifts from what is written here. Same device the detection CLASSES
+# table already uses: two copies are safe exactly when a test makes them one.
+#
+# SUBSTRING, NOT REGEX, DELIBERATELY. telemetry.classify_ua() lowercases and does `pat in u`. A
+# regex built from the same tokens would be a SECOND implementation of one decision, and the first
+# token containing a `.` or a `+` would make the two disagree on a request neither author ever
+# looked at. The arithmetic is copied, not re-derived.
+_BOT_UA = (
+    "googlebot", "bingbot", "yandex", "duckduckbot", "baiduspider", "slurp", "ahrefs", "semrush",
+    "mj12bot", "dotbot", "petalbot", "bytespider", "gptbot", "claudebot", "ccbot", "perplexity",
+    "facebookexternalhit", "twitterbot", "linkedinbot", "telegrambot", "whatsapp", "discordbot",
+    "censys", "shodan", "zgrab", "masscan", "nmap", "nuclei", "sqlmap", "nikto", "dirbuster",
+    "gobuster", "wpscan", "curl", "wget", "python-requests", "go-http-client", "java/",
+    "libwww-perl", "headlesschrome", "phantomjs", "scrapy",
+)
+_BROWSER_UA = ("edg/", "opr/", "chrome/", "firefox/", "safari/")
+_OS_UA = ("windows nt 11", "windows nt 10", "windows", "iphone", "ipad", "android", "mac os x",
+          "cros", "linux")
+
+# The fetch-metadata presence bitmask. PRESENCE ONLY -- the values are of no use to us and these
+# lines sit in Loki next to an IP address for 24h. See client_truth.py for what reads it, and for
+# why `sf: 0` (we looked, nothing was sent) and `sf` ABSENT (nobody looked) must stay different.
+SF_SITE = 1          # sec-fetch-site
+SF_MODE = 2          # sec-fetch-mode
+SF_DEST = 4          # sec-fetch-dest
+SF_CHUA = 8          # sec-ch-ua
+_SF_HEADERS = (("sec-fetch-site", SF_SITE), ("sec-fetch-mode", SF_MODE),
+               ("sec-fetch-dest", SF_DEST), ("sec-ch-ua", SF_CHUA))
+
+# Whose HTTP version is it? See client_truth.py: behind the shared Caddy the ASGI scope reports the
+# PROXY-TO-APP hop, which is 1.1 for every client alive, so the source travels with the value and
+# the reader refuses to conclude anything from `s`.
+HV_FROM_CLIENT = "p"
+HV_FROM_HOP = "s"
+HV_CLIENT_HEADER = "x-client-proto"
+
+
+def ua_bot(ua):
+    """True when the UA identifies itself as a crawler or tool, or names no browser at all.
+
+    THE SAME ARITHMETIC telemetry.classify_ua() does, and nothing more. It is a substring match on
+    an ATTACKER-CONTROLLED header and it is honest about being one: it catches the clients that
+    tell the truth about themselves, which is most of them, and it is worth exactly nothing against
+    one that does not. That is what client_truth.py is for. Never raises.
+    """
+    try:
+        u = str(ua or "").lower()
+        if not u.strip():
+            return True                      # no user agent at all is not a browser
+        if any(p in u for p in _BOT_UA):
+            return True
+        # A "browser" naming no browser engine AND no operating system is tooling.
+        return not any(p in u for p in _BROWSER_UA) and not any(p in u for p in _OS_UA)
+    except Exception:
+        return False                         # fail open: unsure is never "bot"
+
+
+def sf_mask(hdr):
+    """-> bitmask of which fetch-metadata headers this request carried. Never raises.
+
+    `hdr` is the decoded lower-cased header dict the Middleware already built. Presence only: an
+    empty value still counts, because the client still sent the header.
+    """
+    mask = 0
+    try:
+        for name, bit in _SF_HEADERS:
+            if hdr.get(name) is not None:
+                mask |= bit
+    except Exception:
+        return 0
+    return mask
+
+
 def _prune(now, window):
     for ip in list(_hits):
         _hits[ip] = [(t, r) for (t, r) in _hits[ip] if now - t < window]
@@ -1635,7 +1720,7 @@ def check(ip, path, authed=False):
     return True, 0, ""
 
 
-def observe(ip, path, status=200, ms=0, ua="", ref="", method="GET"):
+def observe(ip, path, status=200, ms=0, ua="", ref="", method="GET", hv=None, hvs=None, sf=None):
     """REPORT WHAT HAPPENED, so the brain can alert on it.
 
     The client could once only BLOCK; it had no way to say a word about who arrived. It now writes
@@ -1650,13 +1735,21 @@ def observe(ip, path, status=200, ms=0, ua="", ref="", method="GET"):
     AN IP IS PERSONAL DATA (GDPR; CJEU C-582/14 Breyer). `PERSEUS_HASH_IPS=1` stores a salted hash
     instead, which keeps correlation and drops the identifier. Off by default because the operator
     asked for forensics, exactly as colt-web is configured.
+
+    THE LINE WAS NARROWER THAN COLT-WEB'S AND THAT WAS A SILENT DEFECT. It carried no `bot` field,
+    so every consumer asking `not e.get("bot")` read four projects' entire traffic as human. It now
+    carries `bot`, and the two pieces of evidence that are not free to fake (`hv`/`hvs` and `sf`)
+    that client_truth.py compares that claim against. A field we could not measure is OMITTED, not
+    defaulted: `sf` absent and `sf: 0` are different facts and only one of them is a signal.
     """
     if not ENABLED:
         return
-    _write({"evt": "http", "ts": int(time.time()), "service": SERVICE,
-            "ip": _ident(ip), "method": method, "path": (path or "")[:200],
-            "status": int(status or 0), "ms": int(ms or 0),
-            "ua": (ua or "")[:180], "ref": (ref or "")[:180]})
+    ev = {"evt": "http", "ts": int(time.time()), "service": SERVICE,
+          "ip": _ident(ip), "method": method, "path": (path or "")[:200],
+          "status": int(status or 0), "ms": int(ms or 0),
+          "ua": (ua or "")[:180], "ref": (ref or "")[:180],
+          "bot": ua_bot(ua), "hv": hv, "hvs": hvs, "sf": sf}
+    _write({k: v for k, v in ev.items() if v is not None})
 
 
 # A credential was PRESENTED. Not proof of anything -- a header is attacker-controlled, which is
@@ -1718,6 +1811,19 @@ class Middleware:
               or ((scope.get("client") or ("", 0))[0]))
         ua = hdr.get("user-agent", "")
         cred = credential_hint(hdr)
+        # READ ONCE, PASSED TO EVERY observe() BELOW. The three exits (refused by the hub, refused
+        # by the local shield, served by the app) must write the same evidence about the same
+        # request, or the brain would see one address wearing three different shapes. `hvs` names
+        # the SUBJECT of `hv`: the ASGI scope describes the proxy-to-app hop, and only a proxy that
+        # saw the client can report what the CLIENT spoke -- client_truth.py refuses to conclude
+        # anything from the former. Absent rather than guessed when the scope carries nothing.
+        _cp = hdr.get(HV_CLIENT_HEADER)
+        if _cp:
+            _hv, _hvs = str(_cp)[:12], HV_FROM_CLIENT
+        else:
+            _pv = scope.get("http_version")
+            _hv, _hvs = (str(_pv)[:12], HV_FROM_HOP) if _pv else (None, None)
+        _sf = sf_mask(hdr)
         # ONE SNAPSHOT, READ ONCE, PASSED DOWN. Both the hold path and the local shield must judge
         # this request against the same answer to "is this caller authenticated"; reading it twice
         # lets a session land between the two and the halves then describe different moments.
@@ -1729,7 +1835,8 @@ class Middleware:
             allowed, retry, why = True, 0, ""
         if not allowed:
             await self._refuse(send, retry)
-            observe(ip, path, 429, (time.time() - t0) * 1000, ua, hdr.get("referer", ""), method)
+            observe(ip, path, 429, (time.time() - t0) * 1000, ua, hdr.get("referer", ""), method,
+                    hv=_hv, hvs=_hvs, sf=_sf)
             watch(ip, path, 429, ua, method, cred)
             return
 
@@ -1742,7 +1849,8 @@ class Middleware:
             # exist, which is exactly how the operator lost an hour to his own admin console. A 429
             # with a retry window is the truth: we are refusing you, for this long.
             await self._refuse(send, cfg("block_s"))
-            observe(ip, path, 429, (time.time() - t0) * 1000, ua, hdr.get("referer", ""), method)
+            observe(ip, path, 429, (time.time() - t0) * 1000, ua, hdr.get("referer", ""), method,
+                    hv=_hv, hvs=_hvs, sf=_sf)
             watch(ip, path, 429, ua, method, cred)
             return
         if verdict == "TARPIT":
@@ -1769,7 +1877,7 @@ class Middleware:
             await self.app(scope, receive, _send)
         finally:
             observe(ip, path, status["code"], (time.time() - t0) * 1000, ua,
-                    hdr.get("referer", ""), method)
+                    hdr.get("referer", ""), method, hv=_hv, hvs=_hvs, sf=_sf)
             watch(ip, path, status["code"], ua, method, cred)
 
     @staticmethod

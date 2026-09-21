@@ -402,3 +402,22 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
 - **A hostname we SERVE must be one the deploy CLAIMS** (`fix_caddy.OURS`), and every `redir` lands
   on the canonical host in ONE hop. `python domains.py` prints the registrar records and measures —
   and refuses to report a finding when it cannot resolve DNS at all.
+
+## USAGE FEED AND BOT COUNTING (2026-09-21)
+- **A feed is not an alert.** Sign-ins and new job descriptions go to Telegram through
+  `alerts.usage()`, which has its OWN hourly cap and NO per-subject cooldown: `fire()` dedupes on
+  (rule, subject), which is right for a scanner and wrong for "he just logged in again".
+- **`notify.telegram` is PLAIN TEXT by default now.** Every message carries employer names, job
+  titles and probed paths; one stray `_` or `*` made Telegram reject the WHOLE message, so the
+  alert that mattered most was the one that silently never arrived.
+- **Three buckets, never two** (`backend/app/visitors.py`): VISITOR · CLIENT · UNJUDGED, precedence
+  one-way. Fetch-metadata PRESENCE only, per-engine floors, and the protocol-version check stays
+  dormant until `X-Client-Proto` (now in our Caddy block) proves whose version it is — without it
+  that check fires on 100% of real browsers.
+- **The WebRTC/HTTP3 probe is evidence, never a gate.** It cannot see a scraper (no JS runs), it
+  accuses corporate networks if trusted, and the address it reveals is compared server-side and
+  DROPPED — only the boolean survives. The TURN half needs coturn on the droplet: not built,
+  deliberately.
+- `observability.py` was READ-ONLY on his filesystem, so the counter ships its own middleware from
+  `visitors.py` and `main.py` installs it. A feature that cannot be written cannot ship; route
+  around the lock rather than wait for it.

@@ -130,6 +130,31 @@ manifests on disk, so it survives a restart — and "Cisco Systems Inc." and "ci
 same employer. Asking Electronic to revise a draft rewrites the SAME filenames; it never numbers the
 same job twice. Older jobs keep their old names and still download.
 
+## Who is using it, and who is a bot
+
+**Telegram, as it happens** (`backend/app/alerts.py::usage`): every **sign-in** (user, address,
+agent) and every **new job description** (employer, role, the posting link or the pasted size, the
+files produced, how many that user has done today). This is a feed, not an alert, so it does NOT
+use the alert cooldown — the second sign-in is exactly the event you want to see. Ceiling:
+`JHW_USAGE_CAP_PER_HOUR` (40), and suppressions are logged. Off with `JHW_USAGE_FEED=0`.
+
+**Three buckets, never two** (`backend/app/visitors.py`, `GET /api/visitors?hours=24`):
+
+    VISITOR    the record carried evidence and nothing contradicted itself
+    CLIENT     self-identified bot, or the record contradicted itself
+    UNJUDGED   the record did not carry the fields to look at — a real answer, not a rounding error
+
+Evidence, cheapest to most expensive: the UA table (labelling only), fetch-metadata **presence**
+(`Sec-Fetch-*`, per-engine floors, never the values), and the protocol version — which only counts
+when `X-Client-Proto` proves it is the CLIENT's version and not the proxy hop. Precedence runs one
+way: an address seen once as a client stays one for the window.
+
+**The browser probe** (`frontend/src/probe.js` → `POST /api/probe`) reports whether HTTP/3 and
+WebRTC actually worked. It raises confidence for a real browser and flags headless/cloud ones —
+it can never see a scraper (no JavaScript runs), so it is evidence, never a gate. The address
+WebRTC reveals is compared on the server and dropped; only the boolean is kept. `no UDP` is
+UNJUDGED, because that is what a corporate firewall looks like.
+
 ## Extra domains (jobhw.org)
 
 `python domains.py` — read-only. It reads the hostnames out of the Caddy block we ship, prints the

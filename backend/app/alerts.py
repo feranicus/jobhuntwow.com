@@ -224,7 +224,46 @@ def observe_otp_failure(email, ip):
               "If this was not the account owner: force a password reset now."], severity="CRITICAL")
 
 
+# ---------------------------------------------------------------------------------- USAGE FEED
+# HIS ASK (2026-09-21): *"any time someone logs in to the platform I want to see this as message in
+# Telegram, and also what jobs he is making the resumes for"*.
+#
+# THIS IS NOT AN ALERT AND MUST NOT USE `fire()`. `fire()` deduplicates on (rule, subject) for
+# ALERT_COOLDOWN seconds — correct for a scanner, wrong for a usage feed, where the SECOND login is
+# exactly the event he wants to see. So usage has its own sender with its own ceiling: every event
+# is sent, but never more than USAGE_CAP in an hour, and a suppression is logged rather than
+# silently dropped (an alert nobody receives is not an alert — and neither is a feed).
+USAGE_ENABLED = os.environ.get("JHW_USAGE_FEED", "1").strip().lower() not in ("0", "false", "no")
+USAGE_CAP = _i("JHW_USAGE_CAP_PER_HOUR", 40)
+_usage_hour = deque()
+
+
+def usage(title, lines):
+    """Send a usage event to Telegram. Returns True when it went out."""
+    if not USAGE_ENABLED:
+        return False
+    now = time.time()
+    while _usage_hour and _usage_hour[0] < now - 3600:
+        _usage_hour.popleft()
+    if len(_usage_hour) >= USAGE_CAP:
+        notify._log(evt="usage_suppressed", reason="cap %d/h reached" % USAGE_CAP,
+                    title=str(title)[:80])
+        return False
+    _usage_hour.append(now)
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(now))
+    body = "\n".join(str(x) for x in lines if x is not None)
+    notify._log(evt="usage", title=str(title)[:80])
+    # A usage event goes to TELEGRAM ONLY: he wants to watch it on his phone, and an e-mail per
+    # sign-in would bury the daily digest that actually summarises the day.
+    return notify.telegram("%s\n%s\n\n%s" % (title, stamp, body))
+
+
 def observe_login_success(email, ip, ua=""):
+    # EVERY sign-in goes to the feed, before any security reasoning. He is watching adoption.
+    usage("👤 Sign-in — jobhuntwow.com",
+          ["User : %s" % (email or "-"),
+           "From : %s" % (ip or "-"),
+           "Agent: %s" % (ua or "-")[:110]])
     known = _distinct("okip:%s" % email, 30 * 86400)
     _push("okip:%s" % email, ip, 30 * 86400)
     if known and ip not in known:
@@ -233,6 +272,24 @@ def observe_login_success(email, ip, ua=""):
               "Previously seen from: %s" % ", ".join(list(known)[:6]),
               "UA: %s" % (ua or "-")[:140],
               "", "Informational — travel and mobile networks do this too."], severity="INFO")
+
+
+def observe_new_job(email, employer, title, url="", pasted_chars=0, files=(), seq=1, ip=""):
+    """A new job description was tailored. WHAT he applies for, as it happens.
+
+    Fires on every generate. The count of DISTINCT employers in the window doubles as the
+    licence-abuse signal that `observe_assess` provides for the sibling product."""
+    n = _count("jobs:%s" % (email or "-"), 86400) + 1
+    _push("jobs:%s" % (email or "-"), (employer or "").lower(), 86400)
+    where = url or ("pasted job description (%d chars)" % pasted_chars if pasted_chars else "-")
+    usage("📄 New job description — resume tailored",
+          ["User    : %s" % (email or "-"),
+           "Employer: %s" % (employer or "(not named in the posting)"),
+           "Role    : %s" % (title or "-"),
+           "Posting : %s" % where,
+           "Files   : %s" % (", ".join(files)[:200] or "-"),
+           "Round   : #%d for this employer+role" % seq if seq > 1 else None,
+           "Today   : %d job description(s) from this user" % n])
 
 
 def observe_assess(email, company, ip=""):

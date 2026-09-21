@@ -60,6 +60,58 @@ app.include_router(proxy_router)
 app.include_router(auth_router)
 app.include_router(electronic_router)
 
+# WHO IS ACTUALLY USING THIS — visitors against bots, three buckets, plus the browser probe.
+# Its own middleware (see visitors.py: observability.py is read-only on the operator's machine) and
+# two routes. Detection only: nothing here blocks a request.
+try:
+    from . import visitors as _visitors
+    _visitors.install(app)
+except Exception as _e:
+    print('{"evt":"visitors_init","result":"error","err":"%s"}' % repr(_e)[:160], flush=True)
+
+
+@app.post("/api/probe")
+async def api_probe(request: Request):
+    """The page reports what its own browser could do. PUBLIC, tiny, and it stores no address.
+
+    `judge_probe` compares the WebRTC-visible address to the request address HERE and keeps only
+    the boolean — the revealed address is never logged, emitted or stored (GDPR; the whole point of
+    the technique is that it unmasks, so the unmasked value must not survive the comparison)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        from . import observability as _obs
+        ip = _obs.client_ip(request)
+    except Exception:
+        ip = ""
+    out = _visitors.judge_probe(body, ip)
+    _visitors.remember_probe(ip, out["verdict"])
+    try:
+        from . import observability as _obs2
+        _obs2.emit(evt="probe", verdict=out["verdict"], why=out["why"][:80], **out["signals"])
+    except Exception:
+        pass
+    if out["verdict"] == "automation":
+        try:
+            from . import alerts as _al
+            _al.fire("automation_probe", ip, "Automated browser on jobhuntwow.com",
+                     ["Address: %s" % (ip or "-"), "Why    : %s" % out["why"],
+                      "Signals: %s" % out["signals"],
+                      "", "Detection only — nothing was blocked."], severity="INFO")
+        except Exception:
+            pass
+    # The page gets nothing back it could use to tune itself.
+    return {"ok": True}
+
+
+@app.get("/api/visitors")
+def api_visitors(hours: float = 24.0, user: str = Depends(require_user)):
+    """Three buckets over the window: visitors, clients (bots), and NOT DETERMINABLE."""
+    return _visitors.window(hours)
+
+
 # The application tracker: /api/applications — one row per application, from the job description to
 # the documents we sent. The Pipeline and the CRM read THIS, not a folder of manifests.
 try:

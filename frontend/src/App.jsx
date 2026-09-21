@@ -5,6 +5,7 @@ import Dashboard from "./pages/Dashboard.jsx";
 import Connections from "./pages/Connections.jsx";
 import Scout from "./pages/Scout.jsx";
 import Pipeline from "./pages/Pipeline.jsx";
+import { reportProbe } from "./probe.js";
 import Electronic from "./pages/Electronic.jsx";
 import Tailor from "./pages/Tailor.jsx";
 import Login from "./pages/Login.jsx";
@@ -21,6 +22,8 @@ const topbar = {
 };
 
 export default function App() {
+  // Ask the browser what it can do, once. Detection only — see probe.js for why it never blocks.
+  useEffect(() => { reportProbe(); }, []);
   // undefined = still checking, null = anonymous, {email} = signed in
   const [user, setUser] = useState(undefined);
   const nav = useNavigate();

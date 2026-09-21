@@ -49,15 +49,26 @@ def _tg_chats():
     return out
 
 
-def telegram(text):
+def telegram(text, markdown=False):
+    """Send to every configured chat. True when at least one delivery succeeded.
+
+    PLAIN TEXT BY DEFAULT, and that is the fix for a whole class of silent failures. Every message
+    we send carries attacker- or employer-controlled strings: a probed path (`/wp-admin/_x`), a job
+    title, a company name. With `parse_mode=Markdown` a single stray `_` or `*` makes Telegram
+    reject the ENTIRE message as malformed entities — so the alert that matters most is exactly the
+    one that never arrives. Nothing we send depends on bold, so the formatting buys nothing and
+    costs the message. `markdown=True` remains for a caller that formats its own text and knows it
+    is safe."""
     if not TG_TOKEN:
         return False
     ok = False
     for chat in _tg_chats():
         try:
-            data = urllib.parse.urlencode({"chat_id": chat, "text": text[:3900],
-                                           "parse_mode": "Markdown",
-                                           "disable_web_page_preview": "true"}).encode()
+            payload = {"chat_id": chat, "text": text[:3900],
+                       "disable_web_page_preview": "true"}
+            if markdown:
+                payload["parse_mode"] = "Markdown"
+            data = urllib.parse.urlencode(payload).encode()
             req = urllib.request.Request("https://api.telegram.org/bot%s/sendMessage" % TG_TOKEN, data=data)
             with urllib.request.urlopen(req, timeout=12) as r:
                 ok = (r.status == 200) or ok

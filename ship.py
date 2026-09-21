@@ -293,6 +293,8 @@ def do_tests() -> bool:
                 "tests/test_pipeline_dnd.py",
                 # who the job is with: the ladder, and the guard on its model rung
                 "tests/test_employer_ladder.py", "backend/app/jd_ingest.py",
+                # visitors against bots: three buckets, and what each signal may prove
+                "backend/app/visitors.py",
                 "tests/test_chat_open_wallet.py", "tests/test_llm_events_write.py",
                 "backend/tests/test_resume_consensus.py",
                 # The Tailor correlation and the digest that reports it. Standalone, stdlib only,

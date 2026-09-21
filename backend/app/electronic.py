@@ -694,6 +694,16 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
                                  files=manifest.get("files") or [])
     except Exception as _e:                       # pragma: no cover - never breaks the request
         print("[tracker] record_tailored skipped: %r" % (_e,), flush=True)
+    # WHAT HE IS APPLYING FOR, AS IT HAPPENS — his ask, 2026-09-21. Telegram only, best-effort:
+    # a notification must never cost him a tailored resume, so every failure is printed and swallowed.
+    try:
+        from . import alerts as _alerts
+        _alerts.observe_new_job(req.email, _emp, jd.get("title", ""),
+                                url=str(jd.get("url") or ""),
+                                pasted_chars=len(str(jd.get("text") or "")),
+                                files=manifest.get("files") or [], seq=_seq)
+    except Exception as _e:                       # pragma: no cover
+        print("[usage] new-job notice skipped: %r" % (_e,), flush=True)
     return manifest
 
 

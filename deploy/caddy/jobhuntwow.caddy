@@ -29,6 +29,12 @@ jobhuntwow.com {
 	# SPA + FastAPI are the same container. flush_interval -1 keeps SSE (chat) unbuffered.
 	reverse_proxy jhw-web:8000 {
 		flush_interval -1
+		# WHOSE protocol version the app sees. Without this the app reads the PROXY-to-app hop
+		# (always HTTP/1.1, because Caddy opens a fresh upstream connection), so a check built on
+		# it fires on 100% of real browsers — a check that cannot fail, pointed the wrong way.
+		# With it, `hvs="p"` and a Chrome 131 that spoke HTTP/1.1 to us is genuinely contradicting
+		# itself. It also makes the HTTP/3 half of the browser probe measurable server-side.
+		header_up X-Client-Proto {http.request.proto}
 	}
 }
 # jhw:jobhuntwow END
