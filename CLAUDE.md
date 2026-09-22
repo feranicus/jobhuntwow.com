@@ -464,6 +464,14 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
   back into prose. **A floor must be measured against the document it guards** —
   `MIN_COVER_TOP5=500`, because the 700-char prose floor called every good five-reason letter THIN.
 
+## PARSE IS NOT RUN — the white screen (2026-09-22)
+- **One undefined identifier unmounted the whole cabinet**: `txt(...)` used in Tailor.jsx, defined
+  only in the pages it was copied from. esbuild parsed it; the browser threw. "It parses" was never
+  the question — `tests/test_frontend_symbols.py` asks whether every bare call a page makes is
+  declared, imported or a global, and it strips TEMPLATES BEFORE JSX prose or it cannot see the
+  `${txt(x)}` that caused it. **`ErrorBoundary` wraps both route trees**, so the next one shows the
+  error instead of a blank page.
+
 ## THE RUN LOG (2026-09-22)
 - **A progress bar is not a record.** `runlog.py` streams every step of a run to the page (polled,
   owner-checked, `known:false` for an unknown run) and writes the same lines beside the documents.
@@ -492,20 +500,9 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
   REACHABILITY, caught by a contract failing, not by reading the code.
 
 ## USAGE FEED AND BOT COUNTING (2026-09-21)
-- **A feed is not an alert.** Sign-ins and new job descriptions go to Telegram through
-  `alerts.usage()`, which has its OWN hourly cap and NO per-subject cooldown: `fire()` dedupes on
-  (rule, subject), which is right for a scanner and wrong for "he just logged in again".
-- **`notify.telegram` is PLAIN TEXT by default now.** Every message carries employer names, job
-  titles and probed paths; one stray `_` or `*` made Telegram reject the WHOLE message, so the
-  alert that mattered most was the one that silently never arrived.
-- **Three buckets, never two** (`backend/app/visitors.py`): VISITOR · CLIENT · UNJUDGED, precedence
-  one-way. Fetch-metadata PRESENCE only, per-engine floors, and the protocol-version check stays
-  dormant until `X-Client-Proto` (now in our Caddy block) proves whose version it is — without it
-  that check fires on 100% of real browsers.
-- **The WebRTC/HTTP3 probe is evidence, never a gate.** It cannot see a scraper (no JS runs), it
-  accuses corporate networks if trusted, and the address it reveals is compared server-side and
-  DROPPED — only the boolean survives. The TURN half needs coturn on the droplet: not built,
-  deliberately.
-- `observability.py` was READ-ONLY on his filesystem, so the counter ships its own middleware from
-  `visitors.py` and `main.py` installs it. A feature that cannot be written cannot ship; route
-  around the lock rather than wait for it.
+- **A feed is not an alert** (`alerts.usage()`: own hourly cap, no per-subject cooldown), and
+  **`notify.telegram` is PLAIN TEXT by default** — one stray `_` made Telegram reject the whole
+  message, so the alert that mattered most never arrived.
+- **Three buckets, never two** (`visitors.py`): VISITOR · CLIENT · UNJUDGED, precedence one-way,
+  fetch-metadata PRESENCE only, and the protocol check stays dormant until `X-Client-Proto` proves
+  whose version it is. **The WebRTC probe is evidence, never a gate**, and off at both ends.

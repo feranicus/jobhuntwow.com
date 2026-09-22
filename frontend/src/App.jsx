@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import Sidebar from "./components/Sidebar.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Connections from "./pages/Connections.jsx";
 import Scout from "./pages/Scout.jsx";
@@ -51,11 +52,13 @@ export default function App() {
   // anonymous: only the auth screens are reachable
   if (!user) {
     return (
+      <ErrorBoundary>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
+      </ErrorBoundary>
     );
   }
 
@@ -70,6 +73,10 @@ export default function App() {
           <span>{user.email}</span>
           <button className="btn ghost sm" type="button" onClick={doLogout}>Sign out</button>
         </div>
+        {/* ONE PAGE'S RENDER ERROR MUST NOT TAKE THE CABINET WITH IT. The sidebar, the sign-out
+            and the navigation stay usable; the page that threw shows the reason instead of a
+            white screen. */}
+        <ErrorBoundary>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/scout" element={<Scout />} />
@@ -84,6 +91,7 @@ export default function App() {
           <Route path="/security" element={<Security />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   );

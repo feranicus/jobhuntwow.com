@@ -322,6 +322,10 @@ def do_tests() -> bool:
                 # TOP-5 cover letter he asked for by name: the five must BE five, must survive the
                 # audit round, and must reach the rendered file.
                 "backend/app/portfolio.py", "tests/test_portfolio_and_top5.py",
+                # PARSE IS NOT RUN. One undefined identifier inside a template literal shipped a
+                # white screen: esbuild parsed it, the browser threw on it, React unmounted the
+                # whole cabinet. This asks whether every function a page CALLS actually exists.
+                "tests/test_frontend_symbols.py",
                 # The run log: live in the browser while a run happens, and a .txt kept
                 # beside the documents afterwards.
                 "backend/app/runlog.py"):

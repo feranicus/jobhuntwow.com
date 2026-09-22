@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { getJSON, postJSON, putJSON, me } from "../api.js";
 
+/* Every value that reaches JSX is coerced to text FIRST. A backend shape change (an object where
+   a string was expected) must never be able to white-screen the cabinet -- standing rule 5 -- and
+   this helper is what enforces it. It was USED here before it was DEFINED here, which is exactly
+   how the page died: `txt is not defined` the instant the run-log card first rendered. */
+const txt = (v) => (v === null || v === undefined ? "" : typeof v === "string" ? v : String(v));
+
 /* Tailor: the thing Electronic promises in chat, actually wired.
    JD (paste or URL) + your profile  ->  POST /api/electronic/generate  ->  DOCX + PDF.
    The backend never invents experience: it truth-checks the output against the profile and
