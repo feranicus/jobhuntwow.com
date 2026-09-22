@@ -21,6 +21,7 @@ would have sent.
 import asyncio
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -250,7 +251,7 @@ def upload(filename, content, ctype, cookie=None):
     return out
 
 
-DOC = ("Colt SD-WAN Rollout   2023 - 2024\n"
+PORTFOLIO_DOC = ("Colt SD-WAN Rollout   2023 - 2024\n"
        "Client: Colt Technology Services\n"
        "Role: Programme Manager\n"
        "Stack: SD-WAN, Cisco Viptela, Prince2\n"
@@ -263,11 +264,11 @@ DOC = ("Colt SD-WAN Rollout   2023 - 2024\n"
        "Built the alerting a 12-person SOC runs on.\n"
        "* Mean time to detect fell from 4 hours to 11 minutes\n")
 
-check(upload("p.txt", DOC.encode(), "text/plain")["status"] == 401,
+check(upload("p.txt", PORTFOLIO_DOC.encode(), "text/plain")["status"] == 401,
       "an anonymous caller cannot import a portfolio")
 
 before = json.loads(call("GET", "/api/electronic/portfolio", cookie=mine)["body"])["count"]
-r = upload("portfolio.txt", DOC.encode(), "text/plain", mine)
+r = upload("portfolio.txt", PORTFOLIO_DOC.encode(), "text/plain", mine)
 got = json.loads(r["body"])
 check(r["status"] == 200 and [p["title"] for p in got["proposed"]]
       == ["Colt SD-WAN Rollout", "SOC Automation Platform"],
@@ -282,7 +283,7 @@ check("NOTHING IS SAVED YET" in got["note"], "and the answer says so in words")
 # A REAL .docx, written by python-docx, through the real extraction path.
 import docx                                                                     # noqa: E402
 _d = docx.Document()
-for _line in DOC.split("\n"):
+for _line in PORTFOLIO_DOC.split("\n"):
     _d.add_paragraph(_line)
 _buf = io.BytesIO()
 _d.save(_buf)
@@ -297,7 +298,7 @@ from reportlab.pdfgen import canvas                                             
 _buf = io.BytesIO()
 _cv = canvas.Canvas(_buf)
 _y = 800
-for _line in DOC.split("\n"):
+for _line in PORTFOLIO_DOC.split("\n"):
     _cv.drawString(60, _y, _line)
     _y -= 14
 _cv.save()
@@ -480,6 +481,85 @@ try:
                                 cookie=mine)["body"])
     check(d_unknown["known"] is False and d_unknown["lines"] == [],
           "an unknown or expired run answers known:false, never a 404 the page must special-case")
+finally:
+    electronic.RC.tailor = _real_tailor
+
+# ============================================================ 11. READ THE DELIVERED ARTIFACT
+# He chose Top 5 and got a PDF with a header, "Dear Hiring Team", "Sincerely" and NOTHING between
+# them. The model wrote five reasons, the contract accepted them, documents.py knows how to draw
+# them -- and `cover_struct` in the generate handler carried only `paragraphs`, so the body was
+# dropped on the floor between the two. Every check above passed while that shipped, because they
+# all stopped at the struct. This one goes the whole way to the FILE.
+FIVE = five(5)
+
+
+async def _five_poster(payload, timeout):
+    sysmsg = (payload.get("messages") or [{}])[0].get("content", "")
+    usermsg = (payload.get("messages") or [{}, {}])[-1].get("content", "")
+    if "adversarial reviewer" in sysmsg:
+        body = {"resume": {"flags": []}, "cover": {"flags": []}}
+    elif '"reasons"' in usermsg:
+        body = FIVE
+    else:
+        body = {"summary": "s" * 400, "skills": ["a"], "highlights": ["h" * 200],
+                "experience": [{"title": "PM", "company": "Colt",
+                                "bullets": ["b" * 300, "c" * 300]}],
+                "earlier": [], "all_employers": ["Colt"], "keywords_matched": [], "gaps": []}
+    return {"choices": [{"message": {"content": json.dumps(body)}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 300}}
+
+
+async def _tailor_five(ptxt, jd, **kw):
+    kw["poster"] = _five_poster
+    return await _real_tailor(ptxt, jd, **kw)
+
+
+electronic.RC.tailor = _tailor_five
+try:
+    rr = call("POST", "/api/electronic/generate",
+              {"jd": dict(JD, title="Senior Technical Customer Success Manager",
+                          company="Anaconda"),
+               "profile": PROFILE, "cover_format": "top5"}, mine)
+    man5 = json.loads(rr["body"]) if rr["status"] == 200 else {}
+    check(rr["status"] == 200, "a top-5 run completes", str(rr["status"]))
+
+    jdir = electronic.job_dir(ME, man5.get("job_id", ""))
+    # 1. the STRUCT that was handed to the renderer, as it was stored
+    saved = {}
+    tpath = os.path.join(jdir, "tailored.json")
+    if os.path.exists(tpath):
+        saved = json.load(open(tpath, encoding="utf-8"))
+    cov = (saved.get("cover") or {})
+    check(len(cov.get("reasons") or []) == 5,
+          "the FIVE REASONS reach the struct the renderer is given",
+          "reasons=%d keys=%s" % (len(cov.get("reasons") or []), sorted(cov)[:8]))
+    check(bool(cov.get("opening")) and bool(cov.get("close")),
+          "and so do the opening and the close around them")
+
+    # 2. the RENDERED BLOCKS - what the DOCX and the PDF are actually built from
+    blocks = DOC.struct_to_blocks(cov, "cover")
+    lis = [t for k, t in blocks if k == "li"]
+    body_chars = sum(len(t) for k, t in blocks if k in ("li", "p"))
+    check(len(lis) == 5, "the rendered document carries five numbered points", "got %d" % len(lis))
+    check(body_chars > 400,
+          "AND IT HAS A BODY AT ALL - the letter he got was 414 characters of letterhead and "
+          "nothing else", "%d chars of body" % body_chars)
+
+    # 3. the FILE on disk, read back
+    covers = [f for f in (man5.get("files") or []) if f.startswith("cover_letter_")
+              and f.endswith(".docx")]
+    check(bool(covers), "a cover letter file was written", str(man5.get("files")))
+    if covers:
+        import zipfile
+        with zipfile.ZipFile(os.path.join(jdir, covers[0])) as z:
+            xml = z.read("word/document.xml").decode("utf-8", "replace")
+        text = re.sub(r"<[^>]+>", "", xml)
+        head = FIVE["reasons"][0]["headline"][:28]
+        check(head in text,
+              "THE DOCX ITSELF contains the first reason - the artifact, not the struct",
+              head)
+        check(all(r["headline"][:20] in text for r in FIVE["reasons"]),
+              "and all five of them")
 finally:
     electronic.RC.tailor = _real_tailor
 

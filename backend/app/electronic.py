@@ -775,12 +775,22 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
         "certifications": _pget(req.profile, "certifications", []),
         "languages": _pget(req.profile, "languages", []),
     }
+    # MEASURED DEFECT, FIXED HERE (2026-09-22): this struct carried ONLY `paragraphs`, so a TOP-5
+    # letter -- whose entire body lives in `reasons`, with `opening` and `close` around it -- was
+    # rendered as a header, a salutation, "Sincerely" and NOTHING IN BETWEEN. The model wrote five
+    # reasons, the contract accepted them, documents.py knows how to draw them, and this dict threw
+    # them on the floor in between. It is the same defect the resume had with `highlights` and
+    # `earlier`, one comment block further up, which is why the suite now reads the RENDERED
+    # document rather than trusting the struct.
     cover_struct = {
         "basics": basics,
         "company": jd.get("company", ""),
         "job_title": jd.get("title", ""),
         "salutation": cover.get("salutation") or "Hiring Team",
         "paragraphs": cover.get("paragraphs") or [],
+        "reasons": cover.get("reasons") or [],
+        "opening": cover.get("opening") or "",
+        "close": cover.get("close") or "",
         "closing": cover.get("closing") or "Sincerely,",
     }
 
@@ -997,7 +1007,26 @@ async def revise(req: ReviseReq, _user: str = Depends(require_user)):
         cand_c.setdefault("basics", prev_cover.get("basics"))
         for k in ("company", "job_title"):
             cand_c.setdefault(k, prev_cover.get(k))
-        ok, why = RC.contract_ok_cover(cand_c)
+        # An edit that touched only one reason must not lose the opening and the close around them.
+        for k in ("opening", "close"):
+            if not cand_c.get(k):
+                cand_c[k] = prev_cover.get(k, "")
+        # THE EDIT IS JUDGED IN THE FORMAT THE DOCUMENT WAS WRITTEN IN. A top-5 letter carries its
+        # body in `reasons`, so judging it as prose rejects every edit with "fewer than 2
+        # paragraphs" and silently keeps the old file -- and an edit the model DID make as prose
+        # would quietly turn his five reasons back into four paragraphs. The format is read from
+        # the job's own manifest: the run recorded it, so nothing has to be guessed here.
+        _fmt = "letter"
+        try:
+            _mp = os.path.join(outdir, "job.json")
+            if os.path.exists(_mp):
+                with open(_mp, encoding="utf-8") as _fh:
+                    _fmt = (json.load(_fh) or {}).get("cover_format") or "letter"
+        except Exception:
+            _fmt = "top5" if (prev_cover.get("reasons")) else "letter"
+        if prev_cover.get("reasons") and not RC.is_top5(_fmt):
+            _fmt = "top5"          # the document itself is the last word on its own shape
+        ok, why = RC.contract_ok_cover(cand_c, fmt=_fmt)
         if not ok:
             rejected.append("cover-letter edit rejected: %s - the previous version was kept" % why)
         else:

@@ -472,6 +472,18 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
   `${txt(x)}` that caused it. **`ErrorBoundary` wraps both route trees**, so the next one shows the
   error instead of a blank page.
 
+## READ THE DELIVERED ARTIFACT (2026-09-22)
+- **A TOP-5 letter rendered EMPTY** — header, salutation, "Sincerely", nothing between — because
+  `cover_struct` in generate() carried only `paragraphs` and dropped `reasons`/`opening`/`close`.
+  Same defect, same function, as `highlights`/`earlier` on the resume. Every check stopped at the
+  struct; the suite now unzips the DOCX and looks for the headlines. **`/revise` judges a document
+  in ITS OWN format** (read from the manifest), or a top-5 edit is refused as "fewer than 2
+  paragraphs" and the old file silently stands.
+- **Page furniture is never a job title.** `jd_ingest.looks_like_title()` refuses logo alt text,
+  "34 applicants", "2 weeks ago", Easy Apply/Remote/Full-time; `_is_employer_line()` refuses a name
+  that reappears as a byline prefix (`Anaconda` / `Anaconda · Germany`) and uses it as the EMPLOYER.
+  He got `cover_letter_anaconda_company-logo-for-anaconda.pdf` out of the old rule.
+
 ## THE RUN LOG (2026-09-22)
 - **A progress bar is not a record.** `runlog.py` streams every step of a run to the page (polled,
   owner-checked, `known:false` for an unknown run) and writes the same lines beside the documents.
@@ -482,22 +494,12 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
   and refused by `docnames.looks_generated()` on download (HTTP 400). One home, both directions.
 
 ## THE VISIT FEED — "a person just opened jobhuntwow.com" (2026-09-21)
-- **An anonymous VISIT is the only signal that says whether the site has traffic at all**, and this
-  project did not have it: the feeds were sign-in and new-job-description, both of which need an
-  account. `visitors.note_visit()` now sends one plain-text Telegram message per visitor per 6h,
-  naming the HOST (so jobhw.org is its own line), with its own hourly cap so a feed can never
-  silence an alert, and `notify.fire_and_forget` so Telegram's latency never reaches the page
-  (measured: 61 ms response while the sender slept 2 s).
-- **Gate on the PATH, never on the user agent** — the sibling site alerted "a person just opened
-  cybergod.ai" for a scanner claiming to be Safari on iOS while asking for `/.svn/wc.db`.
-- **A record with NO evidence still counts as a person.** Contradiction → client; absence →
-  unjudged → still reported. A corporate network strips the headers that would prove it, and
-  making that visitor invisible is the expensive error.
-- **Every suppression writes its reason** (`evt=visit_suppressed`) and the console lists them:
-  "why did I get no message" must be readable, not guessed.
-- And the first version's `from . import perseus_client` inside a `try/except: pass` meant the
-  path-shape rule silently never ran under `python backend/app/visitors.py` — PRESENCE IS NOT
-  REACHABILITY, caught by a contract failing, not by reading the code.
+- **An anonymous VISIT is the only signal that says whether the site has traffic at all.**
+  `visitors.note_visit()`: one plain-text Telegram message per visitor per 6h, naming the HOST, own
+  hourly cap so a feed can never silence an alert, sent by `notify.fire_and_forget` (measured: 61 ms
+  response while the sender slept 2 s). **Gate on the PATH, never the user agent.** A record with NO
+  evidence still counts as a person — absence is unjudged, not a bot. **Every suppression writes its
+  reason** and the console lists them, so "why did I get no message" is readable, not guessed.
 
 ## USAGE FEED AND BOT COUNTING (2026-09-21)
 - **A feed is not an alert** (`alerts.usage()`: own hourly cap, no per-subject cooldown), and

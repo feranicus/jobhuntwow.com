@@ -246,6 +246,51 @@ def company_in_text(candidate: str, body: str) -> str:
     return cand if cand.lower() in hay else ""
 
 
+# WHAT A PASTED PAGE PUTS ABOVE THE TITLE. A LinkedIn paste begins with the image alt text of the
+# employer's avatar -- "Company logo for Anaconda" -- and the first-plausible-line rule took it as
+# the role. He got `cover_letter_anaconda_company-logo-for-anaconda.pdf` and a letter addressed to
+# "Anaconda - Company logo for, Anaconda. Senior Technical Customer Success Manager - DACH".
+# These are the lines a job board renders around a posting, never a job title.
+_NOT_A_TITLE = re.compile(
+    r"(?i)^\s*(?:"
+    r"(?:company\s+)?logo(?:\s+(?:for|of))?\b"          # "Company logo for X", "logo"
+    r"|image\s+(?:for|of)\b|photo\s+of\b|avatar\b|banner\b|cover\s+image\b"
+    r"|\d+\s*(?:-|to)?\s*\d*\s*(?:followers?|employees?|applicants?)\b"
+    r"|(?:apply|save|share|report|easy\s+apply|show\s+more|see\s+more|sign\s+in)\b\s*$"
+    r"|posted\s+\d|\d+\s+(?:days?|hours?|minutes?|weeks?|months?)\s+ago\b"
+    r"|(?:full|part)-time\b\s*$|remote\b\s*$|on-?site\b\s*$|hybrid\b\s*$"
+    r"|matches?\s+your\b|your\s+profile\b|skills?\s*:\s*$"
+    r")")
+
+
+def looks_like_title(line: str) -> bool:
+    """Could this line be the ROLE? A refusal, not a guess: anything that reads as page furniture
+    is rejected so the NEXT line -- which is usually the actual title -- gets its turn."""
+    v = _clean(line or "")
+    if not v or len(v) > 110 or len(v) < 2:
+        return False
+    return not _NOT_A_TITLE.search(v)
+
+
+def _is_employer_line(line: str, head: list) -> bool:
+    """Is this standalone line the EMPLOYER rather than the role?
+
+    A job board prints the employer on its own line above the title AND again in the byline under
+    it: `Anaconda` ... `Anaconda · Germany (Remote)`. So a short line that reappears at the start of
+    a byline (`X ·`, `X |`, `X -`) is the company, and taking it as the title is how a run produced
+    title="Anaconda", company="Anaconda" and a file called `resume_anaconda_anaconda.pdf`.
+    """
+    v = _clean(line or "")
+    if not v or len(v) > 60 or len(v.split()) > 5:
+        return False
+    rx = re.compile(r"^" + re.escape(v) + r"\s*(?:[·|]|\s[-–—]\s)", re.I)
+    for other in head:
+        o = _clean(other)
+        if o != v and rx.match(o):
+            return True
+    return False
+
+
 def sniff_title_company(body: str) -> tuple:
     """(title, company) from a PASTED job description. Deterministic, conservative, and tested.
 
@@ -270,7 +315,7 @@ def sniff_title_company(body: str) -> tuple:
         if len(ln) > 160:
             continue
         m = re.match(r"^(?:job\s*)?(?:title|position|role)\s*[:\-]\s*(.+)$", ln, re.I)
-        if m and not title:
+        if m and not title and looks_like_title(m.group(1)):
             title = _clean(m.group(1))
         m = re.match(r"^(?:company|employer|organisation|organization|client)\s*[:\-]\s*(.+)$",
                      ln, re.I)
@@ -282,7 +327,9 @@ def sniff_title_company(body: str) -> tuple:
         for i, ln in enumerate(head):
             # "SRE" and "CTO" are real titles; a 6-character floor dropped them.
             if (2 <= len(ln) <= 110 and not _SECTION.match(ln)
-                    and not ln.endswith((".", ":")) and not listish[i]):
+                    and not ln.endswith((".", ":")) and not listish[i]
+                    and looks_like_title(ln)
+                    and not _is_employer_line(ln, head)):
                 title = _clean(ln)
                 break
     if title and not company:
@@ -294,6 +341,17 @@ def sniff_title_company(body: str) -> tuple:
                 title = _clean(title[:m.start()])
 
     text = "\n".join(lines[:80])
+    # THE BYLINE NAMES THE EMPLOYER, and we already identified it while refusing it as a title:
+    # `Anaconda` on its own line and `Anaconda · Germany (Remote)` two lines down. Using it here
+    # means a LinkedIn paste answers "who is this job with?" from the posting's own words instead
+    # of falling through to the model rung or the URL.
+    if not company:
+        for ln in head:
+            if _is_employer_line(ln, head):
+                cand = _looks_like_name(ln)
+                if cand:
+                    company = cand
+                    break
     if not company:
         for rx in (
             # "About Acme" — but `_SECTION` rejects About the job / About us / About the role.
@@ -425,6 +483,38 @@ def _selftest() -> int:
        "from_text() carries the employer out to the manifest, the card and the filename")
     d2 = from_text("About the job\n" + "y" * 80, company="Given Ltd")
     ck(d2["company"] == "Given Ltd", "an employer the caller supplies always wins over the sniff")
+
+    # ---------------------------------------------------------------- a LinkedIn paste
+    # HIS PASTE, 2026-09-22. The first line is the employer's avatar alt text, the second is the
+    # employer on its own line, the third is the real role, and the fourth is the byline. The old
+    # "first plausible line wins" rule took line 1, so he got a file called
+    # `cover_letter_anaconda_company-logo-for-anaconda.pdf` and a letter addressed to
+    # "Anaconda - Company logo for, Anaconda. Senior Technical Customer Success Manager - DACH".
+    li = ("Company logo for Anaconda\n"
+          "Anaconda\n"
+          "Senior Technical Customer Success Manager - DACH\n"
+          "Anaconda · Germany (Remote)\n"
+          "2 weeks ago · 34 applicants\n"
+          "About the job\n"
+          "We are looking for a Technical CSM to own the DACH region.\n")
+    t, c = sniff_title_company(li)
+    ck(t == "Senior Technical Customer Success Manager - DACH",
+       "a LinkedIn paste yields the ROLE, not the logo alt text  ->  %r" % t)
+    ck(c == "Anaconda", "...and the byline answers who the job is with  ->  %r" % c)
+    for noise in ("Company logo for Anaconda", "logo", "Image for Acme", "34 applicants",
+                  "2 weeks ago", "Easy Apply", "Remote", "Full-time", "Save", "Show more"):
+        ck(not looks_like_title(noise), "page furniture is never a title: %r" % noise)
+    for real in ("Senior Technical Customer Success Manager - DACH", "SRE", "CTO",
+                 "Project Manager", "Head of Platform Engineering"):
+        ck(looks_like_title(real), "a real title is still a title: %r" % real)
+    ck(_is_employer_line("Anaconda", ["Anaconda", "Anaconda · Germany (Remote)"]),
+       "a name repeated as a byline prefix is the EMPLOYER line")
+    ck(not _is_employer_line("Senior Technical Customer Success Manager - DACH",
+                             ["Anaconda", "Anaconda · Germany"]),
+       "...and a role that appears once is not")
+    ck(sniff_title_company("Senior Project Manager at Cisco Systems\nAbout the job\nWe need...")
+       == ("Senior Project Manager", "Cisco Systems"),
+       "the ordinary paste is unchanged by any of this")
 
     print("=" * 50)
     if fails:
