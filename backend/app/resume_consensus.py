@@ -341,6 +341,23 @@ def normalise_cover(d: dict) -> dict:
     d["paragraphs"] = _strs(d.get("paragraphs") or d.get("body"), 8)
     d["salutation"] = str(d.get("salutation") or "").strip()
     d["closing"] = str(d.get("closing") or "").strip()
+    # TOP-5: tolerate the two shapes a model actually returns -- a list of objects, or a list of
+    # strings -- and carry both halves so the renderer can bold the claim and print the proof.
+    reasons = []
+    for r in (d.get("reasons") or [])[:8]:
+        if isinstance(r, dict):
+            head = str(r.get("headline") or r.get("title") or r.get("reason") or "").strip()
+            why = str(r.get("why") or r.get("detail") or r.get("evidence") or
+                      r.get("proof") or "").strip()
+        else:
+            txt = str(r or "").strip()
+            head, _sep, why = txt.partition(" - ") if " - " in txt else txt.partition(": ")
+            head, why = head.strip(), why.strip()
+        if head or why:
+            reasons.append({"headline": head[:160], "why": why[:600]})
+    d["reasons"] = reasons
+    d["opening"] = str(d.get("opening") or "").strip()
+    d["close"] = str(d.get("close") or "").strip()
     return d
 
 
@@ -363,7 +380,15 @@ def resume_depth(d: dict) -> int:
 
 
 def cover_depth(d: dict) -> int:
-    return sum(len(str(p)) for p in ((d or {}).get("paragraphs") or []))
+    d = d or {}
+    n = sum(len(str(p)) for p in (d.get("paragraphs") or []))
+    # The TOP-5 format carries its prose in `reasons`, plus an opening and a close. Counting only
+    # `paragraphs` would call every top-5 letter THIN and reject it at the floor -- a check pointed
+    # at a field the document does not use.
+    n += sum(len(str(r.get("headline", ""))) + len(str(r.get("why", "")))
+             for r in (d.get("reasons") or []) if isinstance(r, dict))
+    n += len(str(d.get("opening") or "")) + len(str(d.get("close") or ""))
+    return n
 
 
 # FLOORS FROM ARITHMETIC, not taste, and set at the LOW end so only a genuinely thin answer fails.
@@ -377,6 +402,14 @@ def cover_depth(d: dict) -> int:
 # against real output is a number that eventually rejects good work.
 MIN_RESUME = int(os.environ.get("JHW_TAILOR_MIN_RESUME", "900"))
 MIN_COVER = int(os.environ.get("JHW_TAILOR_MIN_COVER", "700"))
+# THE TOP-5 LETTER HAS ITS OWN ARITHMETIC, so it needs its own floor. It is deliberately SHORTER
+# than a prose letter: five reasons of a headline (~40 chars) plus one or two sentences of proof
+# (~90-160) plus an opening and a close measures ~600-1000. Judging it against the prose floor of
+# 700 rejected a perfectly good five-reason letter as THIN -- a floor nobody measured against the
+# document it guards, which is the defect this codebase already has a rule about. 500 sits under
+# the short end of a real one and well above five stubs (~225), and the per-reason 40-char check
+# below refuses the stubs regardless of the total.
+MIN_COVER_TOP5 = int(os.environ.get("JHW_TAILOR_MIN_COVER_TOP5", "500"))
 
 
 def contract_ok_resume(d: Any, tokens_out=None) -> tuple:
@@ -397,11 +430,32 @@ def contract_ok_resume(d: Any, tokens_out=None) -> tuple:
     return True, ""
 
 
-def contract_ok_cover(d: Any, tokens_out=None) -> tuple:
+def is_top5(fmt) -> bool:
+    return str(fmt or "").lower().replace("-", "").replace("_", "") == "top5"
+
+
+def contract_ok_cover(d: Any, tokens_out=None, fmt: str = "letter") -> tuple:
     if not isinstance(d, dict):
         return False, "not a JSON object (%s)" % type(d).__name__
     if tokens_out is not None and int(tokens_out) < 40:
         return False, "only %s completion tokens (empty answer)" % tokens_out
+    if is_top5(fmt):
+        # EXACTLY FIVE. He asked for "TOP 5", and a top-5 letter with four reasons is a different
+        # document that happens to parse. Four is a failure to report and a trigger to try the next
+        # model, not something to render and hope he does not count.
+        rs = [r for r in (d.get("reasons") or [])
+              if isinstance(r, dict) and (str(r.get("headline") or "").strip()
+                                          or str(r.get("why") or "").strip())]
+        if len(rs) != 5:
+            return False, "TOP-5 asked for exactly 5 reasons, got %d" % len(rs)
+        thin = [i + 1 for i, r in enumerate(rs)
+                if len(str(r.get("headline", "")) + str(r.get("why", ""))) < 40]
+        if thin:
+            return False, "reason(s) %s carry no proof" % thin
+        dep = cover_depth(d)
+        if dep < MIN_COVER_TOP5:
+            return False, "THIN: %d chars of prose, floor is %d" % (dep, MIN_COVER_TOP5)
+        return True, ""
     paras = [p for p in (d.get("paragraphs") or []) if str(p).strip()]
     if len(paras) < 2:
         return False, "fewer than 2 paragraphs"
@@ -670,8 +724,47 @@ def resume_user(profile_txt: str, jd: dict) -> str:
            jd.get("location", ""), (jd.get("text") or "")[:9000])) + RESUME_RULES
 
 
-def cover_user(profile_txt: str, jd: dict) -> str:
+COVER_TOP5_RULES = (
+    "RULES FOR THE TOP-5 FORMAT (this is what the candidate asked for by name):\n"
+    "1. EXACTLY FIVE reasons. Not four, not six. They are ranked: #1 is the single strongest\n"
+    "   argument for THIS posting, and the ranking is by what the EMPLOYER asked for, not by what\n"
+    "   the candidate is proudest of.\n"
+    "2. Each reason is a HEADLINE (max ~12 words, a claim the employer cares about) plus 1-2\n"
+    "   sentences of PROOF: what he did, where, and the result with a number where the profile\n"
+    "   gives one.\n"
+    "3. Each reason must map to a DIFFERENT requirement in the posting. Five ways of saying\n"
+    "   'experienced professional' is one reason and four pieces of filler.\n"
+    "4. Every fact comes from the profile or the project portfolio. If the posting asks for\n"
+    "   something the profile does not evidence, it does not become a reason - leave it out.\n"
+    "5. A short opening line before the five and a short close after them. No 'I am writing to\n"
+    "   apply', no restating the resume, no adjectives standing in for evidence.\n"
+)
+
+
+def cover_user(profile_txt: str, jd: dict, fmt: str = "letter") -> str:
+    """The cover-letter prompt. `fmt` is "letter" (prose) or "top5" (five ranked reasons)."""
     jd = jd or {}
+    if str(fmt or "").lower() in ("top5", "top-5", "top_5"):
+        return (
+            "CANDIDATE PROFILE (the ONLY permitted source of facts):\n%s\n\n"
+            "TARGET JOB\ntitle: %s\ncompany: %s\nlocation: %s\ndescription:\n%s\n\n"
+            "Write the cover letter as TOP 5 REASONS TO HIRE THIS CANDIDATE FOR THIS ROLE.\n"
+            "Return JSON with EXACTLY this shape:\n"
+            "{\n"
+            '  "salutation": "Hiring Team, or a named person if the JD gives one",\n'
+            '  "opening": "One or two sentences: the role, and why the five below answer it.",\n'
+            '  "reasons": [\n'
+            '    {"headline": "<=12 words, the claim the employer cares about",\n'
+            '     "why": "1-2 sentences of proof from the profile: what he did, where, the result '
+            'with a number where the profile gives one"}\n'
+            "    // EXACTLY 5, strongest first, each answering a DIFFERENT requirement\n"
+            "  ],\n"
+            '  "close": "Two sentences at most: what he would do first, and a clear next step.",\n'
+            '  "closing": "Sincerely,"\n'
+            "}\n"
+            "No sentence may contain a fact absent from the profile."
+            % (str(profile_txt or "")[:9000], jd.get("title", ""), jd.get("company", ""),
+               jd.get("location", ""), (jd.get("text") or "")[:6000])) + COVER_TOP5_RULES
     return (
         "CANDIDATE PROFILE (the ONLY permitted source of facts):\n%s\n\n"
         "TARGET JOB\ntitle: %s\ncompany: %s\nlocation: %s\ndescription:\n%s\n\n"
@@ -981,7 +1074,8 @@ def _scores(audit: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- revision verification
-def revision_ok(kind: str, before: dict, after: Any, profile: Any = None) -> tuple:
+def revision_ok(kind: str, before: dict, after: Any, profile: Any = None,
+                cover_format: str = "letter") -> tuple:
     """May this revision replace the draft? Returns (ok, reason_if_not).
 
     THIS is the only place the document can actually change, so this is where the "never gut it"
@@ -1025,7 +1119,10 @@ def revision_ok(kind: str, before: dict, after: Any, profile: Any = None) -> tup
         if lost:
             return False, "revision DROPPED employer(s): %s" % ", ".join(sorted(set(lost))[:6])
         return True, ""
-    ok, why = contract_ok_cover(after)
+    # A REVISION MAY NOT CHANGE THE FORMAT HE CHOSE. The auditor's job is to make the five
+    # reasons truer, never to turn them back into four paragraphs of prose, and the contract is
+    # what refuses that.
+    ok, why = contract_ok_cover(after, fmt=cover_format)
     if not ok:
         return False, "revision fails the contract: %s" % why
     d0, d1 = cover_depth(before), cover_depth(after)
@@ -1041,7 +1138,8 @@ TIMEOUT = float(os.environ.get("JHW_TAILOR_TIMEOUT_S", "150"))
 MAX_TOK = {"resume": 6000, "cover": 2000, "audit": 3000, "revise": 6500}
 
 
-async def _draft_one(kind: str, model: str, profile_txt: str, jd: dict, poster, timeout) -> dict:
+async def _draft_one(kind: str, model: str, profile_txt: str, jd: dict, poster, timeout,
+                     cover_format: str = "letter") -> dict:
     """One author attempt for one document. Never raises: the chain walker reads the report."""
     t0 = time.time()
     rep = {"model": model, "doc": kind, "ok": False, "why": "", "depth": 0,
@@ -1049,13 +1147,14 @@ async def _draft_one(kind: str, model: str, profile_txt: str, jd: dict, poster, 
     try:
         sysmsg = RESUME_SYS if kind == "resume" else COVER_SYS
         usermsg = (resume_user(profile_txt, jd) if kind == "resume"
-                   else cover_user(profile_txt, jd))
+                   else cover_user(profile_txt, jd, cover_format))
         txt, usage, _fin = await call_model(model, sysmsg, usermsg, max_tokens=MAX_TOK[kind],
                                            timeout=timeout, poster=poster)
         raw = json_loose(txt)
         d = normalise_resume(raw) if kind == "resume" else normalise_cover(raw)
         tok = (usage or {}).get("completion_tokens")
-        ok, why = (contract_ok_resume(d, tok) if kind == "resume" else contract_ok_cover(d, tok))
+        ok, why = (contract_ok_resume(d, tok) if kind == "resume"
+                   else contract_ok_cover(d, tok, cover_format))
         rep.update({"ok": ok, "why": why,
                     "depth": resume_depth(d) if kind == "resume" else cover_depth(d),
                     "data": d if ok else None})
@@ -1067,7 +1166,8 @@ async def _draft_one(kind: str, model: str, profile_txt: str, jd: dict, poster, 
     return rep
 
 
-async def draft(profile_txt: str, jd: dict, *, chn=None, poster=None, timeout=None) -> dict:
+async def draft(profile_txt: str, jd: dict, *, chn=None, poster=None, timeout=None,
+                cover_format: str = "letter") -> dict:
     """Walk the chain until each document passes the contract AND the depth floor.
 
     A THIN draft is not accepted and rendered - it is a quality failure to report and a trigger to
@@ -1084,7 +1184,7 @@ async def draft(profile_txt: str, jd: dict, *, chn=None, poster=None, timeout=No
         if not need:
             break
         reps = await asyncio.gather(*[
-            _draft_one(k, model, profile_txt, jd, poster, timeout) for k in need])
+            _draft_one(k, model, profile_txt, jd, poster, timeout, cover_format) for k in need])
         for rep in reps:
             out["attempts"].append({k: rep[k] for k in ("model", "doc", "ok", "why", "depth", "ms")})
             if rep["ok"]:
@@ -1120,7 +1220,7 @@ async def audit_once(resume: dict, cover: dict, profile_txt: str, jd: dict, audi
 
 
 async def _revise_one(kind: str, model: str, before: dict, critique: dict, profile_txt: str,
-                      jd: dict, poster, timeout) -> dict:
+                      jd: dict, poster, timeout, cover_format: str = "letter") -> dict:
     rep = {"doc": kind, "model": model, "applied": False, "why": ""}
     try:
         txt, _u, _f = await call_model(model, REVISE_SYS,
@@ -1130,7 +1230,8 @@ async def _revise_one(kind: str, model: str, before: dict, critique: dict, profi
         # the model may answer {"resume": {...}} or the bare document
         cand = raw.get(kind) if isinstance(raw.get(kind), dict) else raw
         cand = normalise_resume(cand) if kind == "resume" else normalise_cover(cand)
-        ok, why = revision_ok(kind, before, cand, profile=profile_txt)
+        ok, why = revision_ok(kind, before, cand, profile=profile_txt,
+                              cover_format=cover_format)
         if ok:
             rep.update({"applied": True, "data": cand})
         else:
@@ -1164,7 +1265,7 @@ def _has_work(kind: str, crit: dict) -> bool:
 
 
 async def tailor(profile_txt: str, jd: dict, *, poster=None, chn=None, rounds=None,
-                 timeout=None) -> dict:
+                 timeout=None, cover_format: str = "letter") -> dict:
     """AUTHOR -> AUDITOR -> AUTHOR REVISES, bounded. The whole consensus in one call.
 
     Returns the two documents plus a full, honest record of how they got there. Nothing is hidden:
@@ -1176,7 +1277,8 @@ async def tailor(profile_txt: str, jd: dict, *, poster=None, chn=None, rounds=No
     timeout = TIMEOUT if timeout is None else timeout
     t0 = time.time()
 
-    d = await draft(profile_txt, jd, chn=chn, poster=poster, timeout=timeout)
+    d = await draft(profile_txt, jd, chn=chn, poster=poster, timeout=timeout,
+                    cover_format=cover_format)
     resume, cover = d["resume"], d["cover"]
     authors = d["authors"]
     audit_rec = {"auditor": None, "auditor_vendor": None, "authors": dict(authors),
@@ -1235,7 +1337,7 @@ async def tailor(profile_txt: str, jd: dict, *, poster=None, chn=None, rounds=No
             if not _has_work(kind, crit):
                 continue
             jobs.append(_revise_one(kind, authors.get(kind) or auditor, cur, crit, profile_txt,
-                                    jd, poster, timeout))
+                                    jd, poster, timeout, cover_format))
         for r in (await asyncio.gather(*jobs) if jobs else []):
             rec["revisions"].append({k: r[k] for k in ("doc", "model", "applied", "why")})
             if r["applied"]:

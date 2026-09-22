@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getJSON, postJSON, me } from "../api.js";
+import { getJSON, postJSON, putJSON, me } from "../api.js";
 
 /* Tailor: the thing Electronic promises in chat, actually wired.
    JD (paste or URL) + your profile  ->  POST /api/electronic/generate  ->  DOCX + PDF.
@@ -22,6 +22,13 @@ export default function Tailor() {
   const [answers, setAnswers] = useState({});     // gap question -> candidate's answer
   const [evidence, setEvidence] = useState([]);   // [{name, words, text}] portfolio / articles
   const [links, setLinks] = useState("");
+  // THE PROJECT PORTFOLIO — written once, kept on the server, read by every run afterwards.
+  const [port, setPort] = useState([]);          // [{id,title,org,role,period,url,stack,summary,achievements}]
+  const [portMsg, setPortMsg] = useState("");
+  const [portPick, setPortPick] = useState(null); // the preview: which projects THIS posting picks
+  const [usePort, setUsePort] = useState(true);
+  // "letter" = the usual prose letter · "top5" = Top 5 reasons to hire me for this role.
+  const [coverFormat, setCoverFormat] = useState("letter");
   const [chat, setChat] = useState([]);          // [{role:'you'|'electronic', text}]
   const [msg, setMsg] = useState("");
 
@@ -124,6 +131,45 @@ export default function Tailor() {
     setPct(100); setBusy("");
   }
 
+  useEffect(() => { (async () => {
+    try {
+      const r = await getJSON("/api/electronic/portfolio");
+      if (r && Array.isArray(r.items)) setPort(r.items);
+    } catch { /* an empty portfolio is a normal state, not an error */ }
+  })(); }, []);
+
+  async function savePortfolio(next) {
+    setPort(next);                                   // optimistic: the page must feel immediate
+    setPortMsg("saving…");
+    try {
+      const r = await putJSON("/api/electronic/portfolio", { items: next });
+      if (r && Array.isArray(r.items)) {
+        setPort(r.items);                            // RENDER WHAT WAS STORED, not what we sent:
+        setPortMsg(`saved ${r.count} project(s)`);   // the store bounds and drops, and the page
+      } else {                                       // must show the truth after it did.
+        setPortMsg("not saved — the server did not confirm");
+      }
+    } catch (e) { setPortMsg("not saved: " + String(e && e.message ? e.message : e)); }
+  }
+
+  const blankProject = () => ({
+    id: "", title: "", org: "", role: "", period: "", url: "",
+    stack: [], tags: [], summary: "", achievements: [],
+  });
+  const setProject = (i, patch) =>
+    setPort(port.map((p, j) => (i === j ? { ...p, ...patch } : p)));
+  const listToText = (v) => (Array.isArray(v) ? v.join(", ") : String(v || ""));
+  const textToList = (v) => String(v || "").split(/[,;\n]/).map(x => x.trim()).filter(Boolean);
+
+  async function previewPortfolio() {
+    setPortPick(null);
+    if (!jdText.trim()) { setPortMsg("paste the job description first, then preview"); return; }
+    try {
+      const r = await postJSON("/api/electronic/portfolio/preview", { text: jdText });
+      setPortPick(r); setPortMsg("");
+    } catch (e) { setPortMsg(String(e && e.message ? e.message : e)); }
+  }
+
   async function run() {
     setErr(""); setResult(null);
     if (!jdText.trim() && !jdUrl.trim()) { setErr("Paste the job description (or give a URL)."); return; }
@@ -137,6 +183,7 @@ export default function Tailor() {
       setPct(35); setBusy("Writing your resume and cover letter…");
       const r = await postJSON("/api/electronic/generate",
                                { email, jd, profile, answers, use_photo: usePhoto,
+                                 use_portfolio: usePort, cover_format: coverFormat,
                                  evidence: evidence.map(x => ({ name: x.name, text: x.text })),
                                  links: links.split(/[\s,]+/).filter(Boolean) });
       if (r.detail) { setBusy(""); setErr(String(r.detail)); return; }
@@ -190,6 +237,96 @@ export default function Tailor() {
                   placeholder="Upload a PDF/DOCX above, or paste your resume text here…" />
       </div>
 
+      <div className="card">
+        <label className="lbl">PROJECT PORTFOLIO (kept for every future application)</label>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Write a project once. For each posting we pick the ones it actually asks for — by matching
+          the posting's own words against your stack, tags and titles — and hand those projects to
+          the writer as facts. Nothing is invented, and a posting none of them fit adds nothing
+          rather than padding.
+        </p>
+
+        {port.map((p, i) => (
+          <div key={p.id || i} className="card" style={{ background: "#f8fafc", marginBottom: 10 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input className="input" style={{ flex: "2 1 220px" }} placeholder="Project title"
+                     value={p.title || ""} onChange={e => setProject(i, { title: e.target.value })} />
+              <input className="input" style={{ flex: "1 1 140px" }} placeholder="Client / employer"
+                     value={p.org || ""} onChange={e => setProject(i, { org: e.target.value })} />
+              <input className="input" style={{ flex: "1 1 140px" }} placeholder="Your role"
+                     value={p.role || ""} onChange={e => setProject(i, { role: e.target.value })} />
+              <input className="input" style={{ flex: "0 1 120px" }} placeholder="2023-2024"
+                     value={p.period || ""} onChange={e => setProject(i, { period: e.target.value })} />
+            </div>
+            <input className="input" style={{ marginTop: 8 }} placeholder="Link (optional)"
+                   value={p.url || ""} onChange={e => setProject(i, { url: e.target.value })} />
+            <input className="input" style={{ marginTop: 8 }}
+                   placeholder="Stack / methods, comma separated — these are what match a posting"
+                   value={listToText(p.stack)}
+                   onChange={e => setProject(i, { stack: textToList(e.target.value) })} />
+            <textarea className="input" style={{ marginTop: 8 }} rows={2}
+                      placeholder="What the project was, in one or two sentences."
+                      value={p.summary || ""}
+                      onChange={e => setProject(i, { summary: e.target.value })} />
+            <textarea className="input" style={{ marginTop: 8 }} rows={3}
+                      placeholder="Achievements, one per line. Numbers where you have them — these are what a cover letter uses."
+                      value={(p.achievements || []).join("\n")}
+                      onChange={e => setProject(i, { achievements: e.target.value.split("\n").map(x => x.trim()).filter(Boolean) })} />
+            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+              <button className="btn ghost sm" type="button"
+                      onClick={() => savePortfolio(port.filter((_, j) => j !== i))}>Remove</button>
+            </div>
+          </div>
+        ))}
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button className="btn ghost sm" type="button"
+                  onClick={() => setPort([...port, blankProject()])}>+ Add a project</button>
+          <button className="btn sm" type="button" onClick={() => savePortfolio(port)}>Save portfolio</button>
+          <button className="btn ghost sm" type="button" onClick={previewPortfolio}>
+            Which of these fit this posting?
+          </button>
+          <label className="muted" style={{ marginLeft: "auto" }}>
+            <input type="checkbox" checked={usePort}
+                   onChange={e => setUsePort(e.target.checked)} /> use the portfolio for this run
+          </label>
+        </div>
+        {portMsg && <p className="muted" style={{ marginTop: 6 }}>{portMsg}</p>}
+        {portPick && (
+          <div className="card" style={{ background: "#f8fafc", marginTop: 10 }}>
+            {(portPick.selected || []).length ? (
+              <>
+                <b>This posting would use:</b>
+                <ul>
+                  {(portPick.selected || []).map(x => (
+                    <li key={x.id}>
+                      {x.title}{x.org ? ` · ${x.org}` : ""}
+                      <span className="muted"> — matched: {(x.matched || []).join(", ")}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : <p className="muted" style={{ margin: 0 }}>{portPick.note}</p>}
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <label className="lbl">COVER LETTER FORMAT</label>
+        <label style={{ display: "block", marginTop: 6 }}>
+          <input type="radio" name="coverfmt" checked={coverFormat === "letter"}
+                 onChange={() => setCoverFormat("letter")} />{" "}
+          Classic letter — 3-4 short paragraphs, 250-350 words.
+        </label>
+        <label style={{ display: "block", marginTop: 6 }}>
+          <input type="radio" name="coverfmt" checked={coverFormat === "top5"}
+                 onChange={() => setCoverFormat("top5")} />{" "}
+          <b>Top 5 reasons to hire me</b> — five ranked reasons, each answering a different
+          requirement in the posting, each backed by a real achievement from your profile or
+          portfolio.
+        </label>
+      </div>
+
       <button className="btn" onClick={run} disabled={!!busy}>
         {busy ? busy : "Generate resume + cover letter →"}
       </button>
@@ -213,6 +350,11 @@ export default function Tailor() {
             {result.answers_used ? ` · used ${result.answers_used} of your answers` : ""}
             {result.evidence_used ? ` · ${result.evidence_used} attachment(s)` : ""}
             {result.links_used ? ` · ${result.links_used} link(s) read` : ""}
+            {result.cover_format === "top5" ? " · cover letter: top 5 reasons" : ""}
+            {(result.portfolio_used || []).length
+              ? ` · projects used: ${(result.portfolio_used || []).map(x => x.title).join(", ")}`
+              : ""}
+            {result.portfolio_note ? ` · ${result.portfolio_note}` : ""}
             {result.photo_used ? " · photo included" : ""}
           </p>
           <div>

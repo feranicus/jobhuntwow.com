@@ -11,6 +11,15 @@ export async function postJSON(path, body) {
   });
   return r.json();
 }
+export async function putJSON(path, body) {
+  const r = await fetch(path, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
 export async function patchJSON(path, body) {
   const r = await fetch(path, {
     method: "PATCH",

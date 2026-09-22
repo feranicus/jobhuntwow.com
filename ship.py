@@ -317,7 +317,11 @@ def do_tests() -> bool:
                 # its refusal to render "I could not look" as a zero, and the wiring check that
                 # proves the gate runs BEFORE the spend at every chokepoint.
                 "backend/app/llm_meter.py", "backend/app/hosts.py", "backend/app/security.py",
-                "backend/app/spend_watch.py", "tests/test_security_console.py"):
+                "backend/app/spend_watch.py", "tests/test_security_console.py",
+                # The project portfolio (his projects, picked per posting by arithmetic) and the
+                # TOP-5 cover letter he asked for by name: the five must BE five, must survive the
+                # audit round, and must reach the rendered file.
+                "backend/app/portfolio.py", "tests/test_portfolio_and_top5.py"):
         p = os.path.join(HERE, rel)
         if not os.path.exists(p):
             say("  [X] MISSING test file %s - a suite that is absent cannot pass" % rel)

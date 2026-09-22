@@ -450,6 +450,16 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
 - **The deploy's `deploy_probe` is a GATE now**: it printed `EVENTS_LOG_UNWRITABLE` and exited 0, so
   a deploy with a dead event pipeline still said DONE.
 
+## THE PORTFOLIO AND THE TOP-5 COVER LETTER (2026-09-22)
+- **`portfolio.py` is the one home for his projects**, and the per-posting selection is ARITHMETIC,
+  never a model: it counts the posting's own words against each project's stack, tags and title, so
+  it cannot invent a project, it carries `matched` (a derived fact, labelled), and a posting that
+  matches nothing selects NOTHING — an honest empty beats padding.
+- **TOP-5 IS A CONTRACT, NOT A PROMPT.** Exactly five reasons, each with proof; four or six is a
+  rejected draft that walks the chain, and `revision_ok` refuses a revision that turns the five
+  back into prose. **A floor must be measured against the document it guards** —
+  `MIN_COVER_TOP5=500`, because the 700-char prose floor called every good five-reason letter THIN.
+
 ## THE VISIT FEED — "a person just opened jobhuntwow.com" (2026-09-21)
 - **An anonymous VISIT is the only signal that says whether the site has traffic at all**, and this
   project did not have it: the feeds were sign-in and new-job-description, both of which need an

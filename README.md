@@ -249,6 +249,28 @@ typed the short domain appeared anywhere in the record. They are proxied here, o
 `host=jobhw.org`, and then bounced (`backend/app/hosts.py`). They show up as their own row on the
 Security page.
 
+## The project portfolio, and the Top-5 cover letter
+
+**Portfolio.** Write each project once on the Tailor page — title, client, role, period, stack,
+what it was, and the achievements with their numbers. It is stored per account
+(`GET|PUT /api/electronic/portfolio`) and read by every tailoring run afterwards, so the same case
+studies never have to be re-attached.
+
+For each posting the server picks the projects **that posting actually asks for**, by counting the
+posting's own words against each project's stack, tags and title. That selection is arithmetic:
+instant, free, explainable, and structurally incapable of inventing a project. Every selected
+project is shown with the posting terms that matched it, and **"Which of these fit this posting?"**
+(`POST /api/electronic/portfolio/preview`) shows the selection before anything is generated. A
+posting none of them fit adds **nothing** — padding a cover letter with irrelevant work is the
+behaviour this replaces. The manifest records which projects went in and why.
+
+**Top 5 reasons.** A radio button on the Tailor page next to the classic letter. It writes the
+cover letter as five ranked reasons to hire you for that role, each answering a *different*
+requirement in the posting and each backed by a real achievement from your profile or portfolio.
+The contract enforces the format: exactly five, each carrying proof, or the draft is rejected and
+the next model in the chain is asked — and a later audit round may not quietly turn the five back
+into prose. It renders as five numbered points in the DOCX and the PDF.
+
 ## Security and observability (`/security`)
 
 `SECURITY.md` is the whole picture. The short version: one JSON event per request (carrying the

@@ -223,12 +223,33 @@ def _cover_blocks(d: dict) -> list:
         sal = "Dear " + sal
     out.append(("p", sal.rstrip(",") + ","))
 
-    paras = [_s(p) for p in _list(d.get("paragraphs"))]
-    if not any(paras):
-        paras = [_s(d.get(k)) for k in ("opening", "proof", "fit", "close")]
-    for p in paras:
-        if p:
-            out.append(("p", p))
+    # TOP-5 FORMAT. He asked for it by name: "Top 5 reasons why the company should hire me for X".
+    # It renders as an opening line, five NUMBERED reasons (headline then proof), and a close --
+    # numbered on purpose, because the whole point of the format is that the reader can count them.
+    reasons = [r for r in _list(d.get("reasons")) if isinstance(r, dict)]
+    if reasons:
+        op = _s(d.get("opening"))
+        if op:
+            out.append(("p", op))
+        out.append(("spacer", ""))
+        for i, r in enumerate(reasons, 1):
+            head = _s(r.get("headline"))
+            why = _s(r.get("why"))
+            line = "%d. %s" % (i, head) if head else "%d." % i
+            if why:
+                line = (line + " - " + why) if head else ("%d. %s" % (i, why))
+            out.append(("li", line))
+        out.append(("spacer", ""))
+        cl = _s(d.get("close"))
+        if cl:
+            out.append(("p", cl))
+    else:
+        paras = [_s(p) for p in _list(d.get("paragraphs"))]
+        if not any(paras):
+            paras = [_s(d.get(k)) for k in ("opening", "proof", "fit", "close")]
+        for p in paras:
+            if p:
+                out.append(("p", p))
 
     out += [("spacer", ""), ("p", _s(d.get("closing")) or "Sincerely,"), ("p", _name_of(d))]
     return out

@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import docnames, documents, jd_ingest, resume_consensus as RC
+from . import docnames, documents, jd_ingest, portfolio, resume_consensus as RC
 from .settings import DATA_DIR
 from .auth import require_user
 
@@ -331,7 +331,10 @@ class JDReq(BaseModel):
 
 
 class GenerateReq(BaseModel):
-    email: str
+    # NOT REQUIRED, AND NOT TRUSTED. The session identity overwrites it on the first line of the
+    # handler (the incident's second defect was exactly a caller naming whose data to operate on),
+    # so demanding it in the body only made a correct request fail with a 422.
+    email: str = ""
     jd: Any = None                 # the dict from /jd, or a raw JD string
     profile: Any = None            # dict or markdown text (candidate.md)
     job_id: Optional[str] = ""
@@ -339,6 +342,13 @@ class GenerateReq(BaseModel):
     evidence: Any = None           # [{name, text}] extracted from uploaded portfolio/articles
     links: Any = None              # ["https://..."] portfolio / publication URLs
     use_photo: bool = False
+    # THE STORED PROJECT PORTFOLIO. Written once on the Tailor page, read by every run after that;
+    # the server picks the projects THIS posting is about. `portfolio_ids` lets him override the
+    # selection and name the projects himself -- his judgement beats the arithmetic, always.
+    use_portfolio: bool = True
+    portfolio_ids: Any = None      # ["p123", ...] or None = let the selector choose
+    # "letter" (prose) or "top5" = Top 5 reasons to hire me for this role. His words, his format.
+    cover_format: str = "letter"
 
 
 async def _company_from_model(jd_text: str) -> str:
@@ -487,6 +497,44 @@ def _photo_path(email: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------- the project portfolio
+class PortfolioReq(BaseModel):
+    items: Any = None
+
+
+@router.get("/portfolio")
+def portfolio_get(email: str = Depends(require_user)):
+    """His projects. Session-scoped: the caller cannot name whose portfolio to read -- the
+    `?email=` parameter that let anybody list another user's jobs is exactly how the 2026-09
+    incident's second defect worked."""
+    items = portfolio.load(email)
+    return {"items": items, "count": len(items), "max": portfolio.MAX_ITEMS}
+
+
+@router.put("/portfolio")
+def portfolio_put(req: PortfolioReq, email: str = Depends(require_user)):
+    """Replace the whole portfolio. Returns WHAT WAS STORED, not what was sent, so the page renders
+    the truth after every bound and drop the store applied."""
+    stored = portfolio.save(email, req.items or [])
+    return {"items": stored, "count": len(stored), "max": portfolio.MAX_ITEMS}
+
+
+@router.post("/portfolio/preview")
+def portfolio_preview(req: JDReq, email: str = Depends(require_user)):
+    """WHICH projects would this posting pick, and WHY. No model, no spend, no documents written --
+    so he can see the selection before paying for a tailoring run, and override it if he disagrees."""
+    text = str(req.text or "")
+    if not text.strip() and req.url:
+        raise HTTPException(status_code=400, detail="paste the posting text to preview a selection")
+    items = portfolio.load(email)
+    chosen = portfolio.select(items, text)
+    return {"selected": portfolio.used(chosen), "considered": len(items),
+            "note": ("" if chosen else
+                     ("none of your %d project(s) match this posting - nothing will be added, "
+                      "which is better than padding" % len(items)) if items else
+                     "your portfolio is empty")}
+
+
 @router.post("/jd")
 async def parse_jd(req: JDReq):
     """Job description IN. Pasted text always works; URLs are best-effort by tier."""
@@ -550,6 +598,35 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
         else:
             # Say so instead of silently ignoring it - the candidate thinks it was read.
             link_notes.append("%s could not be read (%s)" % (u, got["note"]))
+    # THE PROJECT PORTFOLIO. Not another upload box: a store he fills once. The selection is
+    # arithmetic (portfolio.select counts the posting's own words against each project's stack,
+    # tags and title), so it is instant, free, explainable, and structurally incapable of inventing
+    # a project -- the same closed-set rule that governs everything a model is allowed to name here.
+    # A posting we have no project for selects NOTHING; padding a cover letter with irrelevant work
+    # is the behaviour this replaces.
+    port_used = []
+    port_note = ""
+    if req.use_portfolio:
+        try:
+            all_items = portfolio.load(req.email)
+            if req.portfolio_ids:
+                # HIS CHOICE OVERRIDES THE ARITHMETIC. Named projects go in as named, in his order.
+                wanted = [str(i) for i in req.portfolio_ids]
+                chosen = [{"item": it, "score": 0, "matched": ["chosen by the candidate"]}
+                          for w in wanted for it in all_items if it.get("id") == w]
+            else:
+                chosen = portfolio.select(all_items, str(jd.get("text") or ""))
+            blk = portfolio.block(chosen)
+            if blk:
+                ptxt += blk
+                port_used = portfolio.used(chosen)
+            elif all_items:
+                port_note = ("none of the %d project(s) in the portfolio matched this posting, so "
+                             "none were used - an honest empty is better than padding"
+                             % len(all_items))
+        except Exception as e:                       # a portfolio fault must never fail a run
+            port_note = "the portfolio could not be read (%s)" % type(e).__name__
+
     if len(ptxt.strip()) < 60:
         raise HTTPException(status_code=400,
                             detail="profile is too thin to tailor from (we need the candidate's "
@@ -567,7 +644,7 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
     # thin, nothing checked it against the JD, and a well-formed nothing rendered as a finished
     # resume. resume_consensus owns the chain, the depth floors and the guardrail that an audit can
     # never empty or gut a document. It never raises: partial success is legible.
-    con = await RC.tailor(ptxt, jd)
+    con = await RC.tailor(ptxt, jd, cover_format=req.cover_format)
     tailored = con["resume"] or {}
     cover = con["cover"] or {}
 
@@ -675,6 +752,12 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
         "quality": con["quality"],
         "consensus_ms": con["elapsed_ms"],
         "answers_used": len(answered),
+        "cover_format": ("top5" if RC.is_top5(req.cover_format) else "letter"),
+        # WHICH PROJECTS WENT IN, AND WHY THEY WERE PICKED. A derived fact is labelled as derived:
+        # `matched` carries the posting's own words that selected each project, so he can see the
+        # reasoning and drop anything he disagrees with.
+        "portfolio_used": port_used,
+        "portfolio_note": port_note,
         "evidence_used": ev_used,
         "links_used": link_used,
         "link_notes": link_notes,
