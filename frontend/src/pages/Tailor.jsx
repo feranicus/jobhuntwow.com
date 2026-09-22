@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getJSON, postJSON, putJSON, me } from "../api.js";
 
 /* Tailor: the thing Electronic promises in chat, actually wired.
@@ -26,9 +26,15 @@ export default function Tailor() {
   const [port, setPort] = useState([]);          // [{id,title,org,role,period,url,stack,summary,achievements}]
   const [portMsg, setPortMsg] = useState("");
   const [portPick, setPortPick] = useState(null); // the preview: which projects THIS posting picks
+  const [portImport, setPortImport] = useState(null); // what an uploaded PDF/Word file proposed
   const [usePort, setUsePort] = useState(true);
   // "letter" = the usual prose letter · "top5" = Top 5 reasons to hire me for this role.
   const [coverFormat, setCoverFormat] = useState("letter");
+  // THE RUN LOG. The browser mints the id, sends it with the run, and polls for the lines while
+  // the run is in flight — so the console shows what the platform IS DOING, not a percentage.
+  const [logLines, setLogLines] = useState([]);
+  const [logState, setLogState] = useState(null);
+  const logRef = useRef(null);
   const [chat, setChat] = useState([]);          // [{role:'you'|'electronic', text}]
   const [msg, setMsg] = useState("");
 
@@ -131,6 +137,12 @@ export default function Tailor() {
     setPct(100); setBusy("");
   }
 
+  // Keep the console pinned to the newest line while it streams.
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logLines]);
+
   useEffect(() => { (async () => {
     try {
       const r = await getJSON("/api/electronic/portfolio");
@@ -161,6 +173,24 @@ export default function Tailor() {
   const listToText = (v) => (Array.isArray(v) ? v.join(", ") : String(v || ""));
   const textToList = (v) => String(v || "").split(/[,;\n]/).map(x => x.trim()).filter(Boolean);
 
+  async function importPortfolio(f) {
+    if (!f) return;
+    setPortImport(null); setPortMsg(`reading ${f.name}…`);
+    const fd = new FormData(); fd.append("file", f);
+    try {
+      const r = await fetch("/api/electronic/portfolio/upload",
+                            { method: "POST", credentials: "include", body: fd });
+      const d = await r.json();
+      if (d.detail) { setPortMsg(String(d.detail)); return; }
+      // PROPOSED, NOT SAVED. They land in the editor for him to check; the store is only written
+      // when he presses Save, because a parser guessing at a two-column PDF must not be able to
+      // change stored facts on its own.
+      setPort([...port, ...(d.proposed || [])]);
+      setPortImport(d);
+      setPortMsg(d.note || "");
+    } catch (e) { setPortMsg(String(e && e.message ? e.message : e)); }
+  }
+
   async function previewPortfolio() {
     setPortPick(null);
     if (!jdText.trim()) { setPortMsg("paste the job description first, then preview"); return; }
@@ -170,8 +200,34 @@ export default function Tailor() {
     } catch (e) { setPortMsg(String(e && e.message ? e.message : e)); }
   }
 
+  function newRunId() {
+    try {
+      if (window.crypto && window.crypto.randomUUID) return "run-" + window.crypto.randomUUID();
+    } catch { /* older browsers fall through */ }
+    return "run-" + Date.now() + "-" + Math.random().toString(16).slice(2, 10);
+  }
+
+  // POLLING, NOT A STREAM. This endpoint sits behind a proxy that buffers, and a run is 15-45s: a
+  // poll that cannot half-work beats a stream that silently stalls. `after` makes it cheap —
+  // each call returns only what is new.
+  async function pollLog(runId, stop) {
+    let after = 0;
+    for (let i = 0; i < 400 && !stop.done; i++) {
+      try {
+        const r = await getJSON(`/api/electronic/runlog/${encodeURIComponent(runId)}?after=${after}`);
+        if (r && Array.isArray(r.lines)) {
+          if (r.lines.length) setLogLines(prev => prev.concat(r.lines));
+          after = r.next || after;
+          setLogState(r);
+          if (r.done) return;
+        }
+      } catch { /* a log that fails must never affect the run it observes */ }
+      await new Promise(res => setTimeout(res, 700));
+    }
+  }
+
   async function run() {
-    setErr(""); setResult(null);
+    setErr(""); setResult(null); setLogLines([]); setLogState(null);
     if (!jdText.trim() && !jdUrl.trim()) { setErr("Paste the job description (or give a URL)."); return; }
     if (!profile.trim()) { setErr("Add your profile/resume text — we never invent experience."); return; }
     try {
@@ -181,11 +237,15 @@ export default function Tailor() {
         setBusy(""); setErr(jd.note || "That site blocks fetching — paste the JD text instead."); return;
       }
       setPct(35); setBusy("Writing your resume and cover letter…");
+      const runId = newRunId();
+      const stop = { done: false };
+      pollLog(runId, stop);                       // fire and forget: it stops when the run does
       const r = await postJSON("/api/electronic/generate",
-                               { email, jd, profile, answers, use_photo: usePhoto,
+                               { email, jd, profile, answers, use_photo: usePhoto, run_id: runId,
                                  use_portfolio: usePort, cover_format: coverFormat,
                                  evidence: evidence.map(x => ({ name: x.name, text: x.text })),
                                  links: links.split(/[\s,]+/).filter(Boolean) });
+      stop.done = true;
       if (r.detail) { setBusy(""); setErr(String(r.detail)); return; }
       setPct(100); setResult(r); setBusy(""); loadJobs(email);
     } catch (e) {
@@ -246,6 +306,21 @@ export default function Tailor() {
           rather than padding.
         </p>
 
+        <div style={{ margin: "8px 0 12px" }}>
+          <label className="lbl" style={{ textTransform: "none", letterSpacing: 0 }}>
+            Already have it as a file? Import a PDF or Word portfolio (also .txt / .md)
+          </label>
+          <input type="file" accept=".pdf,.docx,.txt,.md"
+                 onChange={e => importPortfolio(e.target.files && e.target.files[0])} />
+          {portImport && (
+            <p className="muted" style={{ marginTop: 4 }}>
+              {portImport.name} · {portImport.kind} · {portImport.chars} characters read ·
+              {" "}{(portImport.proposed || []).length} project(s) proposed — <b>nothing is saved
+              until you press Save portfolio</b>.
+            </p>
+          )}
+        </div>
+
         {port.map((p, i) => (
           <div key={p.id || i} className="card" style={{ background: "#f8fafc", marginBottom: 10 }}>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -272,9 +347,10 @@ export default function Tailor() {
                       placeholder="Achievements, one per line. Numbers where you have them — these are what a cover letter uses."
                       value={(p.achievements || []).join("\n")}
                       onChange={e => setProject(i, { achievements: e.target.value.split("\n").map(x => x.trim()).filter(Boolean) })} />
-            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+            <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
               <button className="btn ghost sm" type="button"
                       onClick={() => savePortfolio(port.filter((_, j) => j !== i))}>Remove</button>
+              {p.source ? <span className="muted" style={{ fontSize: 12 }}>{p.source}</span> : null}
             </div>
           </div>
         ))}
@@ -330,6 +406,22 @@ export default function Tailor() {
       <button className="btn" onClick={run} disabled={!!busy}>
         {busy ? busy : "Generate resume + cover letter →"}
       </button>
+
+      {(logLines.length > 0) && (
+        <div className="card">
+          <label className="lbl">RUN LOG — what the platform is doing, line by line</label>
+          <pre ref={logRef} style={{
+            background: "#0b1020", color: "#d7e3ff", padding: 12, borderRadius: 8,
+            maxHeight: 340, overflow: "auto", fontSize: 12, lineHeight: 1.45,
+            whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0,
+          }}>{logLines.join("\n")}</pre>
+          <p className="muted" style={{ marginTop: 6 }}>
+            {logState && logState.done
+              ? "Run finished. The same log is saved beside your documents as a .txt."
+              : (logState ? `${logState.pct || 0}% · ${txt(logState.msg)}` : "waiting for the first line…")}
+          </p>
+        </div>
+      )}
 
       {busy && (
         <div className="card">

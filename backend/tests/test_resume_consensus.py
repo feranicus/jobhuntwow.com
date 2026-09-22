@@ -814,13 +814,20 @@ try:
     # (`resume_acme_cloud-director.pdf`), so this used to assert a doctrine that has since been
     # corrected: what matters is that all four exist, in the two kinds and the two formats, and
     # that each one says which job it was written for.
-    _kinds = sorted((f.split("_")[0], f.rsplit(".", 1)[-1]) for f in man["files"])
+    # 2026-09-22: A RUN NOW ALSO PRODUCES ITS LOG, so `files` is no longer only documents. The
+    # doctrine changed and this check changed with it, with the old reasoning kept: what matters is
+    # that all four DOCUMENTS exist, in the two kinds and the two formats, and that each one says
+    # which job it was written for. The run log is an artifact, not a document, and is asserted
+    # separately (tests/test_portfolio_and_top5.py) rather than being allowed to weaken this.
+    _docs = [f for f in man["files"] if f.startswith(("resume_", "cover_letter_"))]
+    _kinds = sorted((f.split("_")[0], f.rsplit(".", 1)[-1]) for f in _docs)
     check(_kinds == [("cover", "docx"), ("cover", "pdf"), ("resume", "docx"), ("resume", "pdf")],
           "all four documents were written (resume + cover, docx + pdf)", man["files"])
-    check(all(f.startswith(("resume_", "cover_letter_")) and len(f.split("_")) >= 3
-              for f in man["files"]),
-          "every filename carries the employer and the role, so he can tell them apart",
-          man["files"])
+    check(len(_docs) == 4 and all(len(f.split("_")) >= 3 for f in _docs),
+          "every DOCUMENT filename carries the employer and the role, so he can tell them apart",
+          _docs)
+    check(any(f.startswith("run-log") and f.endswith(".txt") for f in man["files"]),
+          "and the run log is written beside them", man["files"])
     check(isinstance(man.get("doc_naming"), dict) and man["doc_naming"].get("seq", 0) >= 1,
           "the manifest records the naming, so a revision rewrites the SAME files",
           man.get("doc_naming"))

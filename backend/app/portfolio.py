@@ -89,6 +89,9 @@ def _clean_item(raw) -> dict:
         "tags": lst("tags"),
         "summary": s("summary", 1200),
         "achievements": lst("achievements", 12, 400),
+        # WHERE THIS CAME FROM. An imported item says so, and keeps saying so after a save/load
+        # round trip -- six months later "did I write this or did a parser guess it?" has an answer.
+        "source": s("source", 120),
     }
     return item
 
@@ -202,6 +205,157 @@ def used(selected) -> list:
             for r in (selected or [])]
 
 
+# =================================================================================================
+# IMPORT FROM A FILE. "I have my project portfolio as PDF and it needs to add word and pdf files."
+#
+# Zero manual data entry is the product promise, so a portfolio that already exists as a document
+# must not have to be retyped project by project. The text is extracted by the caller (electronic.
+# extract_text handles PDF/DOCX/TXT/MD) and split HERE, deterministically.
+#
+# WHAT IT PROPOSES, IT DOES NOT SAVE. Parsing somebody's layout is guesswork by nature -- a PDF
+# built in two columns, a table, a designed CV -- so the items come back as a PROPOSAL the page
+# shows him for review, and nothing reaches the store until he presses save. That is the same rule
+# the rest of this codebase obeys: deterministic code may propose, the human decides the side
+# effect. Every proposed item carries `source`, so six months later it is obvious where a line came
+# from, and NOTHING is invented: every field is a substring of the file he uploaded.
+_DATE = re.compile(
+    r"((?:19|20)\d{2}\s*[-–—/]\s*(?:(?:19|20)\d{2}|present|now|current|today)"
+    r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*(?:19|20)\d{2}"
+    r"\s*[-–—/]\s*(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*"
+    r"(?:19|20)\d{2}|present|now|current))", re.I)
+_BULLET = re.compile(r"^\s*(?:[-*\u2022\u2023\u25aa\u25cf\u00b7>]|\d+[.)])\s+(.*\S)\s*$")
+_LABEL = re.compile(r"^\s*(stack|tech|technologies|tools|skills|technology|methods?|tags?)\s*[:\-]\s*(.+)$", re.I)
+_ROLE_LABEL = re.compile(r"^\s*(role|position|title|my role)\s*[:\-]\s*(.+)$", re.I)
+_ORG_LABEL = re.compile(r"^\s*(client|customer|employer|company|organisation|organization|for)\s*[:\-]\s*(.+)$", re.I)
+_URL = re.compile(r"https?://\S+")
+# A heading is short, not a sentence, and not a bullet. Measured against real portfolio exports:
+# titles run 2-9 words and rarely end in a full stop.
+_HEAD_MAX_WORDS = int(os.environ.get("JHW_PORTFOLIO_HEAD_WORDS", "12"))
+
+
+def _looks_like_heading(line: str) -> bool:
+    t = str(line or "").strip()
+    if not t or len(t) > 120:
+        return False
+    if _BULLET.match(t) or _LABEL.match(t) or _ROLE_LABEL.match(t) or _ORG_LABEL.match(t):
+        return False
+    words = t.split()
+    if len(words) > _HEAD_MAX_WORDS:
+        return False
+    if t.endswith((".", ";", ",", ":")) and not t.endswith("..."):
+        return False
+    # ALL CAPS, Title Case, or a line followed by a date range - all three are how a person writes
+    # a project title in a document.
+    letters = [c for c in t if c.isalpha()]
+    if letters and sum(1 for c in letters if c.isupper()) / len(letters) > 0.6:
+        return True
+    if bool(_DATE.search(t)):
+        return True
+    return t[:1].isupper() and len(words) <= _HEAD_MAX_WORDS
+
+
+def parse_text(text: str, source: str = "") -> dict:
+    """Split an uploaded portfolio into PROPOSED items. Returns {items, note, chars, headings}.
+
+    Deterministic, stdlib only, no model, no network: this runs on a file the candidate chose to
+    upload, and a parser that silently rewrites his words would be worse than no parser at all.
+    """
+    raw = str(text or "")
+    lines = [ln.rstrip() for ln in raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    chars = len(raw.strip())
+    if chars < 200:
+        # A SCANNED PDF IS IMAGES, and pypdf returns almost nothing for it. Say that plainly
+        # instead of proposing an empty portfolio and letting him wonder what went wrong.
+        return {"items": [], "chars": chars, "headings": 0,
+                "note": ("only %d characters of text could be read from this file - it is most "
+                         "likely a scan or an image-only PDF. Copy the text in and paste it, or "
+                         "export a text-based PDF." % chars)}
+
+    blocks, cur = [], None
+    for ln in lines:
+        if not ln.strip():
+            continue
+        if _looks_like_heading(ln):
+            if cur is not None and not cur["body"]:
+                # TWO HEADINGS IN A ROW: the first was a SECTION LABEL ("MY PROJECT PORTFOLIO",
+                # "Selected work"), not a project. Measured: it swallowed the first real project as
+                # its body and proposed the section title as the project. Replace it instead.
+                cur["head"] = ln.strip()
+                continue
+            cur = {"head": ln.strip(), "body": []}
+            blocks.append(cur)
+        elif cur is None:
+            cur = {"head": "", "body": [ln]}
+            blocks.append(cur)
+        else:
+            cur["body"].append(ln)
+
+    items = []
+    for b in blocks:
+        head = b["head"]
+        body = b["body"]
+        if not head and not body:
+            continue
+        period = ""
+        m = _DATE.search(head)
+        if m:
+            period = m.group(1).strip()
+            head = (head[:m.start()] + " " + head[m.end():]).strip(" -–—|,·\t")
+        title, org, role, url, stack, prose, ach = head, "", "", "", [], [], []
+        for ln in body:
+            mb = _BULLET.match(ln)
+            ml = _LABEL.match(ln)
+            mr = _ROLE_LABEL.match(ln)
+            mo = _ORG_LABEL.match(ln)
+            mu = _URL.search(ln)
+            if mu and not url:
+                url = mu.group(0)
+            if ml:
+                stack += [x.strip() for x in re.split(r"[,;/|]", ml.group(2)) if x.strip()]
+                continue
+            if mr and not role:
+                role = mr.group(2).strip()
+                continue
+            if mo and not org:
+                org = mo.group(2).strip()
+                continue
+            if mb:
+                ach.append(mb.group(1).strip())
+                continue
+            if not period:
+                md = _DATE.search(ln)
+                if md:
+                    period = md.group(1).strip()
+            prose.append(ln.strip())
+        # A block with a title and NOTHING else is a section header ("Projects", "Portfolio"),
+        # not a project. Dropping it beats proposing an empty row he has to delete.
+        if not (prose or ach or stack or url):
+            continue
+        # AND A BLOCK WITH NO TITLE IS NOT A PROJECT EITHER unless it carries structure of its own
+        # (bullets, a stack, a link). One wall of prose with no headings would otherwise come back
+        # as a single untitled row holding the whole document, which is worse than saying so.
+        if not title and not (ach or stack or url):
+            continue
+        item = _clean_item({
+            "title": title, "org": org, "role": role, "period": period, "url": url,
+            "stack": stack, "summary": " ".join(prose)[:1200],
+            "achievements": ach,
+        })
+        item["source"] = ("imported from %s" % source)[:120] if source else "imported"
+        items.append(item)
+
+    items = items[:MAX_ITEMS]
+    if not items:
+        return {"items": [], "chars": chars, "headings": len(blocks),
+                "note": ("%d characters were read but no project could be split out of them. The "
+                         "file may be one long block of prose - add the projects below by hand, or "
+                         "put each project under its own short title." % chars)}
+    return {"items": items, "chars": chars, "headings": len(blocks),
+            "note": ("%d project(s) read from %s. NOTHING IS SAVED YET - check them, fix anything "
+                     "the file laid out oddly, then press Save portfolio."
+                     % (len(items), source or "the file"))}
+
+
 # --------------------------------------------------------------------------- self-test
 def _selftest() -> int:
     import tempfile
@@ -281,6 +435,79 @@ def _selftest() -> int:
     ck("and the portfolio itself is capped", len(load(me)) == MAX_ITEMS, str(len(load(me))))
     save(me, [{"title": "", "summary": ""}, {"title": "keeper"}])
     ck("an empty row is dropped rather than stored", [i["title"] for i in load(me)] == ["keeper"])
+
+    # ---------------------------------------------------------------- import from a file
+    doc = """MY PROJECT PORTFOLIO
+
+Colt SD-WAN Rollout   2023 - 2024
+Client: Colt Technology Services
+Role: Programme Manager
+Stack: SD-WAN, Cisco Viptela, Prince2
+Migrated 40 sites across EMEA from MPLS to SD-WAN in eleven months.
+- Cut WAN spend by 22 percent, EUR 1.1M a year
+- Zero unplanned outages across every cutover window
+https://example.com/case/colt
+
+SOC Automation Platform  2022 - 2023
+Role: Lead Engineer
+Technologies: Python, Grafana, Loki
+Built the alerting and dashboards a 12-person security operations centre runs on.
+* Mean time to detect fell from 4 hours to 11 minutes
+* 40 dashboards, one deployment pipeline
+
+Bakery Ecommerce Shop
+Stack: React, Stripe
+A small online shop for a local bakery, built over six weekends.
+"""
+    got = parse_text(doc, "portfolio.pdf")
+    titles = [i["title"] for i in got["items"]]
+    ck("a real portfolio document splits into its projects", len(got["items"]) == 3, str(titles))
+    ck("the section header is not proposed as a project", "MY PROJECT PORTFOLIO" not in titles,
+       str(titles))
+    first = got["items"][0] if got["items"] else {}
+    ck("the title is read without its date range", first.get("title") == "Colt SD-WAN Rollout",
+       repr(first.get("title")))
+    ck("and the date range becomes the period", first.get("period", "").startswith("2023"),
+       repr(first.get("period")))
+    ck("labelled lines are read into their own fields",
+       first.get("role") == "Programme Manager" and "Colt" in first.get("org", ""),
+       "%r / %r" % (first.get("role"), first.get("org")))
+    ck("the stack is split on its separators",
+       set(first.get("stack") or []) == {"SD-WAN", "Cisco Viptela", "Prince2"},
+       str(first.get("stack")))
+    ck("bullets become achievements, prose becomes the summary",
+       len(first.get("achievements") or []) == 2
+       and "Migrated 40 sites" in first.get("summary", ""),
+       str(first.get("achievements")))
+    ck("a link in the block is kept", "example.com" in first.get("url", ""), first.get("url", ""))
+    ck("a second bullet style (*) is read too",
+       len(got["items"][1].get("achievements") or []) == 2,
+       str(got["items"][1].get("achievements")))
+    ck("every imported item says where it came from",
+       all("portfolio.pdf" in i.get("source", "") for i in got["items"]))
+    ck("and the note says plainly that nothing is saved yet",
+       "NOTHING IS SAVED YET" in got["note"], got["note"][:60])
+    # NOTHING IS INVENTED: every value the parser proposes is text from the file he uploaded.
+    flat = doc.lower()
+    invented = []
+    for it in got["items"]:
+        for v in ([it.get("title"), it.get("org"), it.get("role"), it.get("period"), it.get("url")]
+                  + list(it.get("stack") or []) + list(it.get("achievements") or [])):
+            if v and str(v).lower().strip() not in flat:
+                invented.append(v)
+    ck("NO field is invented - every one is a substring of the uploaded file", not invented,
+       str(invented[:3]))
+
+    scan = parse_text("   ", "scan.pdf")
+    ck("an image-only PDF is named as such, not proposed as an empty portfolio",
+       scan["items"] == [] and "scan or an image" in scan["note"], scan["note"][:60])
+    prose = parse_text("x " * 300, "wall.pdf")
+    ck("one wall of prose says so rather than guessing",
+       prose["items"] == [] and "no project could be split" in prose["note"], prose["note"][:60])
+    ck("the import round-trips through the store with its source intact",
+       bool(save(me, got["items"])) and load(me)[0].get("source", "").startswith("imported"),
+       load(me)[0].get("source", ""))
+    save(me, items)
 
     print("portfolio selftest: %d check(s) failed" % len(fails))
     return 1 if fails else 0

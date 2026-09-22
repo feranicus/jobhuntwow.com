@@ -252,7 +252,14 @@ Security page.
 ## The project portfolio, and the Top-5 cover letter
 
 **Portfolio.** Write each project once on the Tailor page — title, client, role, period, stack,
-what it was, and the achievements with their numbers. It is stored per account
+what it was, and the achievements with their numbers — **or import the portfolio you already have**
+as PDF, Word, txt or md (`POST /api/electronic/portfolio/upload`). The file is split into projects
+deterministically: a short title line starts a project, `Stack:` / `Role:` / `Client:` lines go to
+their own fields, bullets become achievements, a date range becomes the period, and every proposed
+value is a substring of your own file. The import **proposes**, it never saves — the projects land
+in the editor, you fix whatever the layout confused, and your Save is what writes them. A
+scanned/image-only PDF says so (`only N characters of text could be read`) instead of quietly
+proposing nothing. It is stored per account
 (`GET|PUT /api/electronic/portfolio`) and read by every tailoring run afterwards, so the same case
 studies never have to be re-attached.
 
@@ -270,6 +277,22 @@ requirement in the posting and each backed by a real achievement from your profi
 The contract enforces the format: exactly five, each carrying proof, or the draft is rejected and
 the next model in the chain is asked — and a later audit round may not quietly turn the five back
 into prose. It renders as five numbered points in the DOCX and the PDF.
+
+## The run log — what the platform did, while it does it
+
+Every tailoring run streams a console on the Tailor page: the job description it read, the projects
+the posting selected and the words that matched them, the model chain, **which model authored each
+document and whether the draft was accepted or rejected with the depth measured and the reason**,
+which model audited it (and that it was not the author), every revision applied or refused, the
+truth-check result, the files written, and what the run cost against the daily cap.
+
+The browser mints a `run_id`, sends it with the run and polls `GET /api/electronic/runlog/<run_id>`
+while the run is in flight — polling, not SSE, because the run is 15-45s behind a buffering proxy
+and a poll that cannot half-work beats a stream that silently stalls. The log is **owner-checked**:
+another account gets `known: false`, an anonymous caller gets 401.
+
+The same lines are written to the job folder as `run-log_<employer>_<role>.txt` and listed with the
+DOCX and the PDF, so the record outlives the browser tab.
 
 ## Security and observability (`/security`)
 

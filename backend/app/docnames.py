@@ -139,6 +139,11 @@ def looks_generated(name: str) -> bool:
     nm = str(name or "")
     if nm in ("job.json", "tailored.json"):
         return True
+    # THE RUN LOG IS ONE OF OURS TOO. It was listed beside the documents and then refused by
+    # this guard on download -- a file the page offers and the server will not serve is worse
+    # than one it never offered. Measured: HTTP 400 on `run-log-acme-project-manager.txt`.
+    if re.match(r"^run-log[_-][A-Za-z0-9][A-Za-z0-9._-]*\.txt$", nm):
+        return True
     return bool(re.match(r"^(resume|cover_letter)(_[A-Za-z0-9][A-Za-z0-9_-]*)?\.(pdf|docx)$", nm))
 
 
@@ -151,6 +156,10 @@ def _selftest() -> int:
             fails.append(m)
 
     print("[docnames] contracts")
+    ck(looks_generated("run-log-acme-project-manager.txt"),
+       "the run log downloads like any other artifact")
+    ck(not looks_generated("../../etc/passwd"), "and traversal still does not")
+    ck(not looks_generated("notes.txt"), "no other .txt in the folder is served")
     ck(doc_name("resume", "Cisco", "Project Manager") == "resume_cisco_project-manager.pdf",
        "his example: resume_cisco_project-manager.pdf")
     ck(doc_name("cover_letter", "Cisco", "Project Manager", ext="docx")

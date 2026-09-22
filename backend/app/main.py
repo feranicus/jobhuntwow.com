@@ -336,9 +336,27 @@ def security_overview(request: Request, hours: float = 24.0,
 
 
 # ---------- health / config ----------
+def _build_stamp() -> str:
+    """The build this container is running, written into the payload by deploy_direct at ship time.
+
+    "unknown" when the file is absent (a local run, or an image built some other way) -- never a
+    guess, and never today's date pretending to be the build date."""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "BUILD_STAMP"), encoding="utf-8") as fh:
+            return fh.read().strip()[:80] or "unknown"
+    except Exception:
+        return "unknown"
+
+
+BUILD = _build_stamp()
+
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "qwen_configured": qwen.configured(), "models": llm.routing_table()}
+    # `build` is here so the page can show WHICH CODE IT IS. Without it, "I do not see the feature
+    # you built" and "I am looking at an older build" are indistinguishable from the browser.
+    return {"ok": True, "build": BUILD, "qwen_configured": qwen.configured(),
+            "models": llm.routing_table()}
 
 @app.get("/api/models")
 async def models(user: str = Depends(require_user)):

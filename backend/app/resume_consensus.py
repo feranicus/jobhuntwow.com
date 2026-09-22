@@ -1138,8 +1138,19 @@ TIMEOUT = float(os.environ.get("JHW_TAILOR_TIMEOUT_S", "150"))
 MAX_TOK = {"resume": 6000, "cover": 2000, "audit": 3000, "revise": 6500}
 
 
+def _say(on_event, **fields):
+    """Tell the caller what just happened, if it asked to be told. NEVER raises and never blocks:
+    an observer that can break the run it observes is worse than no observer."""
+    if not on_event:
+        return
+    try:
+        on_event(**fields)
+    except Exception:
+        pass
+
+
 async def _draft_one(kind: str, model: str, profile_txt: str, jd: dict, poster, timeout,
-                     cover_format: str = "letter") -> dict:
+                     cover_format: str = "letter", on_event=None) -> dict:
     """One author attempt for one document. Never raises: the chain walker reads the report."""
     t0 = time.time()
     rep = {"model": model, "doc": kind, "ok": False, "why": "", "depth": 0,
@@ -1163,11 +1174,13 @@ async def _draft_one(kind: str, model: str, profile_txt: str, jd: dict, poster, 
     rep["ms"] = int((time.time() - t0) * 1000)
     if not rep["ok"]:
         print("[tailor] %s draft REJECTED by %s: %s" % (kind, model, rep["why"]), file=sys.stderr)
+    _say(on_event, evt="draft", doc=kind, model=model, ok=rep["ok"], depth=rep["depth"],
+         ms=rep["ms"], why=rep["why"])
     return rep
 
 
 async def draft(profile_txt: str, jd: dict, *, chn=None, poster=None, timeout=None,
-                cover_format: str = "letter") -> dict:
+                cover_format: str = "letter", on_event=None) -> dict:
     """Walk the chain until each document passes the contract AND the depth floor.
 
     A THIN draft is not accepted and rendered - it is a quality failure to report and a trigger to
@@ -1183,8 +1196,10 @@ async def draft(profile_txt: str, jd: dict, *, chn=None, poster=None, timeout=No
         need = [k for k in ("resume", "cover") if out[k] is None]
         if not need:
             break
+        _say(on_event, evt="author", model=model, asked_for=need)
         reps = await asyncio.gather(*[
-            _draft_one(k, model, profile_txt, jd, poster, timeout, cover_format) for k in need])
+            _draft_one(k, model, profile_txt, jd, poster, timeout, cover_format, on_event)
+            for k in need])
         for rep in reps:
             out["attempts"].append({k: rep[k] for k in ("model", "doc", "ok", "why", "depth", "ms")})
             if rep["ok"]:
@@ -1220,7 +1235,8 @@ async def audit_once(resume: dict, cover: dict, profile_txt: str, jd: dict, audi
 
 
 async def _revise_one(kind: str, model: str, before: dict, critique: dict, profile_txt: str,
-                      jd: dict, poster, timeout, cover_format: str = "letter") -> dict:
+                      jd: dict, poster, timeout, cover_format: str = "letter",
+                      on_event=None) -> dict:
     rep = {"doc": kind, "model": model, "applied": False, "why": ""}
     try:
         txt, _u, _f = await call_model(model, REVISE_SYS,
@@ -1265,7 +1281,7 @@ def _has_work(kind: str, crit: dict) -> bool:
 
 
 async def tailor(profile_txt: str, jd: dict, *, poster=None, chn=None, rounds=None,
-                 timeout=None, cover_format: str = "letter") -> dict:
+                 timeout=None, cover_format: str = "letter", on_event=None) -> dict:
     """AUTHOR -> AUDITOR -> AUTHOR REVISES, bounded. The whole consensus in one call.
 
     Returns the two documents plus a full, honest record of how they got there. Nothing is hidden:
@@ -1277,8 +1293,10 @@ async def tailor(profile_txt: str, jd: dict, *, poster=None, chn=None, rounds=No
     timeout = TIMEOUT if timeout is None else timeout
     t0 = time.time()
 
+    _say(on_event, evt="chain", models=list(chn or chain()), rounds=rounds,
+         cover_format=("top5" if is_top5(cover_format) else "letter"))
     d = await draft(profile_txt, jd, chn=chn, poster=poster, timeout=timeout,
-                    cover_format=cover_format)
+                    cover_format=cover_format, on_event=on_event)
     resume, cover = d["resume"], d["cover"]
     authors = d["authors"]
     audit_rec = {"auditor": None, "auditor_vendor": None, "authors": dict(authors),
@@ -1293,6 +1311,8 @@ async def tailor(profile_txt: str, jd: dict, *, poster=None, chn=None, rounds=No
     auditor = pick_auditor([a for a in authors.values() if a], chn)
     if not auditor:
         # REFUSE rather than fake independence. An audit by the author is not a second opinion.
+        _say(on_event, evt="audit", status="skipped",
+             why="no model distinct from the author was available")
         audit_rec["skipped"] = ("no model distinct from the author(s) %s was available - refusing "
                                 "to audit rather than fake an independent review"
                                 % ",".join(sorted({a for a in authors.values() if a})))
@@ -1301,6 +1321,8 @@ async def tailor(profile_txt: str, jd: dict, *, poster=None, chn=None, rounds=No
     else:
         audit_rec["auditor"] = auditor
         audit_rec["auditor_vendor"] = vendor(auditor)
+        _say(on_event, evt="audit", status="start", auditor=auditor, vendor=vendor(auditor),
+             authors={k: v for k, v in authors.items() if v})
 
     for rnd in range(1, rounds + 1):
         raw = await audit_once(resume or {}, cover or {}, profile_txt, jd, auditor,
@@ -1337,9 +1359,11 @@ async def tailor(profile_txt: str, jd: dict, *, poster=None, chn=None, rounds=No
             if not _has_work(kind, crit):
                 continue
             jobs.append(_revise_one(kind, authors.get(kind) or auditor, cur, crit, profile_txt,
-                                    jd, poster, timeout, cover_format))
+                                    jd, poster, timeout, cover_format, on_event))
         for r in (await asyncio.gather(*jobs) if jobs else []):
             rec["revisions"].append({k: r[k] for k in ("doc", "model", "applied", "why")})
+            _say(on_event, evt="revision", doc=r["doc"], model=r["model"], applied=r["applied"],
+                 why=r["why"])
             if r["applied"]:
                 if r["doc"] == "resume":
                     resume = r["data"]

@@ -455,10 +455,23 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
   never a model: it counts the posting's own words against each project's stack, tags and title, so
   it cannot invent a project, it carries `matched` (a derived fact, labelled), and a posting that
   matches nothing selects NOTHING — an honest empty beats padding.
+- **A PDF/WORD PORTFOLIO IMPORTS, AND THE IMPORT PROPOSES RATHER THAN SAVES.**
+  `portfolio.parse_text` splits a file deterministically (every proposed value is a substring of
+  his own file; `source` says which file), and only his Save writes to the store — a parser
+  guessing at a two-column CV must not change stored facts. A scan with no text layer SAYS so.
 - **TOP-5 IS A CONTRACT, NOT A PROMPT.** Exactly five reasons, each with proof; four or six is a
   rejected draft that walks the chain, and `revision_ok` refuses a revision that turns the five
   back into prose. **A floor must be measured against the document it guards** —
   `MIN_COVER_TOP5=500`, because the 700-char prose floor called every good five-reason letter THIN.
+
+## THE RUN LOG (2026-09-22)
+- **A progress bar is not a record.** `runlog.py` streams every step of a run to the page (polled,
+  owner-checked, `known:false` for an unknown run) and writes the same lines beside the documents.
+  A line is written when something HAPPENS: `[draft] cover deepseek-3.2 REJECTED depth=472 <- THIN`
+  is the line that makes a bad run diagnosable. `RC.tailor(on_event=...)` carries the chain, every
+  draft verdict with its depth, the auditor and its vendor, and each revision applied or refused.
+- **A file the page LISTS must be one the server SERVES** — the log was listed beside the documents
+  and refused by `docnames.looks_generated()` on download (HTTP 400). One home, both directions.
 
 ## THE VISIT FEED — "a person just opened jobhuntwow.com" (2026-09-21)
 - **An anonymous VISIT is the only signal that says whether the site has traffic at all**, and this

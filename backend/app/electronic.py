@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import docnames, documents, jd_ingest, portfolio, resume_consensus as RC
+from . import docnames, documents, jd_ingest, portfolio, resume_consensus as RC, runlog
 from .settings import DATA_DIR
 from .auth import require_user
 
@@ -345,6 +345,10 @@ class GenerateReq(BaseModel):
     # THE STORED PROJECT PORTFOLIO. Written once on the Tailor page, read by every run after that;
     # the server picks the projects THIS posting is about. `portfolio_ids` lets him override the
     # selection and name the projects himself -- his judgement beats the arithmetic, always.
+    # THE RUN LOG. The browser mints a run_id and polls /runlog/<id> while this call is in
+    # flight, so every step appears as it happens instead of behind a progress bar that says 35%
+    # for forty seconds. Empty = no live log (the run still writes its file).
+    run_id: str = ""
     use_portfolio: bool = True
     portfolio_ids: Any = None      # ["p123", ...] or None = let the selector choose
     # "letter" (prose) or "top5" = Top 5 reasons to hire me for this role. His words, his format.
@@ -519,6 +523,43 @@ def portfolio_put(req: PortfolioReq, email: str = Depends(require_user)):
     return {"items": stored, "count": len(stored), "max": portfolio.MAX_ITEMS}
 
 
+@router.get("/runlog/{run_id}")
+def run_log(run_id: str, after: int = 0, email: str = Depends(require_user)):
+    """The live run log, from `after` onwards. Polled by the Tailor page while a run is in flight.
+
+    Session-scoped AND owner-checked: a run log carries the employer, the role, the model chain and
+    what the run cost, which belongs to exactly one person. An unknown or expired run answers
+    `known: false` rather than 404, because the page polls before the POST has been handled and
+    again long after the buffer is gone, and neither of those is an error.
+    """
+    lines, nxt, state = runlog.read(run_id, after, owner=email)
+    return {"lines": lines, "next": nxt, **state}
+
+
+@router.post("/portfolio/upload")
+async def portfolio_upload(email: str = Depends(require_user), file: UploadFile = File(...)):
+    """Import projects from a PDF or Word portfolio. PROPOSES, never saves.
+
+    "I have my project portfolio as PDF and it needs also to have ability to add word and pdf
+    files." Retyping a portfolio that already exists as a document is exactly the manual data entry
+    this product promises not to ask for.
+
+    The split is deterministic (portfolio.parse_text) and every field it proposes is a substring of
+    his own file -- nothing here is written by a model. The result is handed back for REVIEW: the
+    page shows the projects, he fixes whatever the layout confused, and only his Save writes to the
+    store. A parser guessing at somebody's two-column CV must not be able to change stored facts.
+    """
+    blob = await file.read()
+    if len(blob) > 8 * 1024 * 1024:
+        raise HTTPException(400, "File is larger than 8 MB.")
+    text, kind = extract_text(file.filename or "", blob)
+    got = portfolio.parse_text(text, file.filename or "")
+    # The EXISTING count comes back beside the proposal, so the page can say "you already have N"
+    # before he adds to it.
+    return {"proposed": got["items"], "note": got["note"], "chars": got["chars"],
+            "kind": kind, "name": file.filename, "existing": len(portfolio.load(email))}
+
+
 @router.post("/portfolio/preview")
 def portfolio_preview(req: JDReq, email: str = Depends(require_user)):
     """WHICH projects would this posting pick, and WHY. No model, no spend, no documents written --
@@ -547,6 +588,17 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
     if isinstance(_user, str):      # FastAPI injected the session identity: it wins over the body.
         req.email = _user           # (a direct in-process call gets the raw Depends marker; tests do that)
     t0 = time.time()
+    # THE RUN LOG, from the first line. Everything below says what it DID, as it does it.
+    rid = runlog.start(req.run_id, req.email, "JOBHUNTWOW TAILOR")
+    runlog.event(rid, evt="tailor_start", user=req.email, run=req.run_id,
+                 cover_format=("top5" if RC.is_top5(req.cover_format) else "letter"))
+    _spend0 = None
+    try:
+        from . import llm_meter as _lm
+        _u = _lm.usage(req.email)
+        _spend0 = _u[0] if _u else None
+    except Exception:
+        _spend0 = None
 
     jd = req.jd
     if isinstance(jd, str):
@@ -559,7 +611,13 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
         raise HTTPException(status_code=400,
                             detail="jd.text is empty - parse it first via POST /api/electronic/jd")
 
+    runlog.progress(rid, 10, "read the job description")
+    runlog.event(rid, evt="jd", title=jd.get("title", ""), company=jd.get("company", ""),
+                 location=jd.get("location", ""), source=jd.get("source", ""),
+                 chars=len(str(jd.get("text") or "")))
+
     if not req.profile:
+        runlog.line(rid, "[stop] no profile was supplied - we never invent candidate facts")
         raise HTTPException(status_code=400,
                             detail="profile is required - we never invent candidate facts")
     ptxt = _profile_text(req.profile)
@@ -617,6 +675,12 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
             else:
                 chosen = portfolio.select(all_items, str(jd.get("text") or ""))
             blk = portfolio.block(chosen)
+            runlog.progress(rid, 18, "picking the projects this posting asks for")
+            for u in portfolio.used(chosen):
+                runlog.line(rid, "[portfolio] %s%s -> matched: %s"
+                            % (u.get("title") or "(untitled)",
+                               (" (%s)" % u["org"]) if u.get("org") else "",
+                               ", ".join(u.get("matched") or []) or "chosen by you"))
             if blk:
                 ptxt += blk
                 port_used = portfolio.used(chosen)
@@ -644,7 +708,40 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
     # thin, nothing checked it against the JD, and a well-formed nothing rendered as a finished
     # resume. resume_consensus owns the chain, the depth floors and the guardrail that an audit can
     # never empty or gut a document. It never raises: partial success is legible.
-    con = await RC.tailor(ptxt, jd, cover_format=req.cover_format)
+    runlog.progress(rid, 30, "four-model consensus: author -> independent auditor -> revision")
+
+    def _chain_event(**f):
+        """One line per thing the chain DID. A rejected draft is the most useful line in the log:
+        it names the model, the document, the depth measured and the reason it was refused."""
+        e = f.get("evt")
+        if e == "chain":
+            runlog.line(rid, "[chain] %s | rounds=%s | cover=%s"
+                        % (", ".join(f.get("models") or []), f.get("rounds"),
+                           f.get("cover_format")))
+        elif e == "author":
+            runlog.line(rid, "[author] %s is writing: %s"
+                        % (f.get("model"), ", ".join(f.get("asked_for") or [])))
+        elif e == "draft":
+            runlog.line(rid, "[draft] %-8s %-22s %s  depth=%s  %dms%s"
+                        % (f.get("doc"), f.get("model"),
+                           "ACCEPTED" if f.get("ok") else "REJECTED",
+                           f.get("depth"), int(f.get("ms") or 0),
+                           ("  <- %s" % f.get("why")) if not f.get("ok") else ""))
+        elif e == "audit":
+            if f.get("status") == "start":
+                runlog.line(rid, "[audit] %s (%s) is reviewing - it did not write either document"
+                            % (f.get("auditor"), f.get("vendor")))
+            else:
+                runlog.line(rid, "[audit] SKIPPED: %s" % f.get("why"))
+        elif e == "revision":
+            runlog.line(rid, "[revise] %-8s %-22s %s%s"
+                        % (f.get("doc"), f.get("model"),
+                           "applied" if f.get("applied") else "REFUSED",
+                           ("  <- %s" % f.get("why")) if not f.get("applied") else ""))
+        runlog.event(rid, **dict(f, evt="tailor_" + str(f.get("evt") or "step")))
+
+    con = await RC.tailor(ptxt, jd, cover_format=req.cover_format, on_event=_chain_event)
+    runlog.progress(rid, 70, "documents drafted, audited and revised")
     tailored = con["resume"] or {}
     cover = con["cover"] or {}
 
@@ -764,6 +861,43 @@ async def generate(req: GenerateReq, _user: str = Depends(require_user)):
         "photo_used": bool(photo),
         "errors": errors,
     }
+    # THE RUN LOG BECOMES AN ARTIFACT. Live in the browser AND a .txt beside the documents, so the
+    # record outlives the tab -- an incident tool one command away from being lost is a lesson this
+    # estate has already paid for once.
+    for w in (manifest.get("warnings") or []):
+        runlog.line(rid, "[truth-check] %s" % w)
+    if not (manifest.get("warnings") or []):
+        runlog.line(rid, "[truth-check] no invented facts found against the profile")
+    for f_ in manifest.get("files") or []:
+        runlog.line(rid, "OK  %s" % f_)
+    _spend1 = None
+    try:
+        from . import llm_meter as _lm2
+        _u2 = _lm2.usage(req.email)
+        _spend1 = _u2[0] if _u2 else None
+    except Exception:
+        _spend1 = None
+    if _spend0 is not None and _spend1 is not None:
+        runlog.event(rid, evt="tailor_cost", run_usd=round(max(0.0, _spend1 - _spend0), 6),
+                     day_usd=round(_spend1, 6), cap_usd=getattr(_lm2, "DAILY_USD", None),
+                     user=req.email)
+    else:
+        runlog.line(rid, "[cost] the meter could not be read for this run - NOT zero, unknown")
+    runlog.event(rid, evt="tailor_done", job_id=jid, files=len(manifest.get("files") or []),
+                 elapsed_ms=manifest["elapsed_ms"], warnings=len(manifest.get("warnings") or []),
+                 user=req.email)
+    runlog.done(rid, "TAILORING COMPLETE")
+    _log_name = docnames.slug("run_log_%s_%s" % (_emp or "job", jd.get("title", "") or "role"))[:60]
+    _log_path = runlog.write_file(
+        rid, os.path.join(outdir, "%s.txt" % (_log_name or "run_log")),
+        header="JobHuntWOW run log - %s - %s - %s"
+               % (_emp or "(employer not named)", jd.get("title", "") or "(role not named)",
+                  time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(t0))))
+    if _log_path:
+        manifest["files"] = sorted(set(list(manifest.get("files") or [])
+                                       + [os.path.basename(_log_path)]))
+        manifest["run_log"] = os.path.basename(_log_path)
+
     _write_json(os.path.join(outdir, "job.json"), manifest)
     _write_json(os.path.join(outdir, "tailored.json"),
                 {"resume": resume_struct, "cover": cover_struct})

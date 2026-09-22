@@ -23,6 +23,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "backend"))
@@ -162,8 +164,14 @@ def call(method, path, body=None, cookie=None):
     hdrs = [(b"host", b"jobhuntwow.com"), (b"content-type", b"application/json")]
     if cookie:
         hdrs.append((b"cookie", cookie.encode()))
+    # SPLIT THE QUERY STRING. Passing `/runlog/x?after=0` as the PATH matched the route with a
+    # run_id of "x?after=0" -- an unknown run -- so the poller got 200 with an empty list and
+    # the check read it as "the log does not stream". The harness was wrong, not the product,
+    # and a harness defect that reads as a product defect is the expensive kind.
+    _p, _sep, _q = path.partition("?")
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
-             "scheme": "https", "path": path, "raw_path": path.encode(), "query_string": b"",
+             "scheme": "https", "path": _p, "raw_path": _p.encode(),
+             "query_string": _q.encode(),
              "headers": hdrs, "client": ("203.0.113.9", 1), "server": ("jobhuntwow.com", 443)}
     payload = json.dumps(body or {}).encode()
     sent = {"x": False}
@@ -202,6 +210,130 @@ check(r["status"] == 200 and len(got["selected"]) == 1
 check(bool(got["selected"][0]["matched"]),
       "and WHY it picked it - a derived fact is labelled as derived",
       str(got["selected"][0]["matched"]))
+
+# ============================================================ 9. import from a PDF or Word file
+import io                                                                       # noqa: E402
+
+
+def multipart(filename, content, ctype):
+    bound = "jhwboundary12345"
+    head = ('--%s\r\nContent-Disposition: form-data; name="file"; filename="%s"\r\n'
+            'Content-Type: %s\r\n\r\n' % (bound, filename, ctype)).encode()
+    return head + content + ('\r\n--%s--\r\n' % bound).encode(), \
+        ("multipart/form-data; boundary=%s" % bound).encode()
+
+
+def upload(filename, content, ctype, cookie=None):
+    body, ct = multipart(filename, content, ctype)
+    out = {"body": b"", "status": 0}
+    hdrs = [(b"host", b"jobhuntwow.com"), (b"content-type", ct)]
+    if cookie:
+        hdrs.append((b"cookie", cookie.encode()))
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+             "scheme": "https", "path": "/api/electronic/portfolio/upload",
+             "raw_path": b"/api/electronic/portfolio/upload", "query_string": b"",
+             "headers": hdrs, "client": ("203.0.113.9", 1), "server": ("jobhuntwow.com", 443)}
+    d = {"x": False}
+
+    async def receive():
+        if d["x"]:
+            return {"type": "http.disconnect"}
+        d["x"] = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(m):
+        if m["type"] == "http.response.start":
+            out["status"] = m["status"]
+        elif m["type"] == "http.response.body":
+            out["body"] += m.get("body", b"")
+    asyncio.new_event_loop().run_until_complete(app(scope, receive, send))
+    return out
+
+
+DOC = ("Colt SD-WAN Rollout   2023 - 2024\n"
+       "Client: Colt Technology Services\n"
+       "Role: Programme Manager\n"
+       "Stack: SD-WAN, Cisco Viptela, Prince2\n"
+       "Migrated 40 sites across EMEA from MPLS to SD-WAN in eleven months.\n"
+       "- Cut WAN spend by 22 percent, EUR 1.1M a year\n"
+       "- Zero unplanned outages across every cutover window\n"
+       "\n"
+       "SOC Automation Platform 2022 - 2023\n"
+       "Technologies: Python, Grafana, Loki\n"
+       "Built the alerting a 12-person SOC runs on.\n"
+       "* Mean time to detect fell from 4 hours to 11 minutes\n")
+
+check(upload("p.txt", DOC.encode(), "text/plain")["status"] == 401,
+      "an anonymous caller cannot import a portfolio")
+
+before = json.loads(call("GET", "/api/electronic/portfolio", cookie=mine)["body"])["count"]
+r = upload("portfolio.txt", DOC.encode(), "text/plain", mine)
+got = json.loads(r["body"])
+check(r["status"] == 200 and [p["title"] for p in got["proposed"]]
+      == ["Colt SD-WAN Rollout", "SOC Automation Platform"],
+      "a text portfolio is split into its projects",
+      str([p["title"] for p in got.get("proposed", [])]))
+after = json.loads(call("GET", "/api/electronic/portfolio", cookie=mine)["body"])["count"]
+check(after == before,
+      "IMPORT PROPOSES, IT DOES NOT SAVE - the store is unchanged until he presses save",
+      "%d -> %d" % (before, after))
+check("NOTHING IS SAVED YET" in got["note"], "and the answer says so in words")
+
+# A REAL .docx, written by python-docx, through the real extraction path.
+import docx                                                                     # noqa: E402
+_d = docx.Document()
+for _line in DOC.split("\n"):
+    _d.add_paragraph(_line)
+_buf = io.BytesIO()
+_d.save(_buf)
+rw = upload("portfolio.docx", _buf.getvalue(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document", mine)
+gw = json.loads(rw["body"])
+check(rw["status"] == 200 and len(gw["proposed"]) == 2 and gw["kind"] == "docx",
+      "a real WORD file is read and split", "%s %s" % (rw["status"], str(gw)[:80]))
+
+# A REAL .pdf, written by reportlab, through pypdf.
+from reportlab.pdfgen import canvas                                             # noqa: E402
+_buf = io.BytesIO()
+_cv = canvas.Canvas(_buf)
+_y = 800
+for _line in DOC.split("\n"):
+    _cv.drawString(60, _y, _line)
+    _y -= 14
+_cv.save()
+rp = upload("portfolio.pdf", _buf.getvalue(), "application/pdf", mine)
+gp = json.loads(rp["body"])
+check(rp["status"] == 200 and len(gp["proposed"]) == 2 and gp["kind"] == "pdf",
+      "and so is a real PDF - the format he actually has", "%s %s" % (rp["status"], str(gp)[:80]))
+check(gp["proposed"][0]["stack"] == ["SD-WAN", "Cisco Viptela", "Prince2"],
+      "with the stack that makes it selectable for a posting",
+      str(gp["proposed"][0]["stack"]))
+
+# An image-only PDF (no text layer) must SAY SO rather than propose an empty portfolio.
+_buf = io.BytesIO()
+_cv = canvas.Canvas(_buf)
+_cv.rect(50, 50, 200, 200, fill=1)
+_cv.save()
+rs = upload("scan.pdf", _buf.getvalue(), "application/pdf", mine)
+gs = json.loads(rs["body"])
+check(rs["status"] == 200 and gs["proposed"] == []
+      and ("scan or an image" in gs["note"] or "no project could be split" in gs["note"]),
+      "a scanned PDF is named as a scan, not proposed as nothing-went-wrong",
+      gs.get("note", "")[:70])
+
+# And the imported items really are selectable afterwards, once he saves them.
+call("PUT", "/api/electronic/portfolio", {"items": gp["proposed"]}, mine)
+pv = json.loads(call("POST", "/api/electronic/portfolio/preview", {"text": JD["text"]},
+                     mine)["body"])
+check([x["title"] for x in pv["selected"]] == ["Colt SD-WAN Rollout"],
+      "an IMPORTED project is picked by a posting exactly like a typed one",
+      str(pv["selected"])[:80])
+
+# RESTORE WHAT THE EARLIER SECTIONS STORED. A suite that leaves the fixture changed makes the next
+# section fail for a reason that has nothing to do with the thing it tests - and the two checks it
+# broke first time round read like product defects, which is exactly how a green suite loses its
+# authority.
+call("PUT", "/api/electronic/portfolio", {"items": ITEMS}, mine)
 
 # ============================================================ 8. the endpoint actually uses them
 seen = {}
@@ -250,6 +382,106 @@ try:
     check(seen.get("cover_format") == "letter", "and the default format is the classic letter")
 finally:
     electronic.RC.tailor = _real
+
+# ============================================================ 10. the run log: live, and a file
+RUNID = "run-suite-1"
+_seen = {"lines": [], "polls": 0}
+
+
+def _poller():
+    nxt = 0
+    for _ in range(80):
+        rr = call("GET", "/api/electronic/runlog/%s?after=%d" % (RUNID, nxt), cookie=mine)
+        if rr["status"] == 200:
+            dd = json.loads(rr["body"])
+            _seen["polls"] += 1
+            _seen["lines"] += dd.get("lines") or []
+            nxt = dd.get("next") or nxt
+            if dd.get("done"):
+                return
+        time.sleep(0.05)
+
+
+# The chain runs for real against a stubbed transport, so the lines come from the real code path.
+async def _poster(payload, timeout):
+    sysmsg = (payload.get("messages") or [{}])[0].get("content", "")
+    usermsg = (payload.get("messages") or [{}, {}])[-1].get("content", "")
+    if "adversarial reviewer" in sysmsg:
+        body = {"resume": {"flags": []}, "cover": {"flags": []}}
+    elif '"reasons"' in usermsg:
+        body = five(5)
+    elif '"paragraphs"' in usermsg:
+        body = {"salutation": "Hiring Team", "paragraphs": ["p" * 500, "q" * 500], "closing": "S"}
+    else:
+        body = {"summary": "s" * 400, "skills": ["a"], "highlights": ["h" * 200],
+                "experience": [{"title": "PM", "company": "Colt",
+                                "bullets": ["b" * 300, "c" * 300]}],
+                "earlier": [], "all_employers": ["Colt"], "keywords_matched": [], "gaps": []}
+    return {"choices": [{"message": {"content": json.dumps(body)}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 300}}
+
+
+_real_tailor = RC.tailor
+
+
+async def _tailor_stub(ptxt, jd, **kw):
+    kw["poster"] = _poster
+    return await _real_tailor(ptxt, jd, **kw)
+
+
+electronic.RC.tailor = _tailor_stub
+try:
+    _t = threading.Thread(target=_poller, daemon=True)
+    _t.start()
+    rg = call("POST", "/api/electronic/generate",
+              {"jd": JD, "profile": PROFILE, "cover_format": "letter", "run_id": RUNID}, mine)
+    _t.join(timeout=8)
+    man = json.loads(rg["body"]) if rg["status"] == 200 else {}
+    check(rg["status"] == 200, "a run with a run_id still returns its manifest", str(rg["status"]))
+    check(_seen["polls"] > 0 and len(_seen["lines"]) > 10,
+          "THE LOG STREAMS WHILE THE RUN IS IN FLIGHT - the poller saw it as it happened",
+          "%d line(s) in %d poll(s)" % (len(_seen["lines"]), _seen["polls"]))
+    text = "\n".join(_seen["lines"])
+    check("PROGRESS:" in text, "it carries progress lines")
+    check("[chain]" in text and "[author]" in text,
+          "it names the model chain and who authored")
+    check("[draft]" in text and ("ACCEPTED" in text or "REJECTED" in text),
+          "and every draft with its verdict - the line that makes a bad run diagnosable")
+    check('"evt": "tailor_start"' in text and '"evt": "tailor_done"' in text,
+          "with structured events in the same shape the rest of the estate emits")
+    check("[truth-check]" in text, "the truth-check result is in the log, not only in the manifest")
+
+    # THE FILE, beside the documents.
+    logname = man.get("run_log") or ""
+    check(bool(logname) and logname in (man.get("files") or []),
+          "the run log is an ARTIFACT, listed with the DOCX and the PDF", str(man.get("files")))
+    lp = os.path.join(electronic.job_dir(ME, man.get("job_id", "")), logname or "x")
+    check(os.path.exists(lp) and os.path.getsize(lp) > 500,
+          "and it is on disk beside them",
+          "%s %s" % (os.path.exists(lp), os.path.getsize(lp) if os.path.exists(lp) else 0))
+    ondisk = open(lp, encoding="utf-8").read() if os.path.exists(lp) else ""
+    check(ondisk.splitlines()[0].startswith("JobHuntWOW run log"),
+          "with a header naming the employer, the role and the time",
+          (ondisk.splitlines() or [""])[0][:70])
+    check("[draft]" in ondisk and '"evt": "tailor_done"' in ondisk,
+          "and the whole run in it, not a summary")
+    rd = call("GET", "/api/electronic/artifacts/%s/%s" % (man.get("job_id"), logname), cookie=mine)
+    check(rd["status"] == 200 and b"JobHuntWOW run log" in rd["body"],
+          "it downloads through the same artifacts route as the documents", str(rd["status"]))
+
+    # IT IS HIS.
+    r_other = call("GET", "/api/electronic/runlog/%s?after=0" % RUNID, cookie=theirs)
+    d_other = json.loads(r_other["body"])
+    check(r_other["status"] == 200 and d_other["lines"] == [] and not d_other["known"],
+          "ANOTHER account is told nothing about the run", str(d_other))
+    check(call("GET", "/api/electronic/runlog/%s" % RUNID)["status"] == 401,
+          "and an anonymous caller is refused")
+    d_unknown = json.loads(call("GET", "/api/electronic/runlog/never-existed",
+                                cookie=mine)["body"])
+    check(d_unknown["known"] is False and d_unknown["lines"] == [],
+          "an unknown or expired run answers known:false, never a 404 the page must special-case")
+finally:
+    electronic.RC.tailor = _real_tailor
 
 print("-" * 78)
 print("%d checks run, %d failed" % (_ran[0], len(_fails)))

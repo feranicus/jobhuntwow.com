@@ -45,3 +45,6 @@ learned_answers.json
 **/*_auth.json
 **/workday_auth*.json
 dist/
+
+# Written by deploy_direct at ship time; the image carries it, git never should.
+backend/app/BUILD_STAMP

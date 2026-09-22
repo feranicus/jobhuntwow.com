@@ -125,10 +125,45 @@ def _filter(ti: tarfile.TarInfo):
     return ti
 
 
+def _build_stamp() -> str:
+    """`<short sha><-dirty> <UTC time>` - what code this deploy carries, in one line.
+
+    Read from git, because git is the thing that knows. A dirty tree is SAID so: shipping
+    uncommitted work is normal here (ship.py commits first), but a stamp that hides it would be
+    the same lie as a progress bar with no log behind it.
+    """
+    import time as _t
+    sha, dirty = "nogit", ""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=HERE,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=20)
+        if r.returncode == 0 and r.stdout.strip():
+            sha = r.stdout.strip()
+        d = subprocess.run(["git", "status", "--porcelain"], cwd=HERE, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=20)
+        if d.returncode == 0 and d.stdout.strip():
+            dirty = "-dirty"
+    except Exception:
+        pass
+    return "%s%s %s" % (sha, dirty, _t.strftime("%Y-%m-%d %H:%M UTC", _t.gmtime()))
+
+
 def build_payload() -> str:
     """Tar the build context IN MEMORY and return it base64'd. Nothing is written to disk."""
     import base64, io
     buf = io.BytesIO()
+    # WHICH BUILD IS THIS? Stamped into the payload so the running app can SAY which code it is.
+    # He looked at /tailor, did not find two features that were written after his last deploy, and
+    # had no way to tell whether he was looking at the newest build or a three-hour-old one. A
+    # version the page can show answers that in one glance instead of a round trip.
+    stamp = _build_stamp()
+    try:
+        with open(os.path.join(HERE, "backend", "app", "BUILD_STAMP"), "w", encoding="utf-8") as fh:
+            fh.write(stamp + "\n")
+    except Exception as e:
+        print("  [!] could not write the build stamp (%s) - the app will say 'unknown'" % e)
+    print("  build stamp: %s" % stamp, flush=True)
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for item in SHIP_FILES + SHIP_DIRS:
             p = os.path.join(HERE, item)

@@ -321,7 +321,10 @@ def do_tests() -> bool:
                 # The project portfolio (his projects, picked per posting by arithmetic) and the
                 # TOP-5 cover letter he asked for by name: the five must BE five, must survive the
                 # audit round, and must reach the rendered file.
-                "backend/app/portfolio.py", "tests/test_portfolio_and_top5.py"):
+                "backend/app/portfolio.py", "tests/test_portfolio_and_top5.py",
+                # The run log: live in the browser while a run happens, and a .txt kept
+                # beside the documents afterwards.
+                "backend/app/runlog.py"):
         p = os.path.join(HERE, rel)
         if not os.path.exists(p):
             say("  [X] MISSING test file %s - a suite that is absent cannot pass" % rel)
@@ -361,6 +364,34 @@ def do_tests() -> bool:
     else:
         say("  authz: every non-public route refuses an anonymous caller")
     return ok
+
+
+def unshipped_summary() -> str:
+    """What is in this tree that the LAST deploy did not carry, in one line per file.
+
+    WHY: he looked at the live page for two features that had been written AFTER his last ship and
+    reasonably concluded they were missing. The deploy is the only place that knows the difference,
+    so it says it out loud before it starts rather than leaving him to guess from the UI.
+    """
+    try:
+        last = subprocess.run(["git", "log", "-1", "--format=%h %cd", "--date=format:%Y-%m-%d %H:%M"],
+                              cwd=HERE, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=20)
+        chg = subprocess.run(["git", "status", "--porcelain"], cwd=HERE, capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", timeout=20)
+    except Exception as e:
+        return "  (could not ask git what is unshipped: %r)" % (e,)
+    head = (last.stdout or "").strip() or "no commits"
+    files = [ln[3:].strip() for ln in (chg.stdout or "").splitlines() if ln.strip()]
+    out = ["  last deploy carried: %s" % head]
+    if files:
+        out.append("  NOT on the live site until this run finishes (%d file(s)):" % len(files))
+        out += ["    %s" % f for f in files[:25]]
+        if len(files) > 25:
+            out.append("    ... and %d more" % (len(files) - 25))
+    else:
+        out.append("  nothing has changed since that deploy - this ship is a no-op for the site")
+    return "\n".join(out)
 
 
 # ============================================================================ 2/6 git
@@ -615,6 +646,11 @@ def main() -> int:
 
     if a.rollback:
         return do_rollback(a.rollback)
+
+    # SAY WHAT THIS DEPLOY CARRIES THAT THE LIVE SITE DOES NOT, before anything else. "I do not see
+    # the feature on the page" and "that feature has not been deployed yet" look identical from a
+    # browser, and only this command can tell them apart.
+    say(unshipped_summary())
 
     if not do_tests():
         say("\n[X] TESTS FAILED - nothing was committed, pushed or deployed.")
