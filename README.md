@@ -400,3 +400,68 @@ as a success.
 ## License
 
 See the `jobhuntwow.com` repo `LICENSE` (same project, open source).
+
+## Gmail: reading the mailbox and correlating it with the pipeline
+
+**Why this way.** The app already talks to the Gmail API with a **service account that has
+domain-wide delegation**, impersonating `GMAIL_SENDER`, scope `gmail.send` (that is how sign-in
+codes and the daily digest go out; SMTP is blocked on the droplet). Reading is the same mechanism
+with **one more scope** — no OAuth consent screen, no refresh token to store and rotate, no browser
+round trip for a server that has none.
+
+**The one step only you can do** (a domain admin, in the Workspace console — no script can):
+
+> Admin console → Security → Access and data control → API controls → Domain-wide delegation →
+> the existing client ID → add `https://www.googleapis.com/auth/gmail.readonly`
+
+Then set `JHW_MAIL_READ=1` on the droplet. Reading is **opt-in and read-only**: `gmail.modify`
+would let this code label, archive and delete real mail, and nothing here needs that.
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `JHW_MAIL_READ` | off | switch the read side on |
+| `JHW_MAIL_EVERY_S` | `600` | how often the mailbox is polled |
+| `JHW_MAIL_LOOKBACK_DAYS` | `14` | how far back each pass reads |
+| `JHW_MAIL_QUERY` | excludes chats, drafts, from:me, promotions, social | the Gmail search this reads |
+| `JHW_MAIL_MAX` | `60` | messages per pass |
+
+**Polling, not Pub/Sub push.** Push delivers in seconds and needs a public endpoint, a topic, a
+subscription and a verified URL — new infrastructure and new attack surface for a product where a
+five-minute delay costs nothing. The push path can plug in behind the same seam later.
+
+**The correlation is arithmetic, not a model** (`backend/app/mailmatch.py`). Each message is scored
+against your applications: the posting's own id in the text (5) · the sender's domain being the
+employer's or the ATS you applied through (3–4) · the employer's name in the from/subject/body (3) ·
+three significant words of the role in the subject (2) · arriving after you applied (1). The floor
+is 5, so **a newsletter that merely names the employer never matches**, and two applications that
+score equally leave the message **unfiled with the reason** rather than being filed under the wrong
+one. Every match carries its evidence, and the card shows it.
+
+**It never moves a card.** `classify()` labels a message *rejection / interview / offer / task /
+acknowledgement* from the subject line and that label is displayed, never acted on. You drag your
+own cards. Messages the engine looked at and did not file are kept with `why_not` and listed on the
+Security page, so "why is this reply not on my card" is readable rather than guessed at.
+
+## Updates on a pipeline card
+
+Open any card on **Pipeline** and there is now an **Updates** box. Type what happened — *second
+interview with the hiring manager*, *they asked for references* — pick a kind (note · interview ·
+call · task · follow-up · offer) and, optionally, **the date the update is about** (the interview is
+on Thursday; you are writing this on Tuesday). Newest first, and each one can be removed.
+
+Two things it deliberately does **not** do:
+
+- **It never merges with the email below it.** Your updates are in their own table under their own
+  heading. What you wrote is testimony; a correlated email is evidence the mailbox found and scored.
+  A board that cannot tell those apart is one you cannot trust, so the panel never blends them.
+- **It never moves the card.** A note saying *they rejected me* leaves the card where you put it —
+  you drag your own cards. Same rule as the mail labels.
+
+A date it cannot parse is stored as **no date** and the panel says so, rather than quietly using
+today. Both endpoints (`POST /api/applications/{job_id}/notes`, `DELETE …/notes/{note_id}`) require
+your session, like every other route.
+
+**Emails about this application** is now always shown, even with nothing in it — and it says which
+kind of nothing: *no email has matched this yet* or *the mailbox is not connected*. Those are
+opposite facts and they used to look identical, because the heading was hidden when the list was
+empty.

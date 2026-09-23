@@ -326,6 +326,10 @@ def do_tests() -> bool:
                 # white screen: esbuild parsed it, the browser threw on it, React unmounted the
                 # whole cabinet. This asks whether every function a page CALLS actually exists.
                 "tests/test_frontend_symbols.py",
+                # THE MAILBOX: which application an email is about (arithmetic, with evidence),
+                # how the Gmail read path parses and bounds itself, and the loop that files a
+                # message once and never moves a card on its own.
+                "backend/app/mailmatch.py", "backend/app/gmail_read.py", "backend/app/mailwatch.py",
                 # The run log: live in the browser while a run happens, and a .txt kept
                 # beside the documents afterwards.
                 "backend/app/runlog.py"):

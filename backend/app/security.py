@@ -221,6 +221,7 @@ def overview(window_h=24.0, feed_max=None):
         "visitor_split": "none",
         "attacks": None, "attack_classes": {}, "top_offenders": [], "top_paths": [],
         "visits": {"reported": None, "suppressed": None, "why_suppressed": {}, "last": []},
+        "mail": {"enabled": False, "note": "not read"},
         "countries": {}, "users": [], "feed": [],
         "sidecar": "unverifiable", "sidecar_why": "", "sidecar_beat": {},
         "enforce": "unknown", "enforce_why": "",
@@ -344,6 +345,24 @@ def overview(window_h=24.0, feed_max=None):
             "attack": _probe_class(str(e.get("path") or "")),
         })
 
+    # THE MAILBOX. On/off, what the last pass read, and -- the line that matters -- the messages it
+    # looked at and deliberately did not file, with the reason. "Why is this recruiter reply not on
+    # my card" must be readable here rather than guessed at.
+    try:
+        gm = _sib("gmail_read")
+        out["mail"] = dict(gm.status())
+    except Exception as e:
+        out["mail"] = {"enabled": False, "note": "the mail module could not be read (%r)" % (e,)}
+    passes = [e for e in evs if e.get("evt") == "mail_pass"]
+    out["mail"]["passes_window"] = len(passes)
+    out["mail"]["read_window"] = sum(int(e.get("read") or 0) for e in passes)
+    out["mail"]["filed_window"] = sum(int(e.get("filed") or 0) for e in passes)
+    out["mail"]["told_window"] = sum(int(e.get("told") or 0) for e in passes)
+    try:
+        out["mail"]["unfiled"] = _sib("tracker").unfiled_mail(hours=window_h, limit=12)
+    except Exception:
+        out["mail"]["unfiled"] = []
+
     # THE MONEY, on the same page as the traffic, because the last incident was both at once.
     try:
         out["llm"] = _sib("llm_meter").report()
@@ -439,6 +458,9 @@ def _selftest():
        o["visits"]["reported"] == 1 and o["visits"]["suppressed"] == 1
        and "signed in" in " ".join(o["visits"]["why_suppressed"]),
        str(o["visits"])[:120])
+    ck("the mailbox state is on the console, and says which half is missing when it is off",
+       isinstance(o.get("mail"), dict) and ("note" in o["mail"]),
+       str(o.get("mail"))[:80])
     ck("alerts fired and suppressed are both counted",
        o["alerts_fired"] == 1 and o["alerts_suppressed"] == 1)
     ck("an alert that was RAISED but never delivered does not read as 'active'",

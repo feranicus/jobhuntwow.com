@@ -204,6 +204,15 @@ try:
     # WATCH TWO SOURCES, HOURLY. Our meter says who; the vendor's balance says whether. A
     # meter-only watcher reports a normal fortnight while the invoice triples - which is what
     # happened, and the bank statement found it six days late.
+    # THE MAILBOX. Read-only, opt-in, polled -- see backend/app/mailwatch.py for why polling and
+    # not Pub/Sub push, and why nothing it reads is ever allowed to move a card.
+    from . import mailwatch as _mail
+
+    @app.on_event("startup")
+    async def _start_mail_watch():
+        import asyncio as _aio
+        _aio.create_task(_mail.scheduler())
+
     from . import spend_watch as _spend
 
     @app.on_event("startup")

@@ -30,6 +30,13 @@ export async function patchJSON(path, body) {
   return r.json();
 }
 // stream Electronic chat: onChunk(text) called as tokens arrive
+export async function deleteJSON(path) {
+  const r = await fetch(path, { method: "DELETE", credentials: "include" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+  return j;
+}
+
 export async function chatStream(messages, model, onChunk) {
   const r = await fetch("/api/chat", {
     method: "POST",

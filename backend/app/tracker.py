@@ -28,6 +28,7 @@ import json
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 try:                                   # importable both as a package module and standalone (--logic)
@@ -126,6 +127,33 @@ CREATE TABLE IF NOT EXISTS applications(
 CREATE INDEX IF NOT EXISTS app_created ON applications(created_ts);
 CREATE INDEX IF NOT EXISTS app_sent    ON applications(sent_ts);
 CREATE INDEX IF NOT EXISTS app_sha     ON applications(jd_sha);
+CREATE TABLE IF NOT EXISTS mails(
+  msg_id     TEXT PRIMARY KEY,
+  job_id     TEXT NOT NULL DEFAULT '',
+  thread_id  TEXT NOT NULL DEFAULT '',
+  ts         REAL NOT NULL DEFAULT 0,
+  sender     TEXT NOT NULL DEFAULT '',
+  subject    TEXT NOT NULL DEFAULT '',
+  snippet    TEXT NOT NULL DEFAULT '',
+  kind       TEXT NOT NULL DEFAULT 'mail',
+  score      INTEGER NOT NULL DEFAULT 0,
+  evidence   TEXT NOT NULL DEFAULT '[]',
+  why_not    TEXT NOT NULL DEFAULT '',
+  seen_ts    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS mail_job ON mails(job_id);
+CREATE INDEX IF NOT EXISTS mail_ts  ON mails(ts);
+CREATE TABLE IF NOT EXISTS notes(
+  note_id    TEXT PRIMARY KEY,
+  job_id     TEXT NOT NULL DEFAULT '',
+  ts         INTEGER NOT NULL DEFAULT 0,
+  author     TEXT NOT NULL DEFAULT '',
+  kind       TEXT NOT NULL DEFAULT 'note',
+  body       TEXT NOT NULL DEFAULT '',
+  when_ts    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS note_job ON notes(job_id);
+CREATE INDEX IF NOT EXISTS note_ts  ON notes(ts);
 CREATE TABLE IF NOT EXISTS digests(
   kind TEXT PRIMARY KEY, last_ts INTEGER NOT NULL DEFAULT 0, last_count INTEGER NOT NULL DEFAULT 0
 );
@@ -415,6 +443,162 @@ def rows(since_ts: int = 0, until_ts: Optional[int] = None, email: str = "",
         return []
 
 
+def record_mail(msg: dict, verdict: dict, kind: str = "mail") -> bool:
+    """Store one correlated (or deliberately UNcorrelated) message. Returns True when it is new.
+
+    THE UNMATCHED ONES ARE STORED TOO, with `why_not`. "I saw this mail and did not file it, and
+    here is the reason" is the line that makes the next question answerable; silently dropping it
+    is how an inbox integration becomes a black box that people stop trusting.
+    """
+    mid = str((msg or {}).get("id") or "")[:64]
+    if not mid:
+        return False
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            _migrate(c)
+            already = c.execute("SELECT 1 FROM mails WHERE msg_id=?", (mid,)).fetchone()
+            c.execute(
+                "INSERT INTO mails (msg_id,job_id,thread_id,ts,sender,subject,snippet,kind,score,"
+                "evidence,why_not,seen_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(msg_id) DO UPDATE SET job_id=excluded.job_id, score=excluded.score, "
+                "evidence=excluded.evidence, why_not=excluded.why_not, kind=excluded.kind",
+                (mid, str((verdict or {}).get("job_id") or "")[:64],
+                 str(msg.get("thread_id") or "")[:64], float(msg.get("ts") or 0),
+                 str(msg.get("from") or "")[:200], str(msg.get("subject") or "")[:300],
+                 str(msg.get("snippet") or "")[:400], str(kind or "mail")[:24],
+                 int((verdict or {}).get("score") or 0),
+                 json.dumps(list((verdict or {}).get("evidence") or [])[:8]),
+                 str((verdict or {}).get("why_not") or "")[:200], int(time.time())))
+            return not already
+    except Exception as e:                      # bookkeeping never aborts anything
+        print(json.dumps({"evt": "mail_store_error", "err": repr(e)[:160]}), flush=True)
+        return False
+
+
+def mails_for(job_id: str, limit: int = 40) -> list:
+    """Every message filed against one application, newest first."""
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            rows = c.execute(
+                "SELECT msg_id,thread_id,ts,sender,subject,snippet,kind,score,evidence "
+                "FROM mails WHERE job_id=? ORDER BY ts DESC LIMIT ?",
+                (str(job_id or ""), max(1, min(200, int(limit))))).fetchall()
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        try:
+            ev = json.loads(r[8] or "[]")
+        except Exception:
+            ev = []
+        out.append({"msg_id": r[0], "thread_id": r[1], "ts": r[2], "from": r[3], "subject": r[4],
+                    "snippet": r[5], "kind": r[6], "score": r[7], "evidence": ev,
+                    "url": "https://mail.google.com/mail/u/0/#all/%s" % (r[1] or r[0])})
+    return out
+
+
+def mail_seen(msg_id: str) -> bool:
+    """Have we already judged this message? The poller re-reads a window every few minutes and must
+    not re-announce what it announced last time."""
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            return bool(c.execute("SELECT 1 FROM mails WHERE msg_id=?",
+                                  (str(msg_id or "")[:64],)).fetchone())
+    except Exception:
+        return False
+
+
+def unfiled_mail(hours: float = 24.0, limit: int = 20) -> list:
+    """Messages we looked at and deliberately did not file, with the reason. The console shows
+    these: "why is this recruiter reply not on my card" must be answerable."""
+    since = time.time() - max(0.25, float(hours)) * 3600
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            rows = c.execute(
+                "SELECT ts,sender,subject,why_not FROM mails WHERE job_id='' AND ts>=? "
+                "ORDER BY ts DESC LIMIT ?", (since, max(1, min(100, int(limit))))).fetchall()
+    except Exception:
+        return []
+    return [{"ts": r[0], "from": r[1], "subject": r[2], "why_not": r[3]} for r in rows]
+
+
+NOTE_KINDS = ("note", "interview", "call", "task", "followup", "offer")
+
+
+def add_note(job_id: str, body: str, kind: str = "note", author: str = "",
+             when_ts: int = 0) -> dict:
+    """HIS OWN WORDS ABOUT THIS APPLICATION - an update, what the next interview is, what they said.
+
+    A note is WRITTEN BY A PERSON and is never generated, never summarised and never overwritten by
+    anything this program infers: a correlated email is evidence (the `mails` table, which the
+    mailbox writes), a note is testimony. They are separate tables for exactly that reason, and the
+    panel labels which is which, because a board that cannot tell what he SAID from what we GUESSED
+    is a board he cannot trust.
+
+    `when_ts` is optional and is the moment the note is ABOUT (the interview is on Thursday), which
+    is not the moment it was written. Zero means "no date", never "now" - inventing a date is the
+    defect that put `01-03-2025` on a form."""
+    body = (body or "").strip()
+    if not body:
+        return {}
+    kind = (kind or "note").strip().lower()
+    if kind not in NOTE_KINDS:
+        kind = "note"
+    now = int(time.time())
+    nid = hashlib.sha1(("%s|%s|%s|%s" % (job_id, now, body[:120], author)).encode()
+                       ).hexdigest()[:16]
+    row = {"note_id": nid, "job_id": job_id, "ts": now, "author": author or "",
+           "kind": kind, "body": body[:4000], "when_ts": int(when_ts or 0)}
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            c.execute("INSERT OR REPLACE INTO notes(note_id,job_id,ts,author,kind,body,when_ts)"
+                      " VALUES(?,?,?,?,?,?,?)",
+                      (nid, job_id, now, row["author"], kind, row["body"], row["when_ts"]))
+            # A note is a CHANGE to the application, so the row's own clock moves with it.
+            c.execute("UPDATE applications SET updated_ts=? WHERE job_id=?", (now, job_id))
+        _log(evt="note_added", job_id=job_id, kind=kind, chars=len(row["body"]))
+        return row
+    except Exception as e:
+        _log(evt="tracker_error", where="add_note", err=repr(e)[:180])
+        return {}
+
+
+def notes_for(job_id: str, limit: int = 200) -> list:
+    """Newest first. A read that fails returns [] AND says so in the log - it never invents silence.
+
+    ORDERED BY ts *AND* rowid. Two notes written in the same second share a timestamp, and a sort
+    on `ts` alone leaves their order to SQLite - which is how the contract caught it. Insertion
+    order breaks the tie, so what he typed last is what he reads first."""
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            cur = c.execute(
+                "SELECT note_id,job_id,ts,author,kind,body,when_ts FROM notes"
+                " WHERE job_id=? ORDER BY ts DESC, rowid DESC LIMIT ?", (job_id, int(limit)))
+            return [{"note_id": r[0], "job_id": r[1], "ts": r[2], "author": r[3],
+                     "kind": r[4], "body": r[5], "when_ts": r[6]} for r in cur.fetchall()]
+    except Exception as e:
+        _log(evt="tracker_error", where="notes_for", err=repr(e)[:180])
+        return []
+
+
+def delete_note(job_id: str, note_id: str) -> bool:
+    """Scoped to the job_id ON PURPOSE: an id from one card can never delete another card's note."""
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            cur = c.execute("DELETE FROM notes WHERE note_id=? AND job_id=?", (note_id, job_id))
+            return bool(cur.rowcount)
+    except Exception as e:
+        _log(evt="tracker_error", where="delete_note", err=repr(e)[:180])
+        return False
+
+
 def get(job_id: str) -> dict:
     try:
         with _conn() as c:
@@ -487,6 +671,18 @@ try:
         r = get(job_id)
         if not r:
             raise HTTPException(status_code=404, detail="no such application")
+        # THE MAIL BELONGS ON THE CARD. Correlated messages ride with the row the panel already
+        # reads, so the board answers "what has this employer said?" without a second call.
+        r["mails"] = mails_for(job_id)
+        # WHY THERE IS NO MAIL IS ITSELF AN ANSWER. An empty list means "nothing matched"; it must
+        # never be read as "the mailbox is off", so the panel is told which one it is looking at.
+        try:
+            from . import gmail_read as _gr
+            r["mail_status"] = _gr.status()
+        except Exception as e:
+            r["mail_status"] = {"configured": False, "why": "could not read the mailbox state: %s"
+                                % repr(e)[:120]}
+        r["notes"] = notes_for(job_id)
         return r
 
     @router.patch("/{job_id}")
@@ -503,6 +699,43 @@ try:
             touched = set_fields(job_id, employer=req.employer, title=req.title) or touched
         if not touched:
             raise HTTPException(status_code=400, detail="nothing to change")
+        return get(job_id)
+
+    class NoteReq(BaseModel):
+        body: str = ""
+        kind: str = "note"
+        when: str = ""          # ISO date the note is ABOUT, optional; "" means no date
+
+    @router.post("/{job_id}/notes")
+    def add_application_note(job_id: str, req: NoteReq, user: str = Depends(require_user)):
+        if not get(job_id):
+            raise HTTPException(status_code=404, detail="no such application")
+        body = (req.body or "").strip()
+        if not body:
+            raise HTTPException(status_code=400, detail="an empty note is not an update")
+        when = 0
+        w = (req.when or "").strip()
+        if w:
+            try:
+                when = int(datetime.strptime(w[:10], "%Y-%m-%d")
+                           .replace(tzinfo=timezone.utc).timestamp())
+            except Exception:
+                # A DATE WE CANNOT READ IS NOT A DATE WE INVENT. The note is kept, dateless, and
+                # the caller is told - losing his words over a malformed date would be worse.
+                when = 0
+        row = add_note(job_id, body, kind=req.kind or "note",
+                       author=user if isinstance(user, str) else "", when_ts=when)
+        if not row:
+            raise HTTPException(status_code=500, detail="the note was not written")
+        out = get(job_id)
+        out["added"] = row
+        out["when_read"] = bool(when) or not w
+        return out
+
+    @router.delete("/{job_id}/notes/{note_id}")
+    def delete_application_note(job_id: str, note_id: str, _user: str = Depends(require_user)):
+        if not delete_note(job_id, note_id):
+            raise HTTPException(status_code=404, detail="no such note on this application")
         return get(job_id)
 
     @router.post("/{job_id}/reread")
@@ -677,6 +910,70 @@ def _selftest() -> int:
        "/api/applications is actually mounted — the CRM has something to read")
     ck("_digest.scheduler()" in _main,
        "the digest scheduler is started at boot, so nobody has to remember to run it")
+
+    # ---- HIS OWN NOTES ON A CARD -------------------------------------------------------------
+    n1 = add_note(jid, "  Second interview with the hiring manager  ", kind="interview",
+                  author="feranicus@s4biz.io", when_ts=int(time.time()) + 86400 * 3)
+    ck(bool(n1) and n1["body"] == "Second interview with the hiring manager",
+       "a note is stored with his words, trimmed but not rewritten")
+    ck(n1.get("when_ts", 0) > int(time.time()),
+       "the date the note is ABOUT is kept separately from when he wrote it")
+    ck(add_note(jid, "   ") == {} and len(notes_for(jid)) == 1,
+       "an empty note is not an update and is not stored")
+    n2 = add_note(jid, "they asked for references", kind="nonsense-kind")
+    ck(n2.get("kind") == "note",
+       "an unrecognised kind falls back to 'note' rather than being invented")
+    got = notes_for(jid)
+    ck([g["body"] for g in got][0] == "they asked for references",
+       "notes come back newest first")
+    ck(all(g["job_id"] == jid for g in got) and not notes_for("no-such-job"),
+       "a note belongs to ONE application and another card sees none of them")
+    ck(delete_note("some-other-job", n2["note_id"]) is False and len(notes_for(jid)) == 2,
+       "a note id from one card cannot delete another card's note")
+    ck(delete_note(jid, n2["note_id"]) is True and len(notes_for(jid)) == 1,
+       "his own note deletes, on his own card")
+    # THE TWO KINDS OF TRUTH MUST NOT MIX. A note is testimony, a mail is evidence; the mailbox
+    # writes one table and a person writes the other, and neither may appear as the other.
+    _before = len(mails_for(jid))
+    add_note(jid, "the recruiter said Thursday")
+    ck(len(mails_for(jid)) == _before,
+       "writing a note never puts a row in the mail table - his words are never shown as an email")
+    _pre_stage = get(jid).get("stage")
+    add_note(jid, "they rejected me", kind="note")
+    ck(get(jid).get("stage") == _pre_stage,
+       "a note NEVER moves the card - he drags his own cards")
+
+    # ---- THE PANEL: two kinds of truth, two headings, and an honest empty ----------------------
+    # The comments are stripped FIRST. A check that can match its own explanation has matched its
+    # own explanation ~19 times in this repo.
+    import re as _re
+    _pj = os.path.join(_here, "..", "..", "frontend", "src", "pages", "Pipeline.jsx")
+    try:
+        with open(os.path.abspath(_pj), encoding="utf-8") as _f:
+            _src = _f.read()
+    except Exception as _e:
+        _src = ""
+        ck(False, "Pipeline.jsx is readable (%s)" % repr(_e)[:80])
+    _ship = _re.sub(r"\{\s*/\*.*?\*/\s*\}", " ", _src, flags=_re.S)     # JSX comments
+    _ship = _re.sub(r"/\*.*?\*/", " ", _ship, flags=_re.S)                # block comments
+    _ship = _re.sub(r"^\s*//.*$", " ", _ship, flags=_re.M)                 # line comments
+    if _src:
+        ck("/notes`" in _ship and "open.notes" in _ship,
+           "the panel writes an update and reads the ones already on the record")
+        # find(), never index(): a missing heading is a FINDING about the panel, and a check that
+        # raises instead of failing takes every later check down with it.
+        _up = _ship.find("<h4>Updates</h4>")
+        _head = _ship.find("<h4>Emails about this application</h4>")
+        _guard = _ship.find("(open.mails || []).length > 0")
+        ck(_up >= 0 and _head >= 0,
+           "his updates and the correlated email have SEPARATE headings - testimony is never "
+           "rendered as evidence")
+        # THE EMPTY MAILBOX EXPLAINS ITSELF. The heading must be outside the `mails.length` guard,
+        # or "nothing arrived" and "the mailbox is off" look identical on his screen.
+        ck(_head >= 0 and _guard >= 0 and _head < _guard and "mail_status" in _ship,
+           "the email heading renders even with no mail, and says WHY there is none")
+        ck(_up >= 0 and _head > _up and "stage" not in _ship[_up:_head],
+           "nothing in the updates block touches the stage - a note never moves the card")
 
     print("=" * 50)
     if fails:

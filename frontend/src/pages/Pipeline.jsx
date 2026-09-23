@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getJSON, patchJSON, postJSON } from "../api.js";
+import { deleteJSON, getJSON, patchJSON, postJSON } from "../api.js";
 
 /* Pipeline — the CRM view of the SAME rows the Tailor page writes and the apply engine updates.
 
@@ -73,6 +73,8 @@ export default function Pipeline() {
   const [open, setOpen] = useState(null);        // the row shown in the details panel
   const [draft, setDraft] = useState({ employer: "", title: "" });
   const [panelNote, setPanelNote] = useState("");
+  const [noteDraft, setNoteDraft] = useState({ body: "", kind: "note", when: "" });
+  const [noteMsg, setNoteMsg] = useState("");
   const dragged = useRef(null);                  // {job_id, from}
   const didDrag = useRef(false);                 // a drag must never also count as a click
 
@@ -123,6 +125,8 @@ export default function Pipeline() {
       const r = await getJSON(`/api/applications/${encodeURIComponent(id)}`);
       setOpen(r);
       setDraft({ employer: txt(r.employer), title: txt(r.title) });
+      setNoteDraft({ body: "", kind: "note", when: "" });
+      setNoteMsg("");
       setPanelNote("");
     } catch (e) {
       setPanelNote("could not load it — " + txt((e && e.message) || e));
@@ -163,6 +167,44 @@ export default function Pipeline() {
         : "the posting does not name an employer anywhere — type it yourself above");
     } catch (e) {
       setPanelNote("could not re-read it — " + txt((e && e.message) || e));
+    }
+  }
+
+  /* HIS UPDATES ON THIS APPLICATION. A note is TESTIMONY — what he was told, when the next
+     interview is — and it is kept apart from the correlated email below, which is EVIDENCE the
+     mailbox found. The panel never merges the two, and neither one moves the card. */
+  async function addNote() {
+    if (!open || !open.job_id) return;
+    const body = txt(noteDraft.body).trim();
+    if (!body) { setNoteMsg("type the update first"); return; }
+    setNoteMsg("saving…");
+    try {
+      const r = await postJSON(`/api/applications/${encodeURIComponent(open.job_id)}/notes`, {
+        body, kind: noteDraft.kind, when: noteDraft.when,
+      });
+      setOpen({ ...open, ...r });
+      setRows((prev) => prev.map((x) => (txt(x.job_id) === txt(open.job_id) ? { ...x, ...r } : x)));
+      setNoteDraft({ body: "", kind: "note", when: "" });
+      // A DATE WE COULD NOT READ IS SAID OUT LOUD. The note is kept either way; it is not silently
+      // given today's date, because an invented date on a record is worse than no date.
+      setNoteMsg(r.when_read === false
+        ? "saved — but the date could not be read, so it was left off"
+        : "saved");
+    } catch (e) {
+      setNoteMsg("not saved — " + txt((e && e.message) || e));
+    }
+  }
+
+  async function removeNote(noteId) {
+    if (!open || !open.job_id) return;
+    setNoteMsg("removing…");
+    try {
+      const r = await deleteJSON(
+        `/api/applications/${encodeURIComponent(open.job_id)}/notes/${encodeURIComponent(noteId)}`);
+      setOpen({ ...open, ...r });
+      setNoteMsg("removed");
+    } catch (e) {
+      setNoteMsg("not removed — " + txt((e && e.message) || e));
     }
   }
 
@@ -305,6 +347,96 @@ export default function Pipeline() {
               ))}
               {!(open.files || []).length && <small className="muted">no document on record</small>}
             </div>
+
+            {/* HIS OWN UPDATES. Testimony, not evidence: what the recruiter said, when the next
+                interview is. Kept in its own table and shown under its own heading so that what he
+                SAID can never be mistaken for what we FOUND. Nothing here moves the card. */}
+            <h4>Updates</h4>
+            <div className="jedit" style={{ gridTemplateColumns: "1fr" }}>
+              <textarea rows={3} value={noteDraft.body}
+                        placeholder="what happened — e.g. second interview with the hiring manager, they asked for references"
+                        onChange={(e) => setNoteDraft({ ...noteDraft, body: e.target.value })} />
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center",
+                          marginTop: 6 }}>
+              <select value={noteDraft.kind}
+                      onChange={(e) => setNoteDraft({ ...noteDraft, kind: e.target.value })}>
+                <option value="note">note</option>
+                <option value="interview">interview</option>
+                <option value="call">call</option>
+                <option value="task">task</option>
+                <option value="followup">follow-up</option>
+                <option value="offer">offer</option>
+              </select>
+              <input type="date" value={noteDraft.when} title="the date this is about (optional)"
+                     onChange={(e) => setNoteDraft({ ...noteDraft, when: e.target.value })} />
+              <button className="btn" onClick={addNote}>Add update</button>
+              {noteMsg && <small className="muted">{noteMsg}</small>}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              {(open.notes || []).map((n) => (
+                <div key={txt(n.note_id)} style={{
+                  borderLeft: "3px solid var(--accent, #4c8dff)", paddingLeft: 10, marginBottom: 10,
+                }}>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                    {stamp(n.ts)}{n.kind && n.kind !== "note" ? ` · ${txt(n.kind)}` : ""}
+                    {n.when_ts ? ` · for ${day(n.when_ts)}` : ""}
+                    {" · "}
+                    <a role="button" tabIndex={0} style={{ cursor: "pointer" }}
+                       onClick={() => removeNote(txt(n.note_id))}>remove</a>
+                  </div>
+                  <div style={{ whiteSpace: "pre-wrap" }}>{txt(n.body)}</div>
+                </div>
+              ))}
+              {!(open.notes || []).length && (
+                <small className="muted">no updates yet — add the first one above</small>
+              )}
+            </div>
+
+            {/* WHAT THIS EMPLOYER HAS SAID. Correlated from the mailbox, with the evidence that
+                linked each message, and a link straight into Gmail. The label (rejection /
+                interview / offer) is a reading of the subject line and is shown, never acted on —
+                nothing here moves the card.
+
+                THE HEADING IS ALWAYS HERE, and an empty list is never left to speak for itself:
+                "nothing has arrived" and "the mailbox is not connected" look identical on screen
+                and mean opposite things, so the panel says which one it is. */}
+            <h4>Emails about this application</h4>
+            {!(open.mails || []).length && (
+              <p className="muted" style={{ fontSize: 13 }}>
+                {open.mail_status && open.mail_status.configured
+                  ? "no email has matched this application yet — a message is filed here when the employer, the ATS domain or the posting id matches."
+                  : txt((open.mail_status || {}).why)
+                    || "the mailbox is not connected yet, so nothing has been read."}
+              </p>
+            )}
+            {(open.mails || []).length > 0 && (
+              <>
+                <div>
+                  {(open.mails || []).map((m) => (
+                    <div key={txt(m.msg_id)} style={{
+                      borderLeft: "3px solid var(--line, #26314a)", paddingLeft: 10,
+                      marginBottom: 10,
+                    }}>
+                      <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                        {m.ts ? new Date(Number(m.ts) * 1000).toLocaleString() : ""}
+                        {m.kind && m.kind !== "mail" ? ` · ${txt(m.kind)}` : ""}
+                      </div>
+                      <div><b>{txt(m.subject) || "(no subject)"}</b></div>
+                      <div style={{ fontSize: 12 }}>{txt(m.from)}</div>
+                      <div style={{ fontSize: 12, color: "var(--muted)" }}>{txt(m.snippet)}</div>
+                      <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                        matched because: {(m.evidence || []).map(txt).join("; ") || "—"}
+                      </div>
+                      {m.url && (
+                        <a href={txt(m.url)} target="_blank" rel="noreferrer"
+                           style={{ fontSize: 12 }}>open in Gmail →</a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
 
             <h4>Job description</h4>
             {open.jd_url && (
