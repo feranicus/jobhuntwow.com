@@ -14,6 +14,8 @@ google-auth==2.*
 requests==2.*
 python-docx==1.1.*     # ATS-safe DOCX resume/cover (electronic.py) AND reading .docx uploads
 pypdf==5.*             # extract text from an uploaded .pdf resume (pure python, no OS deps)
+python-pptx==1.0.*     # read the text + SPEAKER NOTES out of a .pptx attached to a card
+openpyxl==3.1.*        # read the values out of an .xlsx attached to a card
 python-multipart==0.0.*  # REQUIRED by FastAPI for UploadFile; without it the route 500s
 reportlab==4.2.*       # pure-Python PDF (no cairo/pango/wkhtmltopdf needed)
 pillow==12.*           # validate + embed the CV photo (reportlab pulls it in; pin it)

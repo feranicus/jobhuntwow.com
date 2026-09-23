@@ -465,3 +465,31 @@ your session, like every other route.
 kind of nothing: *no email has matched this yet* or *the mailbox is not connected*. Those are
 opposite facts and they used to look identical, because the heading was hidden when the list was
 empty.
+
+## Files for one application — transcripts, decks, take-home tasks
+
+The card's **Files for this application** box takes what you *received or recorded*, as opposed to
+**Documents**, which are the resume and cover letter the platform generated. Drop in an interview
+transcript (`.txt` `.vtt` `.srt`), the deck they sent (`.pptx`), a task description (`.pdf` `.docx`),
+a sheet (`.xlsx`) or a photo of a whiteboard. Up to 25 MB each, 40 per application.
+
+**The text is read out of the file once, at upload**, and stored beside it — so a `.vtt` transcript
+is searchable immediately, and a `.pptx` is its slides *and its speaker notes* rather than a pile of
+bytes. `GET /api/applications/{job_id}/attachments/{name}?text=1` returns that plain text; without
+the flag you get the file itself.
+
+Three things it does on purpose:
+
+- **A file it cannot read is still kept, and it says why.** A scanned PDF with no text layer, an
+  image, a corrupt deck — the file is yours and stays; what's missing is the *text*, and the reason
+  is printed beside the file. "No text" and "we failed to read it" are different facts.
+- **The filename is ours, not the browser's.** `../../etc/passwd`, `C:\Users\you\secret.txt` and a
+  name with a NUL in it all reduce to one safe segment with an allowlisted extension. Uploading the
+  same name twice gives you `notes_2.txt` — an upload never overwrites a file you already have.
+- **Executables and scripts are refused by allowlist**, with the reason, as a 400 and not a 500.
+
+Attaching a file never moves the card, and every attachment route resolves the folder through an
+ownership check rather than trusting the job id.
+
+New Python dependencies: `python-pptx` (slides and speaker notes) and `openpyxl` (spreadsheet
+values). Both are in `backend/requirements.txt`, so the droplet build picks them up.

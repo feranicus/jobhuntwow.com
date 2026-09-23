@@ -74,7 +74,7 @@ def nocomments(src, hash_comments=True):
 
 
 def heredoc_balance(script):
-    """Every heredoc opened must be closed. Returns a list of complaints.
+    r"""Every heredoc opened must be closed. Returns a list of complaints.
 
     THIS IS DELIBERATELY THE ONLY STRUCTURAL PROPERTY CHECKED IN PURE PYTHON, and the first version
     of this function is why. It also counted quote parity per line and if/fi, case/esac, do/done

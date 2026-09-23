@@ -332,7 +332,11 @@ def do_tests() -> bool:
                 "backend/app/mailmatch.py", "backend/app/gmail_read.py", "backend/app/mailwatch.py",
                 # The run log: live in the browser while a run happens, and a .txt kept
                 # beside the documents afterwards.
-                "backend/app/runlog.py"):
+                "backend/app/runlog.py",
+                # Files attached to ONE application - a transcript, a deck, the take-home task:
+                # the name is ours not the browser's, a collision is numbered, and the text is
+                # extracted once at upload so the file is searchable rather than a pile of bytes.
+                "backend/app/attach.py"):
         p = os.path.join(HERE, rel)
         if not os.path.exists(p):
             say("  [X] MISSING test file %s - a suite that is absent cannot pass" % rel)

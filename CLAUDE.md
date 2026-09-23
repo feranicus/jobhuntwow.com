@@ -383,11 +383,11 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
 - **The docs must name commands that exist.** `tests/test_claude_md_size.py` checks every
   `python jhw.py <verb>` and `python <script>.py` in the operator-facing docs against the FILE THAT
   PRINTS IT. Five named commands had never existed, one of them in this file.
-- **This file has a size budget (40 KB) and it is enforced.** A rule that is only written down goes
-  stale; the history lives in `docs/decisions/`.
+- **This file has a size budget (40 KB), enforced.** A rule only written down goes stale; the
+  history lives in `docs/decisions/`.
 - **The board is the truth or it is nothing.** Drag-and-drop is optimistic and REVERTS on refusal;
   `preventDefault` on `dragOver` is the line whose absence makes drag look implemented and do
-  nothing; a click must never be a drag (`didDrag`).
+  nothing; a click is never a drag (`didDrag`).
 - **A derived fact is labelled as derived.** The employer ladder is JD text → model (accepted ONLY
   if the name appears VERBATIM in the posting) → posting URL → nothing, in `company_source`.
 - **A filename is read at the moment it is attached.** `resume_<employer>_<role>[_N].pdf`, numbered
@@ -395,26 +395,26 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
 - **The lifecycle is his, not mine:** tailored → applied → hr_screen → tech → task → manager →
   final → offer → negotiation → signed (rejected from any). `canon_stage()` maps legacy names,
   `_migrate()` moves old rows once, the board renders EVERY stage the store allows.
-- **A hostname we SERVE must be one the deploy CLAIMS** (`fix_caddy.OURS`), and every `redir` lands
-  on the canonical host in ONE hop. `python domains.py` prints the registrar records and measures —
-  and refuses to report a finding when it cannot resolve DNS at all.
+- **A hostname we SERVE must be one the deploy CLAIMS** (`fix_caddy.OURS`), every `redir` landing
+  on the canonical host in ONE hop. `python domains.py` measures it, and refuses to report a
+  finding when it cannot resolve DNS at all.
 
 ## THE WALLET, THE CONSOLE AND THE SHORT DOMAIN (2026-09-21)
 *(the full stack and its boundaries: `SECURITY.md`; the incident that earned it: the LLM-jacking report)*
 
 - **A paid model call is GATED BEFORE IT IS MADE, at all four chokepoints** (`llm.chat`,
-  `llm.complete`, `qwen.chat_stream`, `proxy.chat_completions`). `backend/app/llm_meter.py` holds
-  four rules — global daily USD, per-account daily USD, per-account calls/hour, service calls/hour —
-  and **fails OPEN on a storage fault, CLOSED on the budget**. `None` (cannot read) and `0.0` (a
-  quiet day) never collapse into each other. A refusal is a 429 with Retry-After, recorded as
-  `evt=llm_budget_refused` and paged; it is never a 500.
+  `llm.complete`, `qwen.chat_stream`, `proxy.chat_completions`). `llm_meter.py` holds four rules —
+  global daily USD, per-account daily USD, per-account calls/h, service calls/h — and **fails OPEN
+  on a storage fault, CLOSED on the budget**. `None` (cannot read) and `0.0` (a quiet day) never
+  collapse into each other. A refusal is a 429 with Retry-After, `evt=llm_budget_refused`, paged;
+  never a 500.
 - **UNKNOWN TOKENS ARE CHARGED.** A stream carries no `usage`, so an unpriced call costs
   `JHW_UNKNOWN_CALL_USD` against the caps, marked `estimated`. A gate that only counts what it can
   price is one the attacker walks through.
 - **A GATED FUNCTION THAT DOES NOT RECORD IS AN OPEN WALLET.** `llm.chat` gated and never
   recorded for half a day, so the cap excluded the biggest spender — and a suite check asserted
-  that hole was correct. The suite now asserts per FUNCTION: if it gates, it records. The meter
-  write lives in its OWN `try`, never behind the ledger's.
+  that hole was correct. The suite asserts per FUNCTION: if it gates, it records; and the meter
+  write lives in its OWN `try`.
 - **The identity carrier needs a caller.** `llm_meter.set_current_user()` is called by
   `auth.require_user`; without it both per-account rules are silently skipped everywhere but
   `/api/chat`.
@@ -430,24 +430,21 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
   `include_router()` into `app.routes`, so the gate reported clean over skipped routes.
   `authz_audit.iter_api_routes()` is the one walker, both callers assert a FLOOR on the count, and
   `python authz_audit.py` is a GATE inside `ship.py`.
-- **ONE `evt=http` WRITER, NOMINATED IN CODE** (main.py), not by an env var in one compose file —
-  and only if the nominated writer imports. The line now carries `host`.
+- **ONE `evt=http` WRITER, NOMINATED IN CODE** (main.py), not by an env var in one compose file,
+  and only if the nominated writer imports. The line carries `host`.
 - **THE CONSOLE NEVER RENDERS "I COULD NOT LOOK" AS ZERO.** `/api/security/overview` +
   `pages/Security.jsx`, admin-only server-side (fails closed). Unreadable source → `None` + a
   caveat. Offenders ranked by DISTINCT paths, not volume.
 - **A SYNTHETIC AUDIT MUST NOT PAGE THE OPERATOR.** The audit and the wallet suite set
   `ALERTS_ENABLED=0` — detection runs, delivery does not, and the suppression is said out loud.
-- **The WebRTC half of the browser probe is OPT-IN and OFF** at both ends (`JHW_PROBE_WEBRTC=1` and
-  `VITE_JHW_PROBE_WEBRTC=1`). It cannot see a scripted client, it accuses corporate networks, and it
-  unmasks an address the user chose to hide.
-- **The deploy's `deploy_probe` is a GATE now**: it printed `EVENTS_LOG_UNWRITABLE` and exited 0, so
-  a deploy with a dead event pipeline still said DONE.
+- **The deploy's `deploy_probe` is a GATE now**: it printed `EVENTS_LOG_UNWRITABLE` and exited 0,
+  so a deploy with a dead event pipeline still said DONE.
 
 ## THE PORTFOLIO AND THE TOP-5 COVER LETTER (2026-09-22)
 - **`portfolio.py` is the one home for his projects**, and the per-posting selection is ARITHMETIC,
   never a model: it counts the posting's own words against each project's stack, tags and title, so
-  it cannot invent a project, it carries `matched` (a derived fact, labelled), and a posting that
-  matches nothing selects NOTHING — an honest empty beats padding.
+  it cannot invent a project, it carries `matched` (labelled as derived), and a posting that matches
+  nothing selects NOTHING — an honest empty beats padding.
 - **A PDF/WORD PORTFOLIO IMPORTS, AND THE IMPORT PROPOSES RATHER THAN SAVES.**
   `portfolio.parse_text` splits a file deterministically (every proposed value is a substring of
   his own file), and only his Save writes to the store. A scan with no text layer SAYS so.
@@ -467,22 +464,21 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
 - **A TOP-5 letter rendered EMPTY** because `cover_struct` in generate() carried only
   `paragraphs` and dropped `reasons`/`opening`/`close` — same defect as `highlights`/`earlier` on
   the resume. Every check stopped at the struct; the suite now UNZIPS the DOCX. **`/revise` judges
-  a document in ITS OWN format** (from the manifest), or a top-5 edit is refused as "fewer than 2
-  paragraphs" and the old file silently stands.
+  a document in ITS OWN format**, or a top-5 edit is refused as "fewer than 2 paragraphs" and the
+  old file silently stands.
 - **Page furniture is never a job title.** `jd_ingest.looks_like_title()` refuses logo alt text,
-  "34 applicants", "2 weeks ago", Easy Apply/Remote/Full-time; `_is_employer_line()` refuses a name
-  that reappears as a byline prefix (`Anaconda` / `Anaconda · Germany`) and uses it as the EMPLOYER.
-  He got `cover_letter_anaconda_company-logo-for-anaconda.pdf` out of the old rule.
+  "34 applicants", "2 weeks ago", Easy Apply/Remote/Full-time; `_is_employer_line()` takes a name
+  that reappears as a byline prefix (`Anaconda` / `Anaconda · Germany`) as the EMPLOYER. The old
+  rule produced `cover_letter_anaconda_company-logo-for-anaconda.pdf`.
 
 ## THE MAILBOX (2026-09-23)
 - **Reading Gmail is the SEND path with ONE more scope**: same service account, Workspace
-  domain-wide delegation, `gmail.readonly`, opt-in `JHW_MAIL_READ=1`. Never `gmail.modify` — a
-  correlation bug must not touch mail. POLLED, not Pub/Sub. One injected `fetch` = the only
-  network seam, so the suite runs offline.
+  domain-wide delegation, `gmail.readonly`, opt-in `JHW_MAIL_READ=1`. Never `gmail.modify`. POLLED,
+  not Pub/Sub. One injected `fetch` = the only network seam, so the suite runs offline.
 - **WHICH application a mail is about is ARITHMETIC** (`mailmatch.py`): posting id 5 · employer/ATS
   domain 3-4 · employer name 3 · role words in subject 2 · arrived after we applied 1, floor 5. A
-  newsletter naming the employer never matches; **a tie leaves it UNFILED with the reason**, and
-  what was not filed keeps `why_not` and is listed on the console.
+  newsletter naming the employer never matches; **a tie leaves it UNFILED with `why_not`**, listed
+  on the console.
 - **A label is not a decision.** `classify()` shows rejection/interview/offer; nothing here moves a
   stage. He drags his own cards — asserted by a contract.
 - **TESTIMONY AND EVIDENCE ARE SEPARATE TABLES.** His Updates (`notes`) are what a PERSON said; a
@@ -490,27 +486,32 @@ a diagnostic. `grep` the history file for the phrase if you need the incident.
   `when_ts` (the date it is ABOUT) is not the write time, and an unparseable date stores NO date.
 - **A heading that only renders when there is data hides the difference between "nothing arrived"
   and "it is switched off".** The Emails heading is always there and carries `mail_status`.
+- **`attach.py`: a file on a card is READ ONCE at upload** (pypdf/docx/pptx incl. SPEAKER NOTES/
+  xlsx; a .vtt keeps the words and drops the timecodes). It NEVER raises — a scan or a corrupt
+  deck keeps the file and records WHY there is no text. The name is OURS: traversal, Windows path
+  and NUL reduced to one segment, extension allowlisted, collision NUMBERED, `commonpath` proves
+  the reach. Ownership answers 404, never 403.
+- **ONE DETAIL SHAPE.** `tracker.detail()` composes row + mails + notes + attachments; every
+  handler returns it. Returning the bare `get()` row left the note he had just typed out of the
+  payload. A check sliced to the END OF FILE matched its own assertion line — shipping slice only.
 
 ## THE RUN LOG (2026-09-22)
 - **A progress bar is not a record.** `runlog.py` streams every step of a run to the page (polled,
   owner-checked, `known:false` for an unknown run) and writes the same lines beside the documents.
-  A line is written when something HAPPENS: `[draft] cover deepseek-3.2 REJECTED depth=472 <- THIN`
-  is the line that makes a bad run diagnosable. `RC.tailor(on_event=...)` carries the chain, every
-  draft verdict with its depth, the auditor and its vendor, and each revision applied or refused.
+  A line is written when something HAPPENS — `[draft] cover deepseek-3.2 REJECTED depth=472 <- THIN`
+  is what makes a bad run diagnosable. `RC.tailor(on_event=...)` carries the chain, every draft
+  verdict with its depth, the auditor and its vendor, and each revision applied or refused.
 - **A file the page LISTS must be one the server SERVES** — the log was listed beside the documents
-  and refused by `docnames.looks_generated()` on download (HTTP 400). One home, both directions.
+  and refused on download by `docnames.looks_generated()`. One home, both directions.
 
-## THE VISIT FEED — "a person just opened jobhuntwow.com" (2026-09-21)
+## THE FEEDS — visits, usage, bot counting (2026-09-21)
 - **An anonymous VISIT is the only signal that says whether the site has traffic at all.**
-  `visitors.note_visit()`: one plain-text Telegram message per visitor per 6h, naming the HOST, own
-  hourly cap so a feed can never silence an alert, sent by `notify.fire_and_forget`. **Gate on the
-  PATH, never the user agent**; absence of evidence is unjudged, not a bot. **Every suppression
-  writes its reason** and the console lists them.
-
-## USAGE FEED AND BOT COUNTING (2026-09-21)
+  `visitors.note_visit()`: one Telegram message per visitor per 6h, naming the HOST, with its own
+  hourly cap so a feed can never silence an alert. **Gate on the PATH, never the user agent**;
+  absence of evidence is unjudged, not a bot. **Every suppression writes its reason.**
 - **A feed is not an alert** (`alerts.usage()`: own hourly cap, no per-subject cooldown), and
-  **`notify.telegram` is PLAIN TEXT by default** — one stray `_` made Telegram reject the whole
-  message, so the alert that mattered most never arrived.
+  **`notify.telegram` is PLAIN TEXT by default** — one stray `_` made Telegram reject the message,
+  so the alert that mattered most never arrived.
 - **Three buckets, never two** (`visitors.py`): VISITOR · CLIENT · UNJUDGED, precedence one-way,
-  fetch-metadata PRESENCE only, and the protocol check stays dormant until `X-Client-Proto` proves
-  whose version it is. **The WebRTC probe is evidence, never a gate**, and off at both ends.
+  fetch-metadata PRESENCE only, the protocol check dormant until `X-Client-Proto` proves whose
+  version it is. **The WebRTC probe is evidence, never a gate**, and off at both ends.

@@ -75,6 +75,9 @@ export default function Pipeline() {
   const [panelNote, setPanelNote] = useState("");
   const [noteDraft, setNoteDraft] = useState({ body: "", kind: "note", when: "" });
   const [noteMsg, setNoteMsg] = useState("");
+  const [attMsg, setAttMsg] = useState("");
+  const [attLabel, setAttLabel] = useState("");
+  const fileRef = useRef(null);
   const dragged = useRef(null);                  // {job_id, from}
   const didDrag = useRef(false);                 // a drag must never also count as a click
 
@@ -127,6 +130,8 @@ export default function Pipeline() {
       setDraft({ employer: txt(r.employer), title: txt(r.title) });
       setNoteDraft({ body: "", kind: "note", when: "" });
       setNoteMsg("");
+      setAttMsg("");
+      setAttLabel("");
       setPanelNote("");
     } catch (e) {
       setPanelNote("could not load it — " + txt((e && e.message) || e));
@@ -205,6 +210,49 @@ export default function Pipeline() {
       setNoteMsg("removed");
     } catch (e) {
       setNoteMsg("not removed — " + txt((e && e.message) || e));
+    }
+  }
+
+  /* FILES THAT BELONG TO THIS JOB — the interview transcript, the deck they sent, the take-home.
+     Uploaded with plain FormData (no library), and the server reads the text out of it ONCE so a
+     .pptx or a .vtt is searchable rather than a pile of bytes. A file it cannot read is still
+     kept, and the reason is printed beside it. */
+  async function uploadAttachment(f) {
+    if (!open || !open.job_id || !f) return;
+    setAttMsg(`uploading ${txt(f.name)}…`);
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      fd.append("label", attLabel);
+      const res = await fetch(
+        `/api/applications/${encodeURIComponent(open.job_id)}/attachments`,
+        { method: "POST", credentials: "include", body: fd });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(txt(j.detail) || `HTTP ${res.status}`);
+      setOpen({ ...open, ...j });
+      setRows((prev) => prev.map((x) => (txt(x.job_id) === txt(open.job_id) ? { ...x, ...j } : x)));
+      setAttLabel("");
+      if (fileRef.current) fileRef.current.value = "";
+      const added = j.added || {};
+      // WHAT WE COULD AND COULD NOT READ IS SAID OUT LOUD, not left for him to infer from a zero.
+      setAttMsg(added.has_text
+        ? `${txt(added.name)} — ${added.words} words of text read from it`
+        : `${txt(added.name)} — kept, but ${txt(added.text_note) || "no text could be read"}`);
+    } catch (e) {
+      setAttMsg("not uploaded — " + txt((e && e.message) || e));
+    }
+  }
+
+  async function removeAttachment(name) {
+    if (!open || !open.job_id) return;
+    setAttMsg("removing…");
+    try {
+      const r = await deleteJSON(
+        `/api/applications/${encodeURIComponent(open.job_id)}/attachments/${encodeURIComponent(name)}`);
+      setOpen({ ...open, ...r });
+      setAttMsg("removed");
+    } catch (e) {
+      setAttMsg("not removed — " + txt((e && e.message) || e));
     }
   }
 
@@ -346,6 +394,48 @@ export default function Pipeline() {
                    href={dl(txt(open.job_id), txt(f))}>⬇ {txt(f)}</a>
               ))}
               {!(open.files || []).length && <small className="muted">no document on record</small>}
+            </div>
+
+            {/* FILES ABOUT THIS JOB. Separate from Documents above, which are the ones WE
+                generated: these are what he received or recorded — a transcript, their deck, the
+                take-home task. The server reads the text out of each one so it is searchable. */}
+            <h4>Files for this application</h4>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input type="file" ref={fileRef}
+                     onChange={(e) => uploadAttachment(e.target.files && e.target.files[0])} />
+              <input value={attLabel} placeholder="what is it? (optional)"
+                     onChange={(e) => setAttLabel(e.target.value)} />
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              transcript (.txt .vtt .srt) · deck (.pptx) · document (.pdf .docx) · sheet (.xlsx) ·
+              image — up to 25 MB
+            </p>
+            {attMsg && <p className="muted">{attMsg}</p>}
+            <div>
+              {(open.attachments || []).map((a) => (
+                <div key={txt(a.att_id)} style={{
+                  borderLeft: "3px solid var(--line, #26314a)", paddingLeft: 10, marginBottom: 10,
+                }}>
+                  <div>
+                    <a href={`/api/applications/${encodeURIComponent(txt(open.job_id))}/attachments/${encodeURIComponent(txt(a.name))}`}>
+                      ⬇ {txt(a.name)}
+                    </a>
+                    {a.label ? <span className="muted"> — {txt(a.label)}</span> : null}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                    {stamp(a.ts)} · {Math.max(1, Math.round(Number(a.bytes || 0) / 1024))} KB
+                    {a.chars > 0
+                      ? ` · ${a.words} words read`
+                      : ` · ${txt(a.text_note) || "no text read"}`}
+                    {" · "}
+                    <a role="button" tabIndex={0} style={{ cursor: "pointer" }}
+                       onClick={() => removeAttachment(txt(a.name))}>remove</a>
+                  </div>
+                </div>
+              ))}
+              {!(open.attachments || []).length && (
+                <small className="muted">nothing attached yet</small>
+              )}
             </div>
 
             {/* HIS OWN UPDATES. Testimony, not evidence: what the recruiter said, when the next

@@ -154,6 +154,19 @@ CREATE TABLE IF NOT EXISTS notes(
 );
 CREATE INDEX IF NOT EXISTS note_job ON notes(job_id);
 CREATE INDEX IF NOT EXISTS note_ts  ON notes(ts);
+CREATE TABLE IF NOT EXISTS attachments(
+  att_id     TEXT PRIMARY KEY,
+  job_id     TEXT NOT NULL DEFAULT '',
+  name       TEXT NOT NULL DEFAULT '',
+  kind       TEXT NOT NULL DEFAULT '',
+  bytes      INTEGER NOT NULL DEFAULT 0,
+  chars      INTEGER NOT NULL DEFAULT 0,
+  words      INTEGER NOT NULL DEFAULT 0,
+  text_note  TEXT NOT NULL DEFAULT '',
+  label      TEXT NOT NULL DEFAULT '',
+  ts         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS att_job ON attachments(job_id);
 CREATE TABLE IF NOT EXISTS digests(
   kind TEXT PRIMARY KEY, last_ts INTEGER NOT NULL DEFAULT 0, last_count INTEGER NOT NULL DEFAULT 0
 );
@@ -599,6 +612,92 @@ def delete_note(job_id: str, note_id: str) -> bool:
         return False
 
 
+def record_attachment(job_id: str, meta: dict, label: str = "") -> dict:
+    """INDEX one file that `attach.save()` has already written to disk.
+
+    The bytes live in the job folder, the index lives here, and neither pretends to be the other.
+    `text_note` rides along so the panel can say WHY a file has no searchable text without opening
+    it - "a scan with no text layer" and "we have not looked" must never render the same."""
+    name = (meta or {}).get("name") or ""
+    if not name:
+        return {}
+    now = int(time.time())
+    aid = hashlib.sha1(("%s|%s" % (job_id, name)).encode()).hexdigest()[:16]
+    row = {"att_id": aid, "job_id": job_id, "name": name,
+           "kind": (meta.get("kind") or ""), "bytes": int(meta.get("bytes") or 0),
+           "chars": int(meta.get("chars") or 0), "words": int(meta.get("words") or 0),
+           "text_note": (meta.get("text_note") or ""), "label": (label or "")[:120], "ts": now}
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            c.execute("INSERT OR REPLACE INTO attachments"
+                      "(att_id,job_id,name,kind,bytes,chars,words,text_note,label,ts)"
+                      " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                      (aid, job_id, name, row["kind"], row["bytes"], row["chars"], row["words"],
+                       row["text_note"], row["label"], now))
+            c.execute("UPDATE applications SET updated_ts=? WHERE job_id=?", (now, job_id))
+        _log(evt="attachment_recorded", job_id=job_id, name=name, kind=row["kind"],
+             chars=row["chars"])
+        return row
+    except Exception as e:
+        _log(evt="tracker_error", where="record_attachment", err=repr(e)[:180])
+        return {}
+
+
+def attachments_for(job_id: str, limit: int = 100) -> list:
+    """Newest first, ts AND rowid - two files uploaded in the same second share a timestamp."""
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            cur = c.execute(
+                "SELECT att_id,job_id,name,kind,bytes,chars,words,text_note,label,ts"
+                " FROM attachments WHERE job_id=? ORDER BY ts DESC, rowid DESC LIMIT ?",
+                (job_id, int(limit)))
+            ks = ("att_id", "job_id", "name", "kind", "bytes", "chars", "words", "text_note",
+                  "label", "ts")
+            return [dict(zip(ks, r)) for r in cur.fetchall()]
+    except Exception as e:
+        _log(evt="tracker_error", where="attachments_for", err=repr(e)[:180])
+        return []
+
+
+def forget_attachment(job_id: str, name: str) -> bool:
+    """Drop the INDEX row. Scoped to the job_id, so one card's name cannot reach another's."""
+    try:
+        with _conn() as c:
+            c.executescript(_SCHEMA)
+            cur = c.execute("DELETE FROM attachments WHERE job_id=? AND name=?", (job_id, name))
+            return bool(cur.rowcount)
+    except Exception as e:
+        _log(evt="tracker_error", where="forget_attachment", err=repr(e)[:180])
+        return False
+
+
+def detail(job_id: str) -> dict:
+    """THE WHOLE CARD, from one call: the row, its mail, his notes, its attachments.
+
+    ONE HOME for that shape. Every handler that hands a row back to the panel returns THIS, not
+    `get()` - a handler that returned the bare row after adding a note gave the page a payload
+    with no `notes` key at all, so the note he had just typed did not appear until he reopened the
+    card. A shape the panel depends on must be composed in exactly one place."""
+    r = get(job_id)
+    if not r:
+        return {}
+    # THE MAIL BELONGS ON THE CARD. Correlated messages ride with the row the panel already reads.
+    r["mails"] = mails_for(job_id)
+    # WHY THERE IS NO MAIL IS ITSELF AN ANSWER. An empty list means "nothing matched"; it must
+    # never be read as "the mailbox is off", so the panel is told which one it is looking at.
+    try:
+        from . import gmail_read as _gr
+        r["mail_status"] = _gr.status()
+    except Exception as e:
+        r["mail_status"] = {"configured": False,
+                            "why": "could not read the mailbox state: %s" % repr(e)[:120]}
+    r["notes"] = notes_for(job_id)
+    r["attachments"] = attachments_for(job_id)
+    return r
+
+
 def get(job_id: str) -> dict:
     try:
         with _conn() as c:
@@ -642,9 +741,14 @@ def digest_last(kind: str) -> dict:
 
 # --------------------------------------------------------------------------- HTTP (CRM reads this)
 try:
-    from fastapi import APIRouter, Depends, HTTPException
+    from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+    from fastapi.responses import FileResponse
     from pydantic import BaseModel
     from .auth import require_user
+    # Imported INSIDE the guarded block on purpose: this module is run standalone
+    # (`python backend/app/tracker.py`) to execute its contracts, and a relative import at module
+    # scope makes that impossible.
+    from . import attach as _attach
 
     router = APIRouter(prefix="/api/applications", tags=["applications"])
 
@@ -668,21 +772,9 @@ try:
 
     @router.get("/{job_id}")
     def get_application(job_id: str, _user: str = Depends(require_user)):
-        r = get(job_id)
+        r = detail(job_id)
         if not r:
             raise HTTPException(status_code=404, detail="no such application")
-        # THE MAIL BELONGS ON THE CARD. Correlated messages ride with the row the panel already
-        # reads, so the board answers "what has this employer said?" without a second call.
-        r["mails"] = mails_for(job_id)
-        # WHY THERE IS NO MAIL IS ITSELF AN ANSWER. An empty list means "nothing matched"; it must
-        # never be read as "the mailbox is off", so the panel is told which one it is looking at.
-        try:
-            from . import gmail_read as _gr
-            r["mail_status"] = _gr.status()
-        except Exception as e:
-            r["mail_status"] = {"configured": False, "why": "could not read the mailbox state: %s"
-                                % repr(e)[:120]}
-        r["notes"] = notes_for(job_id)
         return r
 
     @router.patch("/{job_id}")
@@ -699,7 +791,7 @@ try:
             touched = set_fields(job_id, employer=req.employer, title=req.title) or touched
         if not touched:
             raise HTTPException(status_code=400, detail="nothing to change")
-        return get(job_id)
+        return detail(job_id)
 
     class NoteReq(BaseModel):
         body: str = ""
@@ -727,7 +819,7 @@ try:
                        author=user if isinstance(user, str) else "", when_ts=when)
         if not row:
             raise HTTPException(status_code=500, detail="the note was not written")
-        out = get(job_id)
+        out = detail(job_id)
         out["added"] = row
         out["when_read"] = bool(when) or not w
         return out
@@ -736,7 +828,81 @@ try:
     def delete_application_note(job_id: str, note_id: str, _user: str = Depends(require_user)):
         if not delete_note(job_id, note_id):
             raise HTTPException(status_code=404, detail="no such note on this application")
-        return get(job_id)
+        return detail(job_id)
+
+    def _owned_folder(job_id: str, user: str) -> str:
+        """The folder this application's files live in - AND the ownership check.
+
+        A row carries the address it was tailored for. If it is somebody else's, the caller is
+        told the application does not exist: a 403 confirms the id, a 404 says nothing."""
+        row = get(job_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="no such application")
+        owner = (row.get("email") or "").strip().lower()
+        me = (user or "").strip().lower()
+        if owner and me and owner != me:
+            raise HTTPException(status_code=404, detail="no such application")
+        from .electronic import job_dir
+        return job_dir(me or owner, job_id)
+
+    @router.post("/{job_id}/attachments")
+    async def upload_attachment(job_id: str, file: UploadFile = File(...),
+                                label: str = Form(""), user: str = Depends(require_user)):
+        """A transcript, a deck they sent, the take-home task - kept ON the card it belongs to.
+
+        The text is extracted ONCE, here, so an interview transcript is searchable the moment it
+        lands and a deck is not a pile of bytes nobody can read. A file we cannot read is still
+        kept, with the reason recorded - it is his file."""
+        folder = _owned_folder(job_id, user)
+        if len(attachments_for(job_id)) >= _attach.MAX_PER_JOB:
+            raise HTTPException(status_code=400,
+                                detail="this application already has %d attachments"
+                                       % _attach.MAX_PER_JOB)
+        blob = await file.read()
+        if not blob:
+            raise HTTPException(status_code=400, detail="that file is empty")
+        try:
+            meta = _attach.save(folder, file.filename or "", blob)
+        except ValueError as e:
+            # A REFUSAL IS A 400 WITH THE REASON, never a 500 - he needs to know what to send.
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            _log(evt="tracker_error", where="upload_attachment", err=repr(e)[:180])
+            raise HTTPException(status_code=500, detail="the file could not be stored")
+        row = record_attachment(job_id, meta, label=label)
+        if not row:
+            raise HTTPException(status_code=500, detail="the file was stored but not indexed")
+        out = detail(job_id)
+        out["added"] = row
+        return out
+
+    @router.get("/{job_id}/attachments/{name}")
+    def download_attachment(job_id: str, name: str, text: bool = False,
+                            user: str = Depends(require_user)):
+        """The file itself, or - with `?text=1` - the plain text we read out of it."""
+        folder = _owned_folder(job_id, user)
+        if text:
+            body = _attach.read_text(folder, name)
+            if not body:
+                raise HTTPException(status_code=404,
+                                    detail="no text was extracted from that file")
+            return {"name": _attach.safe_name(name), "text": body, "chars": len(body)}
+        pth = _attach.path_of(folder, name)
+        if not pth:
+            raise HTTPException(status_code=404, detail="no such attachment")
+        return FileResponse(pth, filename=os.path.basename(pth),
+                            media_type="application/octet-stream")
+
+    @router.delete("/{job_id}/attachments/{name}")
+    def delete_attachment(job_id: str, name: str, user: str = Depends(require_user)):
+        folder = _owned_folder(job_id, user)
+        gone = _attach.remove(folder, name)
+        # The INDEX row goes either way: a row pointing at bytes that are not there is a card
+        # offering a download that 404s, which is worse than the row being absent.
+        forget_attachment(job_id, _attach.safe_name(name))
+        if not gone:
+            raise HTTPException(status_code=404, detail="no such attachment")
+        return detail(job_id)
 
     @router.post("/{job_id}/reread")
     async def reread_application(job_id: str, _user: str = Depends(require_user)):
@@ -772,7 +938,7 @@ try:
             changed["title"] = title          # only replace a SECTION HEADER, never his own words
         if changed:
             set_fields(job_id, **changed)
-        out = get(job_id)
+        out = detail(job_id)
         out["reread"] = {"found": bool(emp), "source": src, "changed": sorted(changed)}
         return out
 except Exception:                                   # pragma: no cover - standalone --logic run
@@ -943,10 +1109,67 @@ def _selftest() -> int:
     ck(get(jid).get("stage") == _pre_stage,
        "a note NEVER moves the card - he drags his own cards")
 
-    # ---- THE PANEL: two kinds of truth, two headings, and an honest empty ----------------------
-    # The comments are stripped FIRST. A check that can match its own explanation has matched its
-    # own explanation ~19 times in this repo.
+    # ---- ATTACHMENTS: the file on disk, the row in the index ----------------------------------
+    _a1 = record_attachment(jid, {"name": "call.vtt", "kind": "vtt", "bytes": 900, "chars": 640,
+                                  "words": 110, "text_note": ""}, label="first interview")
+    ck(_a1.get("name") == "call.vtt" and _a1.get("label") == "first interview",
+       "an attachment is indexed with its label")
+    record_attachment(jid, {"name": "whiteboard.png", "kind": "png", "bytes": 40000,
+                            "chars": 0, "words": 0,
+                            "text_note": "an image is kept as-is - there is no text extraction "
+                                         "for pictures"})
+    _got = attachments_for(jid)
+    ck(len(_got) == 2 and _got[0]["name"] == "whiteboard.png",
+       "attachments come back newest first")
+    ck(any(g["name"] == "whiteboard.png" and g["chars"] == 0 and g["text_note"] for g in _got),
+       "a file with no text carries the REASON in the index - the card never shows a blank")
+    ck(record_attachment(jid, {"name": ""}) == {} and len(attachments_for(jid)) == 2,
+       "a nameless file is not indexed")
+    ck(not attachments_for("no-such-job"),
+       "an attachment belongs to ONE application and another card sees none of them")
+    ck(forget_attachment("some-other-job", "call.vtt") is False
+       and len(attachments_for(jid)) == 2,
+       "a name from one card cannot drop another card's index row")
+    ck(forget_attachment(jid, "call.vtt") is True and len(attachments_for(jid)) == 1,
+       "his own attachment is forgotten on his own card")
+    _pre_st = get(jid).get("stage")
+    record_attachment(jid, {"name": "rejection.pdf", "kind": "pdf", "bytes": 10})
+    ck(get(jid).get("stage") == _pre_st, "attaching a file NEVER moves the card")
+    ck(len(detail(jid).get("attachments") or []) == 2
+       and "notes" in detail(jid) and "mails" in detail(jid),
+       "ONE detail shape carries the row, its mail, his notes and its attachments")
+
+    # EVERY attachment route resolves the folder through the OWNERSHIP check. A download that
+    # trusts the job_id alone hands one account's interview transcript to another. Comments and
+    # docstrings are stripped first, or this matches its own explanation.
     import re as _re
+
+    def _strip_src(src: str) -> str:
+        src = _re.sub(r'"""' + r'.*?' + r'"""', " ", src, flags=_re.S)
+        return _re.sub(r"^\s*#.*$", " ", src, flags=_re.M)
+
+    _tsrc = _strip_src(open(os.path.join(_here, "tracker.py"), encoding="utf-8").read())
+    # NO HANDLER HANDS BACK THE BARE ROW. `add_application_note` did, so the note he had just
+    # typed was missing from the payload and did not appear until he reopened the card.
+    # THE SHIPPING SLICE ONLY: from the router to the end of the router block. Sliced to the end
+    # of the FILE, this matched its own assertion line below - which is exactly the failure this
+    # repo has logged ~19 times.
+    _r0 = _tsrc.find("router = APIRouter(prefix=\"/api/applications\"")
+    _r1 = _tsrc.find("def _selftest(", _r0)
+    ck(_r0 >= 0 and _r1 > _r0, "the router block can be located in the source at all")
+    _rt = _tsrc[_r0:_r1]
+    ck("return get(job_id)" not in _rt and "out = get(job_id)" not in _rt,
+       "every handler returns the SAME detail shape - none hands the panel a row without its "
+       "notes, mail and attachments")
+    for _verb in ("upload_attachment", "download_attachment", "delete_attachment"):
+        _i = _tsrc.find("def %s(" % _verb)
+        _body = _tsrc[_i:_i + 1200] if _i >= 0 else ""
+        ck(_i >= 0 and "_owned_folder(" in _body,
+           "%s resolves the folder through the OWNERSHIP check, never the job_id alone" % _verb)
+
+    # ---- THE PANEL: two kinds of truth, two headings, and an honest empty ----------------------
+    # The comments are stripped FIRST (`_re` is already imported above, for the same reason). A
+    # check that can match its own explanation has matched its own explanation ~19 times here.
     _pj = os.path.join(_here, "..", "..", "frontend", "src", "pages", "Pipeline.jsx")
     try:
         with open(os.path.abspath(_pj), encoding="utf-8") as _f:
@@ -974,6 +1197,13 @@ def _selftest() -> int:
            "the email heading renders even with no mail, and says WHY there is none")
         ck(_up >= 0 and _head > _up and "stage" not in _ship[_up:_head],
            "nothing in the updates block touches the stage - a note never moves the card")
+        # THE FILE BOX IS ON THE PANEL AND IT IS NOT THE DOCUMENTS BOX. "Documents" are the ones we
+        # generated; "Files for this application" are the ones he received. Two sources, two lists.
+        _fh = _ship.find("<h4>Files for this application</h4>")
+        ck(_fh >= 0 and 'type="file"' in _ship and "uploadAttachment(" in _ship,
+           "the panel has its own file box, separate from the documents WE generated")
+        ck("open.attachments" in _ship and "text_note" in _ship,
+           "...and it prints WHY a file has no searchable text instead of showing a bare zero")
 
     print("=" * 50)
     if fails:
